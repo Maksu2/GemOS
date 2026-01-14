@@ -15,7 +15,6 @@ int get_update_in_progress_flag() {
   outb(CMOS_ADDRESS, 0x0A);
   return (inb(CMOS_DATA) & 0x80);
 }
-
 unsigned char get_rtc_register(int reg) {
   outb(CMOS_ADDRESS, reg);
   return inb(CMOS_DATA);
@@ -26,11 +25,19 @@ unsigned char get_rtc_register(int reg) {
 unsigned char bcd2bin(unsigned char bcd) {
   return ((bcd >> 4) * 10) + (bcd & 0x0F);
 }
-
 void rtc_get_time(int *hour, int *min, int *sec) {
-  // Wait for update
-  while (get_update_in_progress_flag())
+  // Wait for update (Timeout added to prevent freeze)
+  int timeout = 100000;
+  while (get_update_in_progress_flag() && timeout-- > 0)
     ;
+
+  if (timeout <= 0) {
+    // RTC Hardware Fault or Timeout, return fallback
+    *hour = 0;
+    *min = 0;
+    *sec = 0;
+    return;
+  }
 
   unsigned char s = get_rtc_register(0x00);
   unsigned char m = get_rtc_register(0x02);

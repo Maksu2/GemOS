@@ -216,11 +216,14 @@ void desktop_paint() {
   draw_string(75, 6, "Apps", 0x000000);
 
   // Clock (Real RTC)
-  // Minimize RTC calls (slow IO). Cache? No, we need seconds.
-  // Only update every ~30 frames? Kernel loop is fast.
-  // For now, just call it.
-  int h = 0, m = 0, s = 0;
-  rtc_get_time(&h, &m, &s);
+  // Only update every 100 frames to prevent bus contention/freezes
+  static int ticks = 0;
+  static int h = 0, m = 0, s = 0;
+
+  ticks++;
+  if (ticks % 100 == 1) { // Offset 1 to avoid startup block?
+    rtc_get_time(&h, &m, &s);
+  }
 
   char time[16];
   time[0] = (h / 10) + '0';

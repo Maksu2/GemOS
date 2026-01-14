@@ -10,25 +10,27 @@ void show_boot_screen() {
   // 1. Draw White Background
   video_clear(0xFFFFFF);
 
+  int cx = screen_width / 2;
+  int cy = screen_height / 2;
+
   // 2. Draw "System Logo" (Rectangle + Text)
-  // Center is 512, 384
-  draw_rect(512 - 50, 384 - 60, 100, 100, 0x000000); // Logo Box
-  draw_rect(512 - 48, 384 - 58, 96, 96, 0xFFFFFF);   // Inner White
+  draw_rect(cx - 50, cy - 60, 100, 100, 0x000000); // Logo Box
+  draw_rect(cx - 48, cy - 58, 96, 96, 0xFFFFFF);   // Inner White
 
   // Apple-ish shape or just text "OS"
-  draw_rect(512 - 20, 384 - 30, 40, 40, 0x000000);
+  draw_rect(cx - 20, cy - 30, 40, 40, 0x000000);
 
-  draw_string(512 - 60, 384 + 60, "Starting GemOS...", 0x000000);
+  draw_string(cx - 60, cy + 60, "Starting GemOS...", 0x000000);
 
   // 3. Loading Bar
-  draw_rect(512 - 100, 384 + 100, 200, 20, 0x000000); // Border
-  draw_rect(512 - 98, 384 + 102, 196, 16, 0xFFFFFF);  // Empty
+  draw_rect(cx - 100, cy + 100, 200, 20, 0x000000); // Border
+  draw_rect(cx - 98, cy + 102, 196, 16, 0xFFFFFF);  // Empty
 
   video_swap();
 
   // Simulate Loading
   for (int i = 0; i < 196; i += 2) {
-    draw_rect(512 - 98, 384 + 102, i, 16, 0x000000); // Fill
+    draw_rect(cx - 98, cy + 102, i, 16, 0x000000); // Fill
     video_swap();
     // Busy wait delay
     for (int w = 0; w < 1000000; w++)
