@@ -51,14 +51,20 @@ void show_boot_logo() {
 }
 
 void kernel_main() {
+  // CRITICAL: Initialize IDT first so interrupts don't Triple Fault
+  init_idt();
+  init_mouse();
+
+  // Now safe to init video
   init_video();
+
   show_boot_logo();
 
-  draw_boot_progress("Initializing IDT...", 10);
-  init_idt();
+  // Logs
+  draw_boot_progress("System Core Loaded...", 20);
 
-  draw_boot_progress("Initializing Mouse...", 30);
-  init_mouse();
+  draw_boot_progress("Initializing Extensions...", 40);
+  // Any other init? GemLang?
 
   draw_boot_progress("Starting Window Manager...", 60);
   init_window_manager();
