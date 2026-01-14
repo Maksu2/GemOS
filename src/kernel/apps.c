@@ -27,8 +27,11 @@ void snake_reset() {
   snake_state.game_over = 0;
 }
 
+// --- SNAKE GAME ---
+// Speed increase: frame % 3 instead of 5
+// Wall collision: Explicitly set game_over
+
 void snake_paint(Window *win) {
-  // Bg
   draw_rect(win->x, win->y + 20, win->width, win->height - 20, 0x000000);
 
   if (snake_state.game_over) {
@@ -51,9 +54,8 @@ void snake_paint(Window *win) {
 
   static int frame = 0;
   frame++;
-  // Faster Speed: Every 5th frame instead of 10th
-  if (frame % 5 == 0 && !snake_state.game_over) {
-    // Move Body
+  // Speed: Every 3rd frame (Faster)
+  if (frame % 3 == 0 && !snake_state.game_over) {
     for (int i = snake_state.length; i > 0; i--) {
       snake_state.body_x[i] = snake_state.body_x[i - 1];
       snake_state.body_y[i] = snake_state.body_y[i - 1];
@@ -61,11 +63,10 @@ void snake_paint(Window *win) {
     snake_state.body_x[0] = snake_state.head_x;
     snake_state.body_y[0] = snake_state.head_y;
 
-    // Move Head
     snake_state.head_x += snake_state.dir_x;
     snake_state.head_y += snake_state.dir_y;
 
-    // Hardcore Wall Collision
+    // Wall Collision = Death
     if (snake_state.head_x < 0 || snake_state.head_x > 29 ||
         snake_state.head_y < 0 || snake_state.head_y > 19) {
       snake_state.game_over = 1;
@@ -80,16 +81,17 @@ void snake_paint(Window *win) {
     }
 
     if (!snake_state.game_over) {
-      // Check Apple
       if (snake_state.head_x == snake_state.apple_x &&
           snake_state.head_y == snake_state.apple_y) {
         snake_state.length++;
-        snake_state.apple_x = (snake_state.apple_x + 7) % 30; // pseudo random
+        snake_state.apple_x = (snake_state.apple_x + 7) % 30;
         snake_state.apple_y = (snake_state.apple_y + 3) % 20;
       }
     }
   }
 }
+
+// Input handled by snake_key below
 
 void snake_key(Window *win, char c) {
   if (snake_state.game_over) {
@@ -477,22 +479,24 @@ void start_solitaire() {
   }
 }
 
-// --- CALCULATOR ---
-typedef struct {
-  char display[32];
-  int current_val;
-  int operand;
-  char op; // '+', '-', '*', '/'
-  int new_entry;
-} CalcState;
+// --- CALCULATOR APP ---
+// Simple stack or accumulator based.
+// We will use a simple accumulator + op model.
 
-static CalcState calc_state;
+static int calc_acc = 0;
+static int calc_current = 0;
+static int calc_op = 0; // 0=None, 1=+, 2=-, 3=*, 4=/
+static bool calc_new_entry = true;
 
-void calc_paint(Window *win);
-void calc_click(Window *win, int x, int y);
+void calc_reset() {
+  calc_acc = 0;
+  calc_current = 0;
+  calc_op = 0;
+  calc_new_entry = true;
+}
 
-// --- MATH HELPERS ---
-int i_sqrt(int n) {
+// Integer Sqrt (Newton)
+int isqrt(int n) {
   if (n < 0)
     return 0;
   if (n == 0)
@@ -506,191 +510,139 @@ int i_sqrt(int n) {
   return x;
 }
 
-int i_pow(int b, int e) {
-  int res = 1;
-  for (int i = 0; i < e; i++)
-    res *= b;
-  return res;
-}
-
-void start_calculator() {
-  calc_state.current_val = 0;
-  calc_state.display[0] = '0';
-  calc_state.display[1] = 0;
-  calc_state.new_entry = 1;
-  Window *w = create_window(200, 200, 160, 240, "Calculator"); // Slightly wider
-  if (w) {
-    w->on_paint = calc_paint;
-    w->on_click = calc_click;
-  }
-} // Fixed Brace
-
+// Revised Calc Click (New)
 void calc_click(Window *win, int x, int y) {
-  // Grid: 4 cols, 5 rows?
-  // Row 0: 7 8 9 /
-  // Row 1: 4 5 6 *
-  // Row 2: 1 2 3 -
-  // Row 3: C 0 = +
-  // Row 4: SQ PW (Scientific)
-
-  // Btn size ~35x35
-  int col = (x - 10) / 40;
-  int row = (y - 40) / 40;
-
-  if (col < 0 || col > 3 || row < 0 || row > 4)
-    return;
-
+  // Grid layout
   char key = 0;
-  if (row == 0) {
-    if (col == 0)
-      key = '7';
-    if (col == 1)
-      key = '8';
-    if (col == 2)
-      key = '9';
-    if (col == 3)
-      key = '/';
-  }
-  if (row == 1) {
-    if (col == 0)
-      key = '4';
-    if (col == 1)
-      key = '5';
-    if (col == 2)
-      key = '6';
-    if (col == 3)
-      key = '*';
-  }
-  if (row == 2) {
-    if (col == 0)
-      key = '1';
-    if (col == 1)
-      key = '2';
-    if (col == 2)
-      key = '3';
-    if (col == 3)
-      key = '-';
-  }
-  if (row == 3) {
-    if (col == 0)
-      key = 'C';
-    if (col == 1)
-      key = '0';
-    if (col == 2)
-      key = '=';
-    if (col == 3)
-      key = '+';
-  }
-  if (row == 4) {
-    if (col == 0)
-      key = 'S';
-    if (col == 1)
-      key = 'P';
-  } // S=Sqrt, P=Pow2
 
-  if (key >= '0' && key <= '9') {
-    if (calc_state.new_entry) {
-      calc_state.current_val = key - '0';
-      calc_state.new_entry = 0;
+  // Check main grid (10,50) to (150, 190)
+  if (x >= 10 && x < 150 && y >= 50 && y < 190) {
+    int c = (x - 10) / 35;
+    int r = (y - 50) / 35;
+    char *keys = "789/456*123-C0=+";
+    int idx = r * 4 + c;
+    if (idx >= 0 && idx < 16)
+      key = keys[idx];
+  }
+
+  // Check Sci Column
+  if (x >= 150 && x < 200 && y >= 50) {
+    int r = (y - 50) / 35;
+    if (r == 0)
+      key = 'S'; // Sq
+    if (r == 1)
+      key = 'R'; // Root
+  }
+
+  if (key) {
+    if (key >= '0' && key <= '9') {
+      if (calc_new_entry) {
+        calc_current = 0;
+        calc_new_entry = false;
+      }
+      calc_current = calc_current * 10 + (key - '0');
+    } else if (key == 'C') {
+      calc_reset();
+    } else if (key == 'S') { // Square
+      calc_current = calc_current * calc_current;
+      calc_new_entry = true;
+    } else if (key == 'R') { // Root
+      calc_current = isqrt(calc_current);
+      calc_new_entry = true;
+    } else if (key == '=') {
+      if (calc_op == 1)
+        calc_acc += calc_current;
+      if (calc_op == 2)
+        calc_acc -= calc_current;
+      if (calc_op == 3)
+        calc_acc *= calc_current;
+      if (calc_op == 4) {
+        if (calc_current)
+          calc_acc /= calc_current;
+      }
+      calc_current = calc_acc;
+      calc_op = 0;
+      calc_new_entry = true;
     } else {
-      calc_state.current_val = calc_state.current_val * 10 + (key - '0');
+      calc_acc = calc_current;
+      calc_current = 0;
+      if (key == '+')
+        calc_op = 1;
+      if (key == '-')
+        calc_op = 2;
+      if (key == '*')
+        calc_op = 3;
+      if (key == '/')
+        calc_op = 4;
+      calc_new_entry = true;
     }
-  } else if (key == 'C') {
-    calc_state.current_val = 0;
-    calc_state.operand = 0;
-    calc_state.op = 0;
-    calc_state.new_entry = 1;
-  } else if (key == '+' || key == '-' || key == '*' || key == '/') {
-    calc_state.op = key;
-    calc_state.operand = calc_state.current_val;
-    calc_state.new_entry = 1;
-  } else if (key == '=') {
-    if (calc_state.op == '+')
-      calc_state.current_val = calc_state.operand + calc_state.current_val;
-    if (calc_state.op == '-')
-      calc_state.current_val = calc_state.operand - calc_state.current_val;
-    if (calc_state.op == '*')
-      calc_state.current_val = calc_state.operand * calc_state.current_val;
-    if (calc_state.op == '/') {
-      if (calc_state.current_val != 0)
-        calc_state.current_val = calc_state.operand / calc_state.current_val;
-    }
-    calc_state.op = 0;
-    calc_state.new_entry = 1;
-  } else if (key == 'S') {
-    calc_state.current_val = i_sqrt(calc_state.current_val);
-    calc_state.new_entry = 1;
-  } else if (key == 'P') {
-    calc_state.current_val = i_pow(calc_state.current_val, 2);
-    calc_state.new_entry = 1;
   }
-
-  // Update Display String
-  // Manual Itoa
-  int v = calc_state.current_val;
-  if (v == 0) {
-    calc_state.display[0] = '0';
-    calc_state.display[1] = 0;
-  } else {
-    char buf[32];
-    int i = 0;
-    int sign = 0;
-    if (v < 0) {
-      sign = 1;
-      v = -v;
-    }
-    while (v > 0) {
-      buf[i++] = (v % 10) + '0';
-      v /= 10;
-    }
-    if (sign)
-      buf[i++] = '-';
-    // Reverse
-    int j = 0;
-    while (j < i) {
-      calc_state.display[j] = buf[i - 1 - j];
-      j++;
-    }
-    calc_state.display[j] = 0;
-  }
-
-  // Force Repaint
-  // No explicit invalidate yet, assumes polling or next event paints
 }
 
 void calc_paint(Window *win) {
-  // BG
-  draw_rect(win->x, win->y, win->width, win->height, 0xD0D0D0);
-  // Display
-  draw_rect(win->x + 10, win->y + 10, 140, 25, 0xFFFFFF);
-  draw_rect(win->x + 10, win->y + 10, 140, 1, 0x000000);
-  draw_rect(win->x + 10, win->y + 35, 140, 1, 0x000000);
-  draw_rect(win->x + 10, win->y + 10, 1, 25, 0x000000);
-  draw_rect(win->x + 150, win->y + 10, 1, 26, 0x000000);
+  // Screen
+  draw_rect(win->x + 10, win->y + 10, 180, 30, 0x000000);
+  draw_rect(win->x + 12, win->y + 12, 176, 26, 0xC0D0C0);
 
-  draw_string(win->x + 15, win->y + 15, calc_state.display, 0x000000);
+  // Draw Number
+  char buf[32];
+  int v = calc_new_entry && calc_op ? calc_acc : calc_current;
 
-  // Common btn draw
-  char *labels[] = {"7", "8", "9", "/", "4", "5", "6", "*",  "1",
-                    "2", "3", "-", "C", "0", "=", "+", "SQ", "PW"};
-
-  for (int r = 0; r < 5; r++) {
-    for (int c = 0; c < 4; c++) {
-      if (r == 4 && c > 1)
-        continue; // Only 2 btns in row 4
-
-      int idx = r * 4 + c;
-      int bx = win->x + 10 + c * 40;
-      int by = win->y + 45 + r * 40;
-
-      draw_rect(bx, by, 35, 35, 0xE0E0E0);
-      draw_rect(bx, by, 35, 1, 0xFFFFFF);
-      draw_rect(bx, by, 1, 35, 0xFFFFFF);
-      draw_rect(bx + 35, by, 1, 35, 0x000000);
-      draw_rect(bx, by + 35, 36, 1, 0x000000);
-
-      draw_string(bx + 12, by + 10, labels[idx], 0x000000);
+  if (v == 0) {
+    buf[0] = '0';
+    buf[1] = 0;
+  } else {
+    int i = 0;
+    int n = v;
+    if (n < 0) {
+      buf[0] = '-';
+      i++;
+      n = -n;
     }
+    char tmp[16];
+    int ti = 0;
+    while (n > 0) {
+      tmp[ti++] = (n % 10) + '0';
+      n /= 10;
+    }
+    while (ti > 0)
+      buf[i++] = tmp[--ti];
+    buf[i] = 0;
+  }
+
+  draw_string(win->x + 20, win->y + 20, buf, 0x000000);
+
+  // Buttons
+  char *labels = "789/456*123-C0=+SRP "; // S, R, P(unused), space
+  // Actually drawing logic:
+
+  // Main Grid
+  for (int r = 0; r < 4; r++) {
+    for (int c = 0; c < 4; c++) {
+      int bx = win->x + 10 + c * 35;
+      int by = win->y + 50 + r * 35;
+      char lbl[2] = {labels[r * 4 + c], 0};
+      draw_rect(bx, by, 30, 30, 0x808080);
+      draw_rect(bx, by, 28, 28, 0xFFFFFF);
+      draw_string(bx + 10, by + 10, lbl, 0x000000);
+    }
+  }
+  // Sci Cols
+  draw_rect(win->x + 150, win->y + 50, 30, 30, 0x808080);
+  draw_rect(win->x + 150, win->y + 50, 28, 28, 0xFFFFFF);
+  draw_string(win->x + 160, win->y + 60, "S", 0); // Sq
+
+  draw_rect(win->x + 150, win->y + 85, 30, 30, 0x808080);
+  draw_rect(win->x + 150, win->y + 85, 28, 28, 0xFFFFFF);
+  draw_string(win->x + 160, win->y + 95, "R", 0); // Root
+}
+
+void start_calculator() {
+  calc_reset();
+  Window *w = create_window(150, 150, 200, 200, "Calc");
+  if (w) {
+    w->on_paint = calc_paint;
+    w->on_click = calc_click;
   }
 }
 // --- NOTEPAD (Enhanced with Scroll) ---
@@ -801,7 +753,7 @@ void note_key(Window *win, char c) {
 // --- PAINT APP ---
 #define PAINT_W 200
 #define PAINT_H 150
-static uint8_t paint_canvas[PAINT_W * PAINT_H]; // 0 or 1 (simplistic)
+static uint8_t paint_canvas[PAINT_W * PAINT_H];
 
 void paint_reset() {
   for (int i = 0; i < PAINT_W * PAINT_H; i++)
@@ -820,34 +772,35 @@ void paint_paint(Window *win) {
   for (int y = 0; y < PAINT_H; y++) {
     for (int x = 0; x < PAINT_W; x++) {
       if (paint_canvas[y * PAINT_W + x]) {
-        // Draw pixel relative to window
-        // Optimized: draw_rect 1x1 is slow for full image, but fine for paint
-        // app scale Only draw set pixels
         int screen_x = win->x + 10 + x;
         int screen_y = win->y + 30 + y;
-        // Clip check
         if (screen_x < 1024 && screen_y < 768)
-          draw_rect(screen_x, screen_y, 2, 2, 0x000000); // 2x2 brush
+          draw_rect(screen_x, screen_y, 2, 2, 0x000000);
       }
     }
   }
-
-  draw_string(win->x + 10, win->y + 200, "Left Click to Draw. C to Clear.",
-              0x000000);
+  draw_string(win->x + 10, win->y + 190, "Drag to Draw. C: Clear", 0x000000);
 }
 
-void paint_click(Window *win, int x, int y) {
-  int cx = x - 10;
-  int cy = y - 30;
+// Unified handler for click and move
+void paint_draw_action(int lx, int ly) {
+  int cx = lx - 10;
+  int cy = ly - 30;
 
   if (cx >= 0 && cx < PAINT_W && cy >= 0 && cy < PAINT_H) {
     paint_canvas[cy * PAINT_W + cx] = 1;
-    // Simple Brush (neighbors)
     if (cx + 1 < PAINT_W)
       paint_canvas[cy * PAINT_W + cx + 1] = 1;
     if (cy + 1 < PAINT_H)
       paint_canvas[(cy + 1) * PAINT_W + cx] = 1;
   }
+}
+
+void paint_click(Window *win, int x, int y) { paint_draw_action(x, y); }
+
+void paint_mouse_move(Window *win, int x, int y, int b) {
+  if (b & 1)
+    paint_draw_action(x, y);
 }
 
 void paint_key(Window *win, char c) {
@@ -856,11 +809,11 @@ void paint_key(Window *win, char c) {
 }
 
 void start_paint() {
-  paint_reset();
-  Window *w = create_window(250, 250, 240, 230, "Paint");
+  Window *w = create_window(250, 250, 240, 220, "Paint");
   if (w) {
     w->on_paint = paint_paint;
     w->on_click = paint_click;
+    w->on_mouse_move = paint_mouse_move;
     w->on_key = paint_key;
   }
 }
@@ -868,14 +821,14 @@ void start_paint() {
 // --- ABOUT APP ---
 
 void about_paint(Window *win) {
-  draw_rect(win->x + 20, win->y + 40, 60, 60, 0x000000); // Logo block
-  draw_rect(win->x + 22, win->y + 42, 56, 56, 0xFFFFFF); // Inner
-  draw_rect(win->x + 35, win->y + 55, 30, 30, 0x404040); // Gem Shape
+  draw_rect(win->x + 20, win->y + 40, 60, 60, 0x000000);
+  draw_rect(win->x + 22, win->y + 42, 56, 56, 0xFFFFFF);
+  draw_rect(win->x + 35, win->y + 55, 30, 30, 0x404040);
 
-  draw_string(win->x + 100, win->y + 40, "GemOS Experimental", 0x000000);
+  draw_string(win->x + 100, win->y + 40, "GemOS 1.0", 0x000000);
   draw_string(win->x + 100, win->y + 60, "GemCore Kernel / GemShell", 0x000000);
   draw_string(win->x + 100, win->y + 80, "(c) 2026 GemOS Project", 0x000000);
-  draw_string(win->x + 100, win->y + 110, "A research platform.", 0x808080);
+  draw_string(win->x + 100, win->y + 110, "Stable R1 Release", 0x808080);
 }
 
 void start_about() {
@@ -897,59 +850,66 @@ void start_snake() {
 void start_notepad() {
   note_state.cursor = 0;
   note_state.buffer[0] = 0;
-  note_state.scroll_y = 0; // Initialize scroll
+  note_state.scroll_y = 0;
   Window *w = create_window(50, 400, 300, 200, "Notes");
   if (w) {
     w->on_paint = note_paint;
     w->on_key = note_key;
   }
 }
-// --- SETTINGS ---
-// Defines for colors in window.c are macros, so we can't change them at
-// runtime easily unless we move to variables. But window.c uses hardcoded
-// CL_DESKTOP in loop. To implement Settings "Change Color", we need
-// `desktop_color` variable in window.c and extern here. I will just add an
-// extern in window.c, and define it here (or vice versa). Actually window.c
-// has logic. I will define `extern int desktop_bgcolor;` in window.c and
-// define it in `gui.c` or here? Let's assume window.c has `int
-// desktop_bgcolor = ...` and we extern it here. But since I can't edit
-// window.c in the same turn easily to add the variable without another
-// generic edit... I will just make Settings a stub info page for now, or
-// cheat with a pointer poke if I knew address (unsafe). Better approach:
-// Implementing Settings visual mock-up.
+
+// --- SETTINGS APP ---
+// Global externs from window.h
+// extern uint32_t theme_desktop;
 
 void settings_paint(Window *win) {
-  draw_string(win->x + 20, win->y + 40, "Theme: Slate Blue (Default)",
-              0x000000);
+  draw_string(win->x + 20, win->y + 35, "Select System Theme:", 0x000000);
 
-  draw_rect(win->x + 20, win->y + 70, 20, 20, 0x406080); // Slate
-  draw_string(win->x + 50, win->y + 76, "Slate", 0x000000);
+  // Theme 1: Slate
+  draw_rect(win->x + 20, win->y + 60, 30, 30, 0x405060);
+  draw_string(win->x + 60, win->y + 70, "Professional Slate", 0x000000);
 
-  draw_rect(win->x + 20, win->y + 100, 20, 20, 0x004000); // Green
-  draw_string(win->x + 50, win->y + 106, "Forest", 0x000000);
+  // Theme 2: Forest
+  draw_rect(win->x + 20, win->y + 100, 30, 30, 0x004000);
+  draw_string(win->x + 60, win->y + 110, "Forest Green", 0x000000);
 
-  draw_rect(win->x + 20, win->y + 130, 20, 20, 0x600000); // Red
-  draw_string(win->x + 50, win->y + 136, "Crimson", 0x000000);
+  // Theme 3: Crimson
+  draw_rect(win->x + 20, win->y + 140, 30, 30, 0x600000);
+  draw_string(win->x + 60, win->y + 150, "Crimson Red", 0x000000);
 
-  draw_string(win->x + 20, win->y + 170, "(Click functionality coming soon)",
-              0x808080);
+  // Theme 4: High Contrast
+  draw_rect(win->x + 20, win->y + 180, 30, 30, 0x000000);
+  draw_string(win->x + 60, win->y + 190, "High Contrast", 0x000000);
+}
+
+void settings_click(Window *win, int x, int y) {
+  // Check buttons
+  if (x >= 20 && x <= 50) {
+    if (y >= 60 && y <= 90)
+      theme_desktop = 0x405060;
+    if (y >= 100 && y <= 130)
+      theme_desktop = 0x004000;
+    if (y >= 140 && y <= 170)
+      theme_desktop = 0x600000;
+    if (y >= 180 && y <= 210)
+      theme_desktop = 0x000000;
+  }
 }
 
 void start_settings() {
-  Window *w = create_window(300, 300, 250, 200, "Settings");
+  Window *w = create_window(300, 300, 250, 250, "Settings");
   if (w) {
     w->on_paint = settings_paint;
+    w->on_click = settings_click;
   }
 }
 
 #include "gemlang.h"
 
-// Update App Init
 void init_apps() {
   start_about();
-  load_extension_apps(); // Load scripts
+  load_extension_apps();
 }
 
-// Global functions for menu
 void start_paint_wrapper() { start_paint(); }
 void start_settings_wrapper() { start_settings(); }

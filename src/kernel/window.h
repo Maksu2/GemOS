@@ -22,11 +22,18 @@ typedef struct Window {
 
   WindowPaintCallback on_paint;
   WindowKeyCallback on_key;
-  void (*on_click)(struct Window *win, int x, int y); // New: Click handler
+  void (*on_click)(struct Window *win, int x, int y);
+  void (*on_mouse_move)(struct Window *win, int x, int y, int b);
 
-  // App specific data
+  // App specific data / For internal state (e.g. minimized)
   void *extra_data;
 } Window;
+
+// Theme Globals
+extern uint32_t theme_desktop;
+extern uint32_t theme_window_bg;
+extern uint32_t theme_title_bg;
+extern uint32_t theme_text;
 
 void init_window_manager();
 Window *create_window(int x, int y, int w, int h, char *title);

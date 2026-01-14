@@ -21,12 +21,13 @@ $CC -m32 -ffreestanding -c src/kernel/idt.c -o build/idt.o
 $CC -m32 -ffreestanding -c src/kernel/handlers.c -o build/handlers.o
 $CC -m32 -ffreestanding -c src/kernel/window.c -o build/window.o
 $CC -m32 -ffreestanding -c src/kernel/apps.c -o build/apps.o
+$CC -m32 -ffreestanding -c src/drivers/rtc.c -o build/rtc.o
 $CC -m32 -ffreestanding -c src/kernel/gemlang.c -o build/gemlang.o
 
 # Link Kernel
 # We link to 0x1000 because bootloader loads us there.
 # --oformat binary outputs raw machine code.
-$LD -m elf_i386 -o build/kernel.bin -Ttext 0x10000 --oformat binary build/kernel_entry.o build/interrupts.o build/kernel.o build/idt.o build/handlers.o build/video.o build/window.o build/apps.o build/gemlang.o
+$LD -m elf_i386 -o build/kernel.bin -Ttext 0x10000 --oformat binary build/kernel_entry.o build/interrupts.o build/kernel.o build/idt.o build/handlers.o build/video.o build/window.o build/apps.o build/gemlang.o build/rtc.o
 
 # Create OS Image
 cat build/boot.bin build/kernel.bin > build/os.img
