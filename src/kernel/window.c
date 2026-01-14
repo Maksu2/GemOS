@@ -194,11 +194,11 @@ void desktop_paint() {
   draw_rect(0, 0, screen_width, 24, CL_WHITE);
   draw_rect(0, 24, screen_width, 1, 0x000000);
 
-  // System Menu
+  // System Menu (GemOS)
   bool sys_h = (mx >= 5 && mx <= 65 && my < 24) || menu_sys_open_state;
   if (sys_h)
     draw_rect(5, 2, 60, 20, CL_HIGHLIGHT);
-  draw_string(10, 6, "System", 0x000000);
+  draw_string(10, 6, "GemOS", 0x000000);
 
   // Apps Menu
   bool app_h = (mx >= 70 && mx <= 120 && my < 24) || menu_apps_open_state;

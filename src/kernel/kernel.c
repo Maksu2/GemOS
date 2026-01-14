@@ -18,7 +18,7 @@ void show_boot_screen() {
   // Apple-ish shape or just text "OS"
   draw_rect(512 - 20, 384 - 30, 40, 40, 0x000000);
 
-  draw_string(512 - 60, 384 + 60, "Starting CustomOS...", 0x000000);
+  draw_string(512 - 60, 384 + 60, "Starting GemOS...", 0x000000);
 
   // 3. Loading Bar
   draw_rect(512 - 100, 384 + 100, 200, 20, 0x000000); // Border

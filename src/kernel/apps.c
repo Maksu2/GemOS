@@ -868,14 +868,18 @@ void start_paint() {
 // --- ABOUT APP ---
 
 void about_paint(Window *win) {
-  draw_rect(win->x + 20, win->y + 40, 60, 60, 0x000000); // "Apple" Logo block
-  draw_string(win->x + 100, win->y + 40, "CustomOS System 1.0", 0x000000);
-  draw_string(win->x + 100, win->y + 60, "(c) 2026 Developer", 0x000000);
-  draw_string(win->x + 100, win->y + 80, "Memory: 1024 MB", 0x000000);
+  draw_rect(win->x + 20, win->y + 40, 60, 60, 0x000000); // Logo block
+  draw_rect(win->x + 22, win->y + 42, 56, 56, 0xFFFFFF); // Inner
+  draw_rect(win->x + 35, win->y + 55, 30, 30, 0x404040); // Gem Shape
+
+  draw_string(win->x + 100, win->y + 40, "GemOS Experimental", 0x000000);
+  draw_string(win->x + 100, win->y + 60, "GemCore Kernel / GemShell", 0x000000);
+  draw_string(win->x + 100, win->y + 80, "(c) 2026 GemOS Project", 0x000000);
+  draw_string(win->x + 100, win->y + 110, "A research platform.", 0x808080);
 }
 
 void start_about() {
-  Window *w = create_window(250, 200, 400, 200, "About This System");
+  Window *w = create_window(250, 200, 400, 200, "About GemOS");
   if (w) {
     w->on_paint = about_paint;
   }
