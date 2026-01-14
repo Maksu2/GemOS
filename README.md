@@ -2,7 +2,7 @@
 
 **GemOS** is a research operating system designed to explore the symbiosis between the kernel, the graphical shell, and the application runtime. Built from scratch in C and Assembly, it implements a vertically integrated stack where the OS provides not just system calls, but a high-level, declarative application language (**Gem**) as a native primitive.
 
-![GemOS Shell](/docs/assets/screenshot.png) 
+![GemOS Shell](docs/screenshot.png) 
 *(Note: Add a screenshot if available, or remove this line)*
 
 ## Project Philosophy
