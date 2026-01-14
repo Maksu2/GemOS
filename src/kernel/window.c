@@ -321,6 +321,9 @@ void desktop_paint() {
 
   // 6. Cursor
   draw_cursor(mx, my);
+
+  // 7. Swap
+  video_swap();
 }
 
 // --- API Wrappers for external ---
