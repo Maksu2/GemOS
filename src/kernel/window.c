@@ -336,41 +336,53 @@ extern void start_minesweeper();
 extern void start_settings_wrapper();
 extern void start_about();
 
+// Consolidated Input Handler with Capture Logic
 void wm_handle_mouse(int x, int y, int b) {
   mx = x;
   my = y;
   static int prev_b = 0;
-  int click = (b & 1) && !(prev_b & 1); // Down edge
-  int held = (b & 1);
+  int click = (b & 1) && !(prev_b & 1);   // Click Down
+  int held = (b & 1);                     // Button Held
+  int release = !(b & 1) && (prev_b & 1); // Release
   prev_b = b;
 
-  // Release drag
-  if (drag_window && !held)
-    drag_window = 0;
+  // 1. DRAG CAPTURE (Priority Zero)
+  // If we are dragging a window, it owns the mouse ABSOLUTELY.
+  // No other window can receive events.
+  if (drag_window) {
+    if (!held) {
+      // Mouse Up -> End Drag
+      drag_window = 0;
+    } else {
+      // Mouse Move -> Update Window
+      drag_window->x = x - drag_offset_x;
+      drag_window->y = y - drag_offset_y;
 
-  // 1. Menu Interactions
-  if (click) {
-    // ... (Same logic for menu clicks, but updated for coordinates) ...
-    // Shortcuts for brevity in re-write:
-    if (menu_sys_open_state) {
-      if (y >= 25 && y < 50) {
-        start_about();
-        menu_sys_open_state = 0;
-        return;
-      }
-      if (y >= 50 && y < 75) {
-        start_settings_wrapper();
-        menu_sys_open_state = 0;
-        return;
-      }
-      if (y >= 75 && y < 100) { /* restart */
-        menu_sys_open_state = 0;
-        return;
-      }
-      menu_sys_open_state = 0; // Close if clicked outside
+      // Keep inside screen bounds? Optional but good.
+      // if (drag_window->x < 0) drag_window->x = 0;
     }
+    return; // STOP HERE. Do not process menus, other windows, etc.
+  }
+
+  // 2. System UI (Menus) - Only if NOT dragging
+  // Check Menus (Top Bar)
+  if (click) {
+    if (menu_sys_open_state) {
+      if (y >= 25 && y < 100) {
+        // Dispatch sys menu action
+        if (y < 50)
+          start_about();
+        else if (y < 75)
+          start_settings_wrapper();
+        // else restart (stub)
+        menu_sys_open_state = 0;
+        return;
+      }
+      menu_sys_open_state = 0; // Click outside = close
+    }
+
     if (menu_apps_open_state) {
-      if (mx >= 70 && mx <= 190 && y >= 25 && y < 25 + 6 * 25) {
+      if (mx >= 70 && mx <= 190 && y >= 25) {
         int idx = (y - 25) / 25;
         if (idx == 0)
           start_notepad();
@@ -391,7 +403,7 @@ void wm_handle_mouse(int x, int y, int b) {
     }
   }
 
-  // 2. Bar Clicks
+  // 3. Top Bar Checks
   if (click && y < 24) {
     if (x > 5 && x < 65) {
       menu_sys_open_state = !menu_sys_open_state;
@@ -405,18 +417,17 @@ void wm_handle_mouse(int x, int y, int b) {
     }
   }
 
-  // 3. Taskbar
+  // 4. Taskbar
   if (click && y > screen_height - 36) {
-    // Icon logic: tx=6, step=36
     Window *cur = windows_head;
     int tx = 6;
     while (cur) {
       if (x >= tx && x < tx + 32) {
-        if (cur->extra_data == (void *)1) {
+        if (cur->extra_data == (void *)1) { // Minimized
           cur->extra_data = 0;
           bring_to_front(cur);
         } else if (cur == focused_window) {
-          cur->extra_data = (void *)1;
+          cur->extra_data = (void *)1; // Minimize
           focused_window = 0;
         } else {
           bring_to_front(cur);
@@ -426,63 +437,64 @@ void wm_handle_mouse(int x, int y, int b) {
       tx += 36;
       cur = cur->next;
     }
+    return;
   }
 
-  // 4. Windows (Click & Drag & Paint-Draw)
+  // 5. Window Hit Testing
+  // We iterate from head (bottom) to find Z-order?
+  // Actually windows_head is usually bottom, next is top?
+  // Wait, commonly linked list head is top or bottom.
+  // In `draw_windows_recursive`, it draws head first?
+  // If `draw_windows_recursive(windows_head)` draws recursively,
+  // normally standard implementation: head is bottom.
+  // BUT for hit testing, we want front-most.
+  // We need to iterate REVERSE or if we only have forward list, we iterate all
+  // and keep "best candidate". OR, `bring_to_front` moves to tail? Let's assume
+  // naive z-order (list order). If head is bottom, we must find the LAST window
+  // in the list that contains the point.
+
+  Window *hit_win = 0;
   Window *cur = windows_head;
   while (cur) {
-    if (cur->extra_data == (void *)1) {
-      cur = cur->next;
-      continue;
-    } // skip min
-
-    bool hit = (x >= cur->x && x <= cur->x + cur->width && y >= cur->y &&
-                y <= cur->y + cur->height);
-
-    if (hit) {
-      if (click)
-        bring_to_front(cur);
-
-      // Local Coords
-      int lx = x - cur->x;
-      int ly = y - cur->y;
-
-      // Title Bar
-      if (ly < 24) {
-        if (click) {
-          if (lx > cur->width - 20)
-            close_window(cur);
-          else {
-            drag_window = cur;
-            drag_offset_x = lx;
-            drag_offset_y = ly;
-          }
-        }
-      } else {
-        // Content Area
-        // Fire On Click
-        if (click && cur->on_click)
-          cur->on_click(cur, lx, ly);
-
-        // Fire Mouse Move (Dragging)
-        // If button held, and we are NOT dragging window
-        if (held && !drag_window && cur->on_mouse_move) {
-          cur->on_mouse_move(cur, lx, ly, b);
-        }
+    if (cur->extra_data != (void *)1) { // if not min
+      if (x >= cur->x && x <= cur->x + cur->width && y >= cur->y &&
+          y <= cur->y + cur->height) {
+        hit_win = cur; // Potential hit, keep looking for one on top
       }
-      // Return only if click?
-      // If just moving mouse over app, we might want to propagate?
-      // For paint, we need to return if we consumed interaction so we don't
-      // click window behind? Yes.
-      return;
     }
     cur = cur->next;
   }
 
-  // Drag Window
-  if (drag_window) {
-    drag_window->x = x - drag_offset_x;
-    drag_window->y = y - drag_offset_y;
+  if (hit_win) {
+    // We hit a window.
+    if (click)
+      bring_to_front(hit_win);
+
+    int lx = x - hit_win->x;
+    int ly = y - hit_win->y;
+
+    // Input Routing
+    if (ly < 24) {
+      // Title Bar
+      if (click) {
+        if (lx > hit_win->width - 20)
+          close_window(hit_win);
+        else {
+          // START DRAG
+          drag_window = hit_win;
+          drag_offset_x = lx;
+          drag_offset_y = ly;
+        }
+      }
+    } else {
+      // Content
+      if (click && hit_win->on_click)
+        hit_win->on_click(hit_win, lx, ly);
+      // Hover/Drag inside content (Paint)
+      // Pass 'held' state so Paint can draw
+      if (hit_win->on_mouse_move)
+        hit_win->on_mouse_move(hit_win, lx, ly, b);
+    }
   }
 }
 
