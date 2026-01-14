@@ -6,47 +6,71 @@
 
 extern void init_mouse();
 
-void show_boot_screen() {
-  // 1. Draw White Background
-  video_clear(0xFFFFFF);
-
+// Boot Status Helper
+void draw_boot_progress(char *msg, int percent) {
   int cx = screen_width / 2;
   int cy = screen_height / 2;
 
-  // 2. Draw "System Logo" (Rectangle + Text)
-  draw_rect(cx - 50, cy - 60, 100, 100, 0x000000); // Logo Box
-  draw_rect(cx - 48, cy - 58, 96, 96, 0xFFFFFF);   // Inner White
+  // Clear Text Area
+  draw_rect(cx - 100, cy + 130, 200, 20, 0xFFFFFF);
 
-  // Apple-ish shape or just text "OS"
+  // Draw Status Text
+  int len = 0;
+  while (msg[len])
+    len++;
+  draw_string(cx - (len * 8) / 2, cy + 130, msg, 0x000000);
+
+  // Update Bar
+  int fill = (percent * 196) / 100;
+  draw_rect(cx - 98, cy + 102, fill, 16, 0x000000);
+
+  video_swap();
+
+  // Minimal delay for visual effect
+  for (int w = 0; w < 500000; w++)
+    asm volatile("nop");
+}
+
+void show_boot_logo() {
+  video_clear(0xFFFFFF);
+  int cx = screen_width / 2;
+  int cy = screen_height / 2;
+
+  // System Logo
+  draw_rect(cx - 50, cy - 60, 100, 100, 0x000000);
+  draw_rect(cx - 48, cy - 58, 96, 96, 0xFFFFFF);
   draw_rect(cx - 20, cy - 30, 40, 40, 0x000000);
 
   draw_string(cx - 60, cy + 60, "Starting GemOS...", 0x000000);
 
-  // 3. Loading Bar
-  draw_rect(cx - 100, cy + 100, 200, 20, 0x000000); // Border
-  draw_rect(cx - 98, cy + 102, 196, 16, 0xFFFFFF);  // Empty
+  // Loading Bar Border
+  draw_rect(cx - 100, cy + 100, 200, 20, 0x000000);
+  draw_rect(cx - 98, cy + 102, 196, 16, 0xFFFFFF);
 
   video_swap();
-
-  // Simulate Loading
-  for (int i = 0; i < 196; i += 2) {
-    draw_rect(cx - 98, cy + 102, i, 16, 0x000000); // Fill
-    video_swap();
-    // Busy wait delay
-    for (int w = 0; w < 1000000; w++)
-      asm volatile("nop");
-  }
 }
 
 void kernel_main() {
   init_video();
+  show_boot_logo();
+
+  draw_boot_progress("Initializing IDT...", 10);
   init_idt();
+
+  draw_boot_progress("Initializing Mouse...", 30);
   init_mouse();
 
-  show_boot_screen(); // Call the new boot screen function
-
+  draw_boot_progress("Starting Window Manager...", 60);
   init_window_manager();
+
+  draw_boot_progress("Loading Applications...", 80);
   init_apps();
+
+  draw_boot_progress("Starting Desktop...", 100);
+
+  // Final small wait
+  for (int w = 0; w < 2000000; w++)
+    asm volatile("nop");
 
   // Start clean with just About
   start_about();
@@ -54,15 +78,5 @@ void kernel_main() {
   // Main Loop
   while (1) {
     desktop_paint();
-
-    // Simple delay to cap FPS?
-    // For now just spin a bit or let it run max.
-    // Running max in QEMU might use 100% CPU but it's fine.
-    // No delay - run at max FPS for responsiveness
-    // asm volatile("hlt"); // Use HLT to save CPU if IRQ driven, but we need
-    // paint loop.
-
-    // Interrupts (keyboard/mouse) will fire and update state.
-    // `desktop_paint` reads that state and draws.
   }
 }

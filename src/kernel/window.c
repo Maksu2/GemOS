@@ -221,7 +221,7 @@ void desktop_paint() {
   static int h = 0, m = 0, s = 0;
 
   ticks++;
-  if (ticks % 100 == 1) { // Offset 1 to avoid startup block?
+  if (ticks > 300 && ticks % 100 == 1) { // Wait for system stability
     rtc_get_time(&h, &m, &s);
   }
 
