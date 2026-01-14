@@ -274,21 +274,29 @@ void desktop_paint() {
 
   // 6. Menu Overlay
   if (menu_sys_open_state) {
-    draw_rect(5, 24, 100, 50, 0xFFFFFF);
+    draw_rect(5, 24, 100, 80, 0xFFFFFF); // Taller for 3 items
     draw_rect(5, 24, 100, 1, 0x000000);
-    draw_rect(5, 74, 100, 1, 0x000000);
-    draw_rect(5, 24, 1, 50, 0x000000);
-    draw_rect(104, 24, 1, 50, 0x000000);
+    draw_rect(5, 104, 100, 1, 0x000000); // Bottom boundary
+    draw_rect(5, 24, 1, 80, 0x000000);
+    draw_rect(104, 24, 1, 80, 0x000000);
 
+    // 1. About
     bool h1 = (mx >= 5 && mx <= 105 && my >= 25 && my < 45);
     if (h1)
       draw_rect(6, 25, 98, 20, CL_HIGHLIGHT);
-    draw_string(10, 30, "About", 0x000000);
+    draw_string(10, 30, "About GemOS", 0x000000);
 
+    // 2. Settings
     bool h2 = (mx >= 5 && mx <= 105 && my >= 45 && my < 65);
     if (h2)
       draw_rect(6, 45, 98, 20, CL_HIGHLIGHT);
-    draw_string(10, 50, "Restart", 0x000000);
+    draw_string(10, 50, "Settings", 0x000000);
+
+    // 3. Restart
+    bool h3 = (mx >= 5 && mx <= 105 && my >= 65 && my < 85);
+    if (h3)
+      draw_rect(6, 65, 98, 20, CL_HIGHLIGHT);
+    draw_string(10, 70, "Restart", 0x000000);
   }
 
   if (menu_apps_open_state) {
@@ -331,12 +339,21 @@ void wm_handle_mouse(int x, int y, int b) {
   // Menu Click handling (Global Overlay)
   if (click) {
     if (menu_sys_open_state) {
+      // About
       if (x >= 5 && x <= 105 && y >= 25 && y < 45) {
         start_about();
         menu_sys_open_state = false;
         return;
       }
-      if (x >= 5 && x <= 105 && y >= 45 && y < 65) { /* Reset */
+      // Settings
+      if (x >= 5 && x <= 105 && y >= 45 && y < 65) {
+        start_settings_wrapper();
+        menu_sys_open_state = false;
+        return;
+      }
+      // Restart (offset +20)
+      if (x >= 5 && x <= 105 && y >= 65 && y < 85) {
+        // Restart logic (or just close for now/stub)
         menu_sys_open_state = false;
         return;
       }
