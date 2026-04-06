@@ -42,6 +42,8 @@ int paging_map_page(page_directory_t *directory, uintptr_t virtual_address,
                     uintptr_t physical_address, uint32_t flags);
 int paging_map_range(page_directory_t *directory, uintptr_t virtual_address,
                      uintptr_t physical_address, size_t length, uint32_t flags);
+int paging_update_page_flags(page_directory_t *directory, uintptr_t virtual_address,
+                             uint32_t flags);
 void paging_unmap_page(page_directory_t *directory, uintptr_t virtual_address);
 void paging_switch_directory(page_directory_t *directory);
 int paging_is_user_range_mapped(page_directory_t *directory, uintptr_t address,

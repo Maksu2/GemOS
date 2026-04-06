@@ -109,7 +109,7 @@ static void terminal_open(void) {
 
 /* Init callback */
 static void terminal_init(void) {
-  terminal_app.name = "Terminal";
+  terminal_app.name = "Log Viewer";
   terminal_app.icon = &icon_terminal;
   terminal_app.init = NULL;
   terminal_app.open = terminal_open;

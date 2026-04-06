@@ -57,6 +57,7 @@ CFLAGS += -Wall -Wextra -Werror
 CFLAGS += -O2 -g
 CFLAGS += -I. -Iinclude
 CFLAGS += -mno-sse -mno-sse2 -mno-mmx
+USERLAND_CFLAGS := $(filter-out -g,$(CFLAGS))
 
 # Linker flags
 LDFLAGS := -m elf_i386 -T linker.ld -nostdlib
@@ -73,14 +74,18 @@ OS_IMAGE := $(BUILD_DIR)/gemos.img
 USER_SMOKE_OBJ := $(BUILD_DIR)/usrsmoke_user.o
 USER_SMOKE_ELF := $(BUILD_DIR)/usrsmoke.elf
 USER_SMOKE_BLOB := $(BUILD_DIR)/usrsmoke_blob.o
+UTERM_CRT_OBJ := $(BUILD_DIR)/uterm_crt0.o
+UTERM_OBJ := $(BUILD_DIR)/uterm_user.o
+UTERM_ELF := $(BUILD_DIR)/uterm.elf
+UTERM_BLOB := $(BUILD_DIR)/uterm_blob.o
 
 # Source files
 # Source files
-KERNEL_SOURCES := $(KERNEL_DIR)/kernel.c $(KERNEL_DIR)/gdt.c $(KERNEL_DIR)/idt.c $(KERNEL_DIR)/isr.c $(KERNEL_DIR)/scheduler.c $(KERNEL_DIR)/process.c $(KERNEL_DIR)/elf.c $(KERNEL_DIR)/syscall.c $(KERNEL_DIR)/tests.c tests/visual_test.c tests/window_test.c tests/font_test.c $(KERNEL_DIR)/heap.c $(KERNEL_DIR)/event.c $(KERNEL_DIR)/memory/paging.c \
+KERNEL_SOURCES := $(KERNEL_DIR)/kernel.c $(KERNEL_DIR)/console.c $(KERNEL_DIR)/gdt.c $(KERNEL_DIR)/idt.c $(KERNEL_DIR)/isr.c $(KERNEL_DIR)/scheduler.c $(KERNEL_DIR)/process.c $(KERNEL_DIR)/elf.c $(KERNEL_DIR)/syscall.c $(KERNEL_DIR)/tests.c tests/visual_test.c tests/window_test.c tests/font_test.c $(KERNEL_DIR)/heap.c $(KERNEL_DIR)/event.c $(KERNEL_DIR)/memory/paging.c \
                   $(KERNEL_DIR)/gfx/rect.c $(KERNEL_DIR)/gfx/context.c $(KERNEL_DIR)/gfx/primitives.c $(KERNEL_DIR)/gfx/font/font.c $(KERNEL_DIR)/gfx/font/glyphs.c $(KERNEL_DIR)/gui/desktop.c \
                   $(KERNEL_DIR)/gui/window/window.c $(KERNEL_DIR)/gui/wm/wm.c $(KERNEL_DIR)/gui/topbar/topbar.c \
                   $(KERNEL_DIR)/ui/ui_scale.c $(KERNEL_DIR)/ui/menu.c $(KERNEL_DIR)/ui/dock/dock.c $(KERNEL_DIR)/ui/cursor.c $(KERNEL_DIR)/ui/focus.c \
-                  $(KERNEL_DIR)/app/app_manager.c apps/testapp/testapp.c apps/about/about.c apps/terminal/terminal.c \
+                  $(KERNEL_DIR)/app/app_manager.c apps/testapp/testapp.c apps/about/about.c apps/terminal/terminal.c apps/terminal/uterm_launcher.c \
                   apps/textedit/textedit.c apps/textedit/inputbox.c apps/textedit/filepicker.c \
                   apps/explorer/explorer.c \
                   $(KERNEL_DIR)/fs/gemfs.c \
@@ -101,7 +106,7 @@ DRIVER_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(notdir $(DRIVER_SOURCES)))
 LIB_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(notdir $(LIB_SOURCES)))
 ASM_OBJS := $(patsubst %.S,$(BUILD_DIR)/%.o,$(notdir $(ASM_SOURCES)))
 
-ALL_OBJS := $(ASM_OBJS) $(KERNEL_OBJS) $(DRIVER_OBJS) $(LIB_OBJS) $(BUILD_DIR)/font_data.o $(USER_SMOKE_BLOB)
+ALL_OBJS := $(ASM_OBJS) $(KERNEL_OBJS) $(DRIVER_OBJS) $(LIB_OBJS) $(BUILD_DIR)/font_data.o $(USER_SMOKE_BLOB) $(UTERM_BLOB)
 
 # =============================================================================
 # Targets
@@ -187,12 +192,26 @@ $(BUILD_DIR)/%.o: $(KERNEL_DIR)/%.S | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(USER_SMOKE_OBJ): $(USERLAND_DIR)/usrsmoke.S | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(USERLAND_CFLAGS) -c $< -o $@
 
 $(USER_SMOKE_ELF): $(USER_SMOKE_OBJ) $(USERLAND_DIR)/user_linker.ld
 	$(LD) -m elf_i386 -T $(USERLAND_DIR)/user_linker.ld -nostdlib $(USER_SMOKE_OBJ) -o $@
+	$(OBJCOPY) --strip-all $@
 
 $(USER_SMOKE_BLOB): $(USER_SMOKE_ELF)
+	$(OBJCOPY) -I binary -O elf32-i386 -B i386 $< $@
+
+$(UTERM_CRT_OBJ): $(USERLAND_DIR)/crt0.S | $(BUILD_DIR)
+	$(CC) $(USERLAND_CFLAGS) -c $< -o $@
+
+$(UTERM_OBJ): $(USERLAND_DIR)/uterm.c | $(BUILD_DIR)
+	$(CC) $(USERLAND_CFLAGS) -c $< -o $@
+
+$(UTERM_ELF): $(UTERM_CRT_OBJ) $(UTERM_OBJ) $(USERLAND_DIR)/user_linker.ld
+	$(LD) -m elf_i386 -T $(USERLAND_DIR)/user_linker.ld -nostdlib $(UTERM_CRT_OBJ) $(UTERM_OBJ) -o $@
+	$(OBJCOPY) --strip-all $@
+
+$(UTERM_BLOB): $(UTERM_ELF)
 	$(OBJCOPY) -I binary -O elf32-i386 -B i386 $< $@
 
 $(BUILD_DIR)/%.o: $(KERNEL_DIR)/font/%.c | $(BUILD_DIR)

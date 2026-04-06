@@ -109,10 +109,6 @@ void keyboard_callback(registers_t *regs) {
         key = KEY_RIGHT;
 
       if (key != 0) {
-        serial_print("[KEY] Extended: ");
-        serial_print_hex(key);
-        serial_print("\n");
-
         event_t ev;
         ev.type = EVENT_KEY_PRESS;
         ev.data.key.key_code = scancode; // Raw scancode
@@ -142,10 +138,6 @@ void keyboard_callback(registers_t *regs) {
       }
 
       if (key != 0) {
-        serial_print("[KEY] Down: ");
-        serial_putc(key);
-        serial_print("\n");
-
         event_t ev;
         ev.type = EVENT_KEY_PRESS;
         ev.data.key.key_code = scancode;

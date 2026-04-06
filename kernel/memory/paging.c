@@ -342,6 +342,37 @@ int paging_map_range(page_directory_t *directory, uintptr_t virtual_address,
   return 1;
 }
 
+int paging_update_page_flags(page_directory_t *directory, uintptr_t virtual_address,
+                             uint32_t flags) {
+  uint32_t directory_index;
+  uint32_t table_index;
+  page_table_t *table;
+  uint32_t entry_flags;
+
+  if (directory == NULL) {
+    return 0;
+  }
+
+  virtual_address = PAGE_ALIGN_DOWN(virtual_address);
+  directory_index = PAGE_DIRECTORY_INDEX((uint32_t)virtual_address);
+  table_index = PAGE_TABLE_INDEX((uint32_t)virtual_address);
+  table = paging_get_table(directory, directory_index);
+  if (table == NULL || (table->entries[table_index] & PAGE_PRESENT) == 0) {
+    return 0;
+  }
+
+  entry_flags = PAGE_PRESENT | (flags & (PAGE_WRITABLE | PAGE_USER));
+  table->entries[table_index] =
+      (table->entries[table_index] & PAGE_FRAME_MASK) | entry_flags;
+  if (flags & PAGE_USER) {
+    directory->entries[directory_index] |= PAGE_USER;
+  }
+  if (directory == current_page_directory) {
+    paging_flush_tlb(virtual_address);
+  }
+  return 1;
+}
+
 void paging_unmap_page(page_directory_t *directory, uintptr_t virtual_address) {
   uint32_t directory_index;
   uint32_t table_index;

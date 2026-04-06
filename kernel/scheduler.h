@@ -54,6 +54,7 @@ uint32_t scheduler_switch_now(uint32_t current_esp);
 void     scheduler_mark_current_zombie(int32_t exit_code);
 void     scheduler_mark_current_fault(uint32_t vector, uint32_t error,
                                       uint32_t cr2);
+int      scheduler_kill_task(uint32_t task_id);
 int      scheduler_get_current_pid(void);
 struct process *scheduler_get_current_process(void);
 const task_t *scheduler_get_current_task(void);

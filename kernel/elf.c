@@ -48,6 +48,11 @@ typedef struct {
   uint32_t p_align;
 } __attribute__((packed)) elf32_phdr_t;
 
+typedef struct {
+  uintptr_t start;
+  uintptr_t end;
+} elf_load_region_t;
+
 static uint32_t elf_save_and_disable_interrupts(void) {
   uint32_t eflags;
   __asm__ volatile("pushfl; popl %0; cli" : "=r"(eflags) : : "memory");
@@ -129,6 +134,21 @@ static int elf_validate_segment(const elf32_phdr_t *segment, size_t image_size,
   return 1;
 }
 
+static int elf_regions_overlap(elf_load_region_t a, elf_load_region_t b) {
+  return a.start < b.end && b.start < a.end;
+}
+
+static int elf_entry_in_regions(uintptr_t entry, const elf_load_region_t *regions,
+                                size_t region_count) {
+  for (size_t i = 0; i < region_count; ++i) {
+    if (entry >= regions[i].start && entry < regions[i].end) {
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
 static int elf_map_segment_pages(process_t *process, const elf32_phdr_t *segment) {
   uintptr_t segment_base = segment->p_vaddr & ~(PAGE_SIZE - 1U);
   uintptr_t segment_end =
@@ -141,7 +161,13 @@ static int elf_map_segment_pages(process_t *process, const elf32_phdr_t *segment
 
   for (uintptr_t address = segment_base; address < segment_end;
        address += PAGE_SIZE) {
-    uintptr_t frame = page_frame_alloc();
+    uintptr_t frame;
+
+    if (paging_update_page_flags(process->as.page_directory, address, flags)) {
+      continue;
+    }
+
+    frame = page_frame_alloc();
     if (frame == 0) {
       return 0;
     }
@@ -158,47 +184,49 @@ int elf_load_into_process(process_t *process, const uint8_t *image,
                           size_t image_size) {
   const elf32_ehdr_t *header = (const elf32_ehdr_t *)image;
   const elf32_phdr_t *segments;
+  elf_load_region_t load_regions[ELF_MAX_LOAD_SEGMENTS];
   uintptr_t lowest_base = 0;
   uintptr_t highest_end = 0;
+  size_t load_region_count = 0;
   uint32_t interrupt_state;
 
-  serial_print("[ELF] Enter load\n");
   if (process == NULL || image == NULL) {
-    serial_print("[ELF] Null input\n");
     return 0;
   }
-  serial_print("[ELF] Raw magic=");
-  serial_print_hex((uint32_t)header->e_ident[0]);
-  serial_print_hex((uint32_t)header->e_ident[1]);
-  serial_print_hex((uint32_t)header->e_ident[2]);
-  serial_print_hex((uint32_t)header->e_ident[3]);
-  serial_print(" type=");
-  serial_print_hex(header->e_type);
-  serial_print(" machine=");
-  serial_print_hex(header->e_machine);
-  serial_print(" phoff=");
-  serial_print_hex(header->e_phoff);
-  serial_print(" phnum=");
-  serial_print_hex(header->e_phnum);
-  serial_print(" phentsize=");
-  serial_print_hex(header->e_phentsize);
-  serial_print("\n");
   if (!elf_validate_header(header, image_size)) {
     serial_print("[ELF] Header invalid\n");
     return 0;
   }
-  serial_print("[ELF] Header OK\n");
 
   segments = (const elf32_phdr_t *)(image + header->e_phoff);
   for (uint16_t i = 0; i < header->e_phnum; ++i) {
+    elf_load_region_t current_region;
+
     if (!elf_validate_segment(&segments[i], image_size, &lowest_base, &highest_end)) {
       serial_print("[ELF] Segment validation failed\n");
       return 0;
     }
-  }
-  serial_print("[ELF] Segments OK\n");
+    if (segments[i].p_type != ELF_PHDR_TYPE_LOAD) {
+      continue;
+    }
 
-  if (header->e_entry < lowest_base || header->e_entry >= highest_end) {
+    current_region.start = segments[i].p_vaddr;
+    current_region.end = segments[i].p_vaddr + segments[i].p_memsz;
+    for (size_t j = 0; j < load_region_count; ++j) {
+      if (elf_regions_overlap(current_region, load_regions[j])) {
+        serial_print("[ELF] Overlapping PT_LOAD rejected\n");
+        return 0;
+      }
+    }
+    if (load_region_count >= ELF_MAX_LOAD_SEGMENTS) {
+      serial_print("[ELF] Too many PT_LOAD regions\n");
+      return 0;
+    }
+    load_regions[load_region_count++] = current_region;
+  }
+
+  if (header->e_entry < lowest_base || header->e_entry >= highest_end ||
+      !elf_entry_in_regions(header->e_entry, load_regions, load_region_count)) {
     serial_print("[ELF] Entry out of range\n");
     return 0;
   }
@@ -210,7 +238,6 @@ int elf_load_into_process(process_t *process, const uint8_t *image,
       return 0;
     }
   }
-  serial_print("[ELF] PT_LOAD pages mapped\n");
 
   process->user_stack_top = PAGING_USER_STACK_TOP;
   process->user_stack_bottom =
@@ -227,42 +254,25 @@ int elf_load_into_process(process_t *process, const uint8_t *image,
       return 0;
     }
   }
-  serial_print("[ELF] Stack mapped\n");
 
   interrupt_state = elf_save_and_disable_interrupts();
-  serial_print("[ELF] Switching to process CR3\n");
   paging_switch_directory(process->as.page_directory);
   for (uint16_t i = 0; i < header->e_phnum; ++i) {
     const elf32_phdr_t *segment = &segments[i];
-    uintptr_t segment_base;
-    size_t segment_span;
 
     if (segment->p_type != ELF_PHDR_TYPE_LOAD) {
       continue;
     }
 
-    segment_base = segment->p_vaddr & ~(PAGE_SIZE - 1U);
-    segment_span = (size_t)(((segment->p_vaddr + segment->p_memsz + PAGE_SIZE - 1U) &
-                             ~(PAGE_SIZE - 1U)) -
-                            segment_base);
-    memset((void *)segment_base, 0, segment_span);
+    memset((void *)(uintptr_t)segment->p_vaddr, 0, segment->p_memsz);
     memcpy((void *)(uintptr_t)segment->p_vaddr, image + segment->p_offset,
            segment->p_filesz);
   }
   paging_switch_directory(paging_get_directory());
-  serial_print("[ELF] Restored kernel CR3\n");
   elf_restore_interrupts(interrupt_state);
 
   process->entry_eip = header->e_entry;
   process->image_base = lowest_base;
   process->image_end = highest_end;
-
-  serial_print("[ELF] Loaded: entry=0x");
-  serial_print_hex((uint32_t)process->entry_eip);
-  serial_print(" base=0x");
-  serial_print_hex((uint32_t)process->image_base);
-  serial_print(" end=0x");
-  serial_print_hex((uint32_t)process->image_end);
-  serial_print("\n");
   return 1;
 }

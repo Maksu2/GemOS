@@ -2,19 +2,12 @@
 #define SYSCALL_H
 
 #include "isr.h"
+#include "../include/gemos/syscall_abi.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
-#define SYSCALL_VECTOR 0x80U
-
-enum {
-  SYS_exit = 0,
-  SYS_yield = 1,
-  SYS_debug_write = 2,
-  SYS_getpid = 3,
-  SYS_ticks_ms = 4,
-};
+#define SYSCALL_VECTOR GEMOS_SYSCALL_VECTOR
 
 void syscall_init(void);
 void syscall_interrupt_handler(registers_t *regs);

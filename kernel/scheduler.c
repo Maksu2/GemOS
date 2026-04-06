@@ -316,6 +316,21 @@ void scheduler_mark_current_fault(uint32_t vector, uint32_t error,
     tasks[current_task].state = TASK_ZOMBIE;
 }
 
+int scheduler_kill_task(uint32_t task_id) {
+    if (task_id == 0 || task_id >= MAX_TASKS) {
+        return 0;
+    }
+    if (task_id == (uint32_t)current_task) {
+        return 0;
+    }
+    if (tasks[task_id].state == TASK_UNUSED || tasks[task_id].state == TASK_ZOMBIE) {
+        return 1;
+    }
+
+    tasks[task_id].state = TASK_ZOMBIE;
+    return 1;
+}
+
 int scheduler_get_current_pid(void) {
     if (tasks[current_task].process == NULL) {
         return -1;

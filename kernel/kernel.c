@@ -4,6 +4,7 @@
 #include "../drivers/pit.h"
 #include "../drivers/serial.h"
 #include "../drivers/vbe.h"
+#include "console.h"
 #include "gdt.h"
 #include "isr.h"
 #include "process.h"
@@ -34,7 +35,7 @@
 extern uintptr_t __kernel_end;
 /* Heap budget for kernel allocations and GUI backbuffers. */
 #define HEAP_SIZE (24 * 1024 * 1024)
-#define USERLAND_MVP_AUTOSTART 1
+#define USERLAND_DEBUG_AUTOSTART 0
 
 /* Global Screen Context */
 gfx_context_t screen_ctx;
@@ -168,14 +169,12 @@ void kernel_main(void) {
   /* Initialize Cursor */
   cursor_init(&screen_ctx);
 
-  /* Initialize Window Manager via Global Screen Context */
-  wm_init(&screen_ctx);
-
   /* Initialize Subsystems */
   wm_init(&screen_ctx);
   topbar_init();
   dock_init();
   app_manager_init();
+  console_init();
 
   extern void testapp_register(void);
   testapp_register();
@@ -186,6 +185,9 @@ void kernel_main(void) {
   extern void terminal_register(void);
   terminal_register();
 
+  extern void uterm_launcher_register(void);
+  uterm_launcher_register();
+
   extern void textedit_register(void);
   textedit_register();
 
@@ -194,10 +196,12 @@ void kernel_main(void) {
 
   serial_print("[BOOT] Window Manager Active\n");
 
-#if USERLAND_MVP_AUTOSTART
+#if USERLAND_DEBUG_AUTOSTART
   if (process_seed_userland()) {
     process_spawn_user_from_file("USRSMOKE.ELF");
   }
+#else
+  process_seed_userland();
 #endif
 
   /* Main kernel loop */

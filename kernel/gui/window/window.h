@@ -32,6 +32,7 @@ typedef struct window {
 
   // App Link
   struct app *app; // Forward declared implicitly or explicit
+  void *user_data;
 
   // Graphics Context
   gfx_context_t ctx;

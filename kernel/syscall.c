@@ -1,5 +1,6 @@
 #include "syscall.h"
 
+#include "console.h"
 #include "gdt.h"
 #include "idt.h"
 #include "memory/paging.h"
@@ -8,13 +9,11 @@
 
 #include "../drivers/pit.h"
 #include "../drivers/serial.h"
+#include "../include/gemos/console_abi.h"
 #include <string.h>
 
 #define SYSCALL_DEBUG_WRITE_MAX 256U
-#define SYSCALL_EINVAL ((uint32_t)-1)
-#define SYSCALL_EFAULT ((uint32_t)-2)
-#define SYSCALL_ENOSYS ((uint32_t)-3)
-#define SYSCALL_E2BIG  ((uint32_t)-4)
+#define SYSCALL_CONSOLE_WRITE_CHUNK 128U
 
 static uint32_t pending_resume_esp = 0;
 
@@ -91,16 +90,101 @@ static uint32_t syscall_debug_write(uintptr_t user_buffer, size_t length) {
   char scratch[SYSCALL_DEBUG_WRITE_MAX + 1];
 
   if (length > SYSCALL_DEBUG_WRITE_MAX) {
-    return SYSCALL_E2BIG;
+    return (uint32_t)GEMOS_ERR_TOO_BIG;
   }
   if (!copy_from_user(scratch, (const void *)user_buffer, length)) {
-    return SYSCALL_EFAULT;
+    return (uint32_t)GEMOS_ERR_FAULT;
   }
 
   scratch[length] = '\0';
   serial_print("[USER] ");
   serial_print(scratch);
   return (uint32_t)length;
+}
+
+static uint32_t syscall_console_open(uintptr_t user_title, uint32_t cols,
+                                     uint32_t rows, uint32_t flags) {
+  process_t *process = syscall_current_process();
+  char title[GEMOS_CONSOLE_MAX_TITLE + 1];
+
+  if (process == NULL) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+
+  title[0] = '\0';
+  if (user_title != 0 &&
+      !copy_user_string(title, (const char *)user_title, sizeof(title))) {
+    return (uint32_t)GEMOS_ERR_FAULT;
+  }
+
+  return (uint32_t)console_open(process->pid, title, cols, rows, flags);
+}
+
+static uint32_t syscall_console_write(uint32_t handle, uintptr_t user_buffer,
+                                      size_t length) {
+  process_t *process = syscall_current_process();
+  char scratch[SYSCALL_CONSOLE_WRITE_CHUNK];
+  size_t offset = 0;
+  int total_written = 0;
+
+  if (process == NULL || user_buffer == 0) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+  if (length == 0) {
+    return 0;
+  }
+  while (offset < length) {
+    size_t chunk = length - offset;
+    int write_result;
+
+    if (chunk > sizeof(scratch)) {
+      chunk = sizeof(scratch);
+    }
+    if (!copy_from_user(scratch, (const void *)(user_buffer + offset), chunk)) {
+      return (uint32_t)GEMOS_ERR_FAULT;
+    }
+
+    write_result = console_write(process->pid, (int)handle, scratch, chunk);
+    if (write_result < 0) {
+      return (uint32_t)write_result;
+    }
+
+    total_written += write_result;
+    offset += chunk;
+  }
+
+  return (uint32_t)total_written;
+}
+
+static uint32_t syscall_console_poll_event(uint32_t handle,
+                                           uintptr_t user_event_ptr) {
+  process_t *process = syscall_current_process();
+  gemos_console_event_t event;
+  int poll_result;
+
+  if (process == NULL || user_event_ptr == 0) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+
+  poll_result = console_poll_event(process->pid, (int)handle, &event);
+  if (poll_result <= 0) {
+    return (uint32_t)poll_result;
+  }
+  if (!copy_to_user((void *)user_event_ptr, &event, sizeof(event))) {
+    return (uint32_t)GEMOS_ERR_FAULT;
+  }
+
+  return 1;
+}
+
+static uint32_t syscall_console_clear(uint32_t handle) {
+  process_t *process = syscall_current_process();
+
+  if (process == NULL) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+
+  return (uint32_t)console_clear(process->pid, (int)handle);
 }
 
 void syscall_interrupt_handler(registers_t *regs) {
@@ -124,8 +208,23 @@ void syscall_interrupt_handler(registers_t *regs) {
   case SYS_ticks_ms:
     regs->eax = (uint32_t)timer_get_ticks();
     break;
+  case SYS_console_open:
+    regs->eax = syscall_console_open((uintptr_t)regs->ebx, regs->ecx, regs->edx,
+                                     regs->esi);
+    break;
+  case SYS_console_write:
+    regs->eax = syscall_console_write(regs->ebx, (uintptr_t)regs->ecx,
+                                      (size_t)regs->edx);
+    break;
+  case SYS_console_poll_event:
+    regs->eax =
+        syscall_console_poll_event(regs->ebx, (uintptr_t)regs->ecx);
+    break;
+  case SYS_console_clear:
+    regs->eax = syscall_console_clear(regs->ebx);
+    break;
   default:
-    regs->eax = SYSCALL_ENOSYS;
+    regs->eax = (uint32_t)GEMOS_ERR_NOSYS;
     break;
   }
 }

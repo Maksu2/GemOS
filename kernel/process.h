@@ -38,6 +38,7 @@ typedef struct process {
 void process_init(void);
 int process_seed_userland(void);
 int process_spawn_user_from_file(const char *name);
+int process_kill_pid(uint32_t pid, int32_t exit_code);
 void process_reap_zombies(void);
 
 #endif /* PROCESS_H */

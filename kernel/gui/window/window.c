@@ -52,6 +52,8 @@ void window_init(window_t *win, int x, int y, int w, int h) {
   win->visible = true;
   win->focused = false;
 
+  win->app = 0;
+  win->user_data = 0;
   win->prev = 0;
   win->next = 0;
 
