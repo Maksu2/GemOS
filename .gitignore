@@ -1,0 +1,5 @@
+build/
+*.pid
+*.log
+.DS_Store
+.agent/

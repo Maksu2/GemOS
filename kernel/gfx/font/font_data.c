@@ -1,0 +1,141 @@
+#include <stdint.h>
+
+/*
+ * 10x16 Bitmap Font Data (System Sans)
+ * Uses 2D array to allow designated initializers for blocks.
+ */
+
+/* Row format: 2 bytes (big endian) => 16 bits. Top 10 bits used. */
+#define ROW(x) ((x >> 8) & 0xFF), (x & 0xFF)
+
+const uint8_t font_data_10x16[96][32] = {
+    // Default: all zeros (implicitly)
+
+    /* --- Digits (0-9) --- */
+    // '0' (Offset 48 - 32 = 16)
+    [16] = {ROW(0x0000), ROW(0x0FE0), ROW(0x1010), ROW(0x2008), ROW(0x2008),
+            ROW(0x2008), ROW(0x2008), ROW(0x2008), ROW(0x2008), ROW(0x2008),
+            ROW(0x2008), ROW(0x2008), ROW(0x1010), ROW(0x0FE0), ROW(0x0000),
+            ROW(0x0000)},
+    // '1'
+    [17] = {ROW(0x0000), ROW(0x0180), ROW(0x0380), ROW(0x0180), ROW(0x0180),
+            ROW(0x0180), ROW(0x0180), ROW(0x0180), ROW(0x0180), ROW(0x0180),
+            ROW(0x0180), ROW(0x0180), ROW(0x0180), ROW(0x07E0), ROW(0x0000),
+            ROW(0x0000)},
+    // '2'
+    [18] = {ROW(0x0000), ROW(0x0FE0), ROW(0x1010), ROW(0x2008), ROW(0x0008),
+            ROW(0x0008), ROW(0x0010), ROW(0x0060), ROW(0x0180), ROW(0x0600),
+            ROW(0x1800), ROW(0x2000), ROW(0x2000), ROW(0x3FF8), ROW(0x0000),
+            ROW(0x0000)},
+    // '3'
+    [19] = {ROW(0x0000), ROW(0x0FE0), ROW(0x1010), ROW(0x2008), ROW(0x0008),
+            ROW(0x0030), ROW(0x00C0), ROW(0x0008), ROW(0x0008), ROW(0x0008),
+            ROW(0x2008), ROW(0x2008), ROW(0x1010), ROW(0x0FE0), ROW(0x0000),
+            ROW(0x0000)},
+    // '4'
+    [20] = {ROW(0x0000), ROW(0x01C0), ROW(0x02C0), ROW(0x04C0), ROW(0x08C0),
+            ROW(0x18C0), ROW(0x28C0), ROW(0x3FF8), ROW(0x00C0), ROW(0x00C0),
+            ROW(0x00C0), ROW(0x00C0), ROW(0x00C0), ROW(0x00C0), ROW(0x0000),
+            ROW(0x0000)},
+    // '5'
+    [21] = {ROW(0x0000), ROW(0x3FF8), ROW(0x2000), ROW(0x2000), ROW(0x2000),
+            ROW(0x2FE0), ROW(0x3010), ROW(0x0008), ROW(0x0008), ROW(0x0008),
+            ROW(0x0008), ROW(0x2008), ROW(0x1010), ROW(0x0FE0), ROW(0x0000),
+            ROW(0x0000)},
+    // '6'
+    [22] = {ROW(0x0000), ROW(0x07C0), ROW(0x0C00), ROW(0x1000), ROW(0x2000),
+            ROW(0x2FE0), ROW(0x3010), ROW(0x2008), ROW(0x2008), ROW(0x2008),
+            ROW(0x2008), ROW(0x2008), ROW(0x1010), ROW(0x0FE0), ROW(0x0000),
+            ROW(0x0000)},
+    // '7'
+    [23] = {ROW(0x0000), ROW(0x3FF8), ROW(0x2008), ROW(0x0010), ROW(0x0020),
+            ROW(0x0040), ROW(0x0080), ROW(0x0100), ROW(0x0200), ROW(0x0400),
+            ROW(0x0400), ROW(0x0400), ROW(0x0400), ROW(0x0400), ROW(0x0000),
+            ROW(0x0000)},
+    // '8'
+    [24] = {ROW(0x0000), ROW(0x0FE0), ROW(0x1010), ROW(0x2008), ROW(0x2008),
+            ROW(0x1010), ROW(0x0FE0), ROW(0x1010), ROW(0x2008), ROW(0x2008),
+            ROW(0x2008), ROW(0x2008), ROW(0x1010), ROW(0x0FE0), ROW(0x0000),
+            ROW(0x0000)},
+    // '9'
+    [25] = {ROW(0x0000), ROW(0x0FE0), ROW(0x1010), ROW(0x2008), ROW(0x2008),
+            ROW(0x2008), ROW(0x2008), ROW(0x1018), ROW(0x0FE8), ROW(0x0008),
+            ROW(0x0008), ROW(0x0010), ROW(0x0020), ROW(0x0FC0), ROW(0x0000),
+            ROW(0x0000)},
+
+    /* : (58 - 32 = 26) */
+    [26] = {ROW(0), ROW(0), ROW(0), ROW(0), ROW(0x0C00), ROW(0x0C00), ROW(0),
+            ROW(0), ROW(0), ROW(0x0C00), ROW(0x0C00), ROW(0), ROW(0), ROW(0),
+            ROW(0), ROW(0)},
+
+    /* --- Uppercase --- */
+    // 'A' (65 - 32 = 33)
+    [33] = {ROW(0x0000), ROW(0x0180), ROW(0x0180), ROW(0x03C0), ROW(0x0240),
+            ROW(0x0660), ROW(0x0660), ROW(0x0C30), ROW(0x0C30), ROW(0x1FF8),
+            ROW(0x1008), ROW(0x2004), ROW(0x2004), ROW(0x2004), ROW(0x0000),
+            ROW(0x0000)},
+    // 'E' (69 - 32 = 37)
+    [37] = {ROW(0x0000), ROW(0x3FF0), ROW(0x2000), ROW(0x2000), ROW(0x2000),
+            ROW(0x2000), ROW(0x3FC0), ROW(0x2000), ROW(0x2000), ROW(0x2000),
+            ROW(0x2000), ROW(0x2000), ROW(0x2000), ROW(0x3FF8), ROW(0x0000),
+            ROW(0x0000)},
+    // 'F' (70 - 32 = 38)
+    [38] = {ROW(0x0000), ROW(0x3FF0), ROW(0x2000), ROW(0x2000), ROW(0x2000),
+            ROW(0x2000), ROW(0x3FC0), ROW(0x2000), ROW(0x2000), ROW(0x2000),
+            ROW(0x2000), ROW(0x2000), ROW(0x2000), ROW(0x2000), ROW(0x0000),
+            ROW(0x0000)},
+    // 'G' (71 - 32 = 39)
+    [39] = {ROW(0x0000), ROW(0x0FE0), ROW(0x1010), ROW(0x2000), ROW(0x2000),
+            ROW(0x2000), ROW(0x2000), ROW(0x20FC), ROW(0x2008), ROW(0x2008),
+            ROW(0x2008), ROW(0x2008), ROW(0x1010), ROW(0x0FE0), ROW(0x0000),
+            ROW(0x0000)},
+    // 'O' (79 - 32 = 47)
+    [47] = {ROW(0x0000), ROW(0x0FE0), ROW(0x1010), ROW(0x2008), ROW(0x2008),
+            ROW(0x2008), ROW(0x2008), ROW(0x2008), ROW(0x2008), ROW(0x2008),
+            ROW(0x2008), ROW(0x2008), ROW(0x1010), ROW(0x0FE0), ROW(0x0000),
+            ROW(0x0000)},
+    // 'S' (83 - 32 = 51)
+    [51] = {ROW(0x0000), ROW(0x07E0), ROW(0x1830), ROW(0x2010), ROW(0x2000),
+            ROW(0x2000), ROW(0x1000), ROW(0x0F00), ROW(0x00F0), ROW(0x0008),
+            ROW(0x0008), ROW(0x0008), ROW(0x2008), ROW(0x1810), ROW(0x07E0),
+            ROW(0x0000)},
+    // 'V' (86 - 32 = 54)
+    [54] = {ROW(0x0000), ROW(0x2008), ROW(0x2008), ROW(0x2008), ROW(0x2008),
+            ROW(0x1010), ROW(0x1010), ROW(0x1010), ROW(0x0820), ROW(0x0820),
+            ROW(0x0820), ROW(0x0440), ROW(0x0440), ROW(0x0280), ROW(0x0100),
+            ROW(0x0000)},
+
+    /* --- Lowercase --- */
+    // 'd' (100 - 32 = 68)
+    [68] = {ROW(0), ROW(0), ROW(0x0008), ROW(0x0008), ROW(0x0008), ROW(0x0E08),
+            ROW(0x1108), ROW(0x2088), ROW(0x2088), ROW(0x2088), ROW(0x2088),
+            ROW(0x2088), ROW(0x1108), ROW(0x0E08), ROW(0), ROW(0)},
+    // 'e' (101 - 32 = 69)
+    [69] = {ROW(0), ROW(0), ROW(0), ROW(0), ROW(0), ROW(0x0F00), ROW(0x1080),
+            ROW(0x2080), ROW(0x3F80), ROW(0x2000), ROW(0x2000), ROW(0x2000),
+            ROW(0x1080), ROW(0x0F00), ROW(0), ROW(0)},
+    // 'i' (105 - 32 = 73)
+    [73] = {ROW(0), ROW(0x0600), ROW(0x0600), ROW(0), ROW(0), ROW(0x0600),
+            ROW(0x0600), ROW(0x0600), ROW(0x0600), ROW(0x0600), ROW(0x0600),
+            ROW(0x0600), ROW(0x0600), ROW(0x0600), ROW(0), ROW(0)},
+    // 'l' (108 - 32 = 76)
+    [76] = {ROW(0), ROW(0x0600), ROW(0x0600), ROW(0x0600), ROW(0x0600),
+            ROW(0x0600), ROW(0x0600), ROW(0x0600), ROW(0x0600), ROW(0x0600),
+            ROW(0x0600), ROW(0x0600), ROW(0x0600), ROW(0x0780), ROW(0), ROW(0)},
+    // 'm' (109 - 32 = 77)
+    [77] = {ROW(0), ROW(0), ROW(0), ROW(0), ROW(0), ROW(0x36C0), ROW(0x2920),
+            ROW(0x2920), ROW(0x2920), ROW(0x2920), ROW(0x2920), ROW(0x2920),
+            ROW(0x2920), ROW(0x2920), ROW(0), ROW(0)},
+    // 'p' (112 - 32 = 80)
+    [80] = {ROW(0), ROW(0), ROW(0), ROW(0), ROW(0), ROW(0x1F00), ROW(0x2080),
+            ROW(0x2080), ROW(0x2080), ROW(0x2080), ROW(0x2080), ROW(0x1F00),
+            ROW(0x2000), ROW(0x2000), ROW(0x2000), ROW(0x2000)},
+    // 't' (116 - 32 = 84) (Fixed crossbar height)
+    [84] = {ROW(0), ROW(0), ROW(0x0400), ROW(0x0400), ROW(0x1E00), ROW(0x0400),
+            ROW(0x0400), ROW(0x0400), ROW(0x0400), ROW(0x0400), ROW(0x0400),
+            ROW(0x0400), ROW(0x0480), ROW(0x0300), ROW(0), ROW(0)},
+    // 'w' (119 - 32 = 87)
+    [87] = {ROW(0), ROW(0), ROW(0), ROW(0), ROW(0), ROW(0x2280), ROW(0x2280),
+            ROW(0x2280), ROW(0x2580), ROW(0x2580), ROW(0x1480), ROW(0x1500),
+            ROW(0x1500), ROW(0x0A00), ROW(0), ROW(0)},
+};

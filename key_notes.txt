@@ -1,0 +1,22 @@
+const sendKey = (code, charCode) => {
+  const c = document.querySelector('canvas');
+  // Dispatch KeyDown
+  const e1 = new KeyboardEvent('keydown', {
+    key: 'ArrowDown', // label, ignored by kernel?
+    code: code,
+    charCode: charCode,
+    keyCode: charCode, // mapping logic depends on browser -> vnc
+    which: charCode,
+    bubbles: true
+  });
+  c.dispatchEvent(e1);
+  
+  // Dispatch KeyUp
+  const e2 = new KeyboardEvent('keyup', { ...e1, type: 'keyup' });
+  c.dispatchEvent(e2);
+};
+// We need specific VNC key codes?
+// NoVNC maps JS keys to RFB keys.
+// 'ArrowDown' -> 0xff54
+// 'ArrowUp' -> 0xff52
+// 'Enter' -> 0xff0d
