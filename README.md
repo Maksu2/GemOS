@@ -7,7 +7,7 @@
 [![Boot](https://img.shields.io/badge/boot-own%20stage1%20%2B%20stage2-1f2937)](https://github.com/Maksu2/GemOS)
 [![Userland](https://img.shields.io/badge/userland-ring%203%20MVP-b45309)](https://github.com/Maksu2/GemOS)
 [![Pages](https://img.shields.io/badge/site-GitHub%20Pages-7c3aed)](https://maksu2.github.io/GemOS/)
-[![Wiki](https://img.shields.io/badge/docs-Wiki-0f766e)](https://github.com/Maksu2/GemOS/tree/main/wiki)
+[![Wiki](https://img.shields.io/badge/docs-Wiki-0f766e)](https://github.com/Maksu2/GemOS/wiki)
 
 GemOS is not a toy kernel and not a “look, it booted” demo. It is a classic desktop-style OS built end-to-end with its own boot chain, memory management, interrupt path, GUI stack, filesystem, scheduler, and now a working Ring 3 / userland MVP.
 
@@ -165,7 +165,7 @@ target remote :1234
 ## Project Links
 
 - Site: https://maksu2.github.io/GemOS/
-- Wiki: https://github.com/Maksu2/GemOS/tree/main/wiki
+- Wiki: https://github.com/Maksu2/GemOS/wiki
 - Repo: https://github.com/Maksu2/GemOS
 
 ## What GemOS Is Not Doing Right Now
