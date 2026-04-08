@@ -106,12 +106,30 @@ static void wm_unlink(window_t *win) {
   win->next = NULL;
 }
 
+static bool wm_contains(window_t *win) {
+  window_t *current = windows_head;
+
+  while (current) {
+    if (current == win) {
+      return true;
+    }
+    current = current->next;
+  }
+
+  return false;
+}
+
 /* Helper to append to tail (top of Z-order) */
 static void wm_append(window_t *win) {
   if (!win)
     return;
 
-  wm_unlink(win);
+  if (wm_contains(win)) {
+    wm_unlink(win);
+  } else {
+    win->prev = NULL;
+    win->next = NULL;
+  }
 
   if (!windows_tail) {
     windows_head = win;
@@ -180,7 +198,9 @@ void wm_focus_window(window_t *win) {
     focused_window->focused = false;
   }
 
-  wm_unlink(win);
+  if (wm_contains(win)) {
+    wm_unlink(win);
+  }
   wm_append(win);
 
   focused_window = win;
@@ -346,6 +366,10 @@ void wm_handle_event(event_t *event) {
         rect_t r_min = {min_x, btn_y, BTN_SIZE, BTN_SIZE};
 
         if (rect_contains(&r_close, mx, my)) {
+          if (curr->app && curr->app->request_close &&
+              curr->app->request_close(curr)) {
+            break;
+          }
           serial_print("[WM] Close Window\n");
           wm_remove_window(curr);
           break;

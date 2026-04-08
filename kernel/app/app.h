@@ -17,6 +17,7 @@ typedef struct app {
   void (*open_file)(const char *path); // Opens app with file
   void (*render)(window_t *win);
   void (*handle_event)(window_t *win, event_t *ev);
+  int (*request_close)(window_t *win);
   void (*close)(window_t *win);
 } app_t;
 

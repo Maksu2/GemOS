@@ -13,6 +13,9 @@ enum {
   SYS_console_write = 6,
   SYS_console_poll_event = 7,
   SYS_console_clear = 8,
+  SYS_console_present = 9,
+  SYS_file_read = 10,
+  SYS_file_write = 11,
 };
 
 enum {

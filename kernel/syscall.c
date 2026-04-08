@@ -9,13 +9,17 @@
 
 #include "../drivers/pit.h"
 #include "../drivers/serial.h"
+#include "fs/gemfs.h"
 #include "../include/gemos/console_abi.h"
 #include <string.h>
 
 #define SYSCALL_DEBUG_WRITE_MAX 256U
 #define SYSCALL_CONSOLE_WRITE_CHUNK 128U
+#define SYSCALL_FILE_NAME_MAX (GEMFS_MAX_FILENAME + 1U)
 
 static uint32_t pending_resume_esp = 0;
+static gemos_console_cell_t console_present_cells[GEMOS_CONSOLE_MAX_CELLS];
+static uint8_t syscall_file_buffer[GEMFS_MAX_FILESIZE + 1U];
 
 extern void isr128(void);
 
@@ -187,6 +191,106 @@ static uint32_t syscall_console_clear(uint32_t handle) {
   return (uint32_t)console_clear(process->pid, (int)handle);
 }
 
+static uint32_t syscall_console_present(uint32_t handle,
+                                        uintptr_t user_frame_ptr) {
+  process_t *process = syscall_current_process();
+  gemos_console_frame_t frame;
+  size_t cell_count;
+
+  if (process == NULL || user_frame_ptr == 0) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+  if (!copy_from_user(&frame, (const void *)user_frame_ptr, sizeof(frame))) {
+    return (uint32_t)GEMOS_ERR_FAULT;
+  }
+  if (frame.cols == 0 || frame.rows == 0 ||
+      frame.cols > GEMOS_CONSOLE_MAX_COLS || frame.rows > GEMOS_CONSOLE_MAX_ROWS) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+  if (frame.cursor_row >= frame.rows || frame.cursor_col >= frame.cols) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+
+  cell_count = (size_t)frame.cols * (size_t)frame.rows;
+  if (cell_count > GEMOS_CONSOLE_MAX_CELLS) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+  if (frame.cells == NULL) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+
+  if (!copy_from_user(console_present_cells, frame.cells,
+                      cell_count * sizeof(gemos_console_cell_t))) {
+    return (uint32_t)GEMOS_ERR_FAULT;
+  }
+
+  return (uint32_t)console_present(process->pid, (int)handle, &frame,
+                                   console_present_cells);
+}
+
+static uint32_t syscall_file_read(uintptr_t user_name_ptr,
+                                  uintptr_t user_buffer_ptr,
+                                  size_t user_capacity) {
+  char name[SYSCALL_FILE_NAME_MAX];
+  int read_result;
+  size_t copy_length;
+
+  if (user_name_ptr == 0 || user_buffer_ptr == 0 || user_capacity == 0U) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+  if (user_capacity > sizeof(syscall_file_buffer)) {
+    user_capacity = sizeof(syscall_file_buffer);
+  }
+  if (!copy_user_string(name, (const char *)user_name_ptr, sizeof(name))) {
+    return (uint32_t)GEMOS_ERR_FAULT;
+  }
+
+  read_result =
+      gemfs_read(name, (char *)syscall_file_buffer, (uint32_t)user_capacity);
+  if (read_result < 0) {
+    return (uint32_t)GEMOS_ERR_NOENT;
+  }
+
+  copy_length = (size_t)read_result + 1U;
+  if (copy_length > user_capacity) {
+    copy_length = user_capacity;
+  }
+  if (!copy_to_user((void *)user_buffer_ptr, syscall_file_buffer, copy_length)) {
+    return (uint32_t)GEMOS_ERR_FAULT;
+  }
+
+  return (uint32_t)read_result;
+}
+
+static uint32_t syscall_file_write(uintptr_t user_name_ptr,
+                                   uintptr_t user_buffer_ptr, size_t length) {
+  char name[SYSCALL_FILE_NAME_MAX];
+  int write_result;
+
+  if (user_name_ptr == 0 || user_buffer_ptr == 0) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+  if (length > GEMFS_MAX_FILESIZE) {
+    return (uint32_t)GEMOS_ERR_TOO_BIG;
+  }
+  if (!copy_user_string(name, (const char *)user_name_ptr, sizeof(name))) {
+    return (uint32_t)GEMOS_ERR_FAULT;
+  }
+  if (length > 0U &&
+      !copy_from_user(syscall_file_buffer, (const void *)user_buffer_ptr,
+                      length)) {
+    return (uint32_t)GEMOS_ERR_FAULT;
+  }
+
+  write_result = gemfs_write(name, (const char *)syscall_file_buffer,
+                             (uint32_t)length);
+  if (write_result < 0) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+
+  return (uint32_t)write_result;
+}
+
 void syscall_interrupt_handler(registers_t *regs) {
   pending_resume_esp = 0;
 
@@ -222,6 +326,17 @@ void syscall_interrupt_handler(registers_t *regs) {
     break;
   case SYS_console_clear:
     regs->eax = syscall_console_clear(regs->ebx);
+    break;
+  case SYS_console_present:
+    regs->eax = syscall_console_present(regs->ebx, (uintptr_t)regs->ecx);
+    break;
+  case SYS_file_read:
+    regs->eax = syscall_file_read((uintptr_t)regs->ebx, (uintptr_t)regs->ecx,
+                                  (size_t)regs->edx);
+    break;
+  case SYS_file_write:
+    regs->eax = syscall_file_write((uintptr_t)regs->ebx,
+                                   (uintptr_t)regs->ecx, (size_t)regs->edx);
     break;
   default:
     regs->eax = (uint32_t)GEMOS_ERR_NOSYS;

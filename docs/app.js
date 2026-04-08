@@ -19,18 +19,26 @@ if (filterRoot) {
   });
 }
 
-const timelineButtons = Array.from(document.querySelectorAll(".timeline-item"));
-const timelinePanels = Array.from(document.querySelectorAll(".timeline-panel"));
+const shotPicker = document.querySelector("#shot-picker");
+const shotImage = document.querySelector("#showcase-image");
+const shotKicker = document.querySelector("#showcase-kicker");
+const shotTitle = document.querySelector("#showcase-title");
+const shotDescription = document.querySelector("#showcase-description");
 
-for (const button of timelineButtons) {
-  button.addEventListener("click", () => {
-    const target = button.dataset.target;
-    for (const item of timelineButtons) {
-      item.classList.toggle("is-open", item === button);
+if (shotPicker && shotImage && shotKicker && shotTitle && shotDescription) {
+  shotPicker.addEventListener("click", (event) => {
+    const button = event.target.closest(".shot-thumb");
+    if (!button) return;
+
+    for (const item of shotPicker.querySelectorAll(".shot-thumb")) {
+      item.classList.toggle("is-active", item === button);
     }
-    for (const panel of timelinePanels) {
-      panel.classList.toggle("is-open", panel.id === target);
-    }
+
+    shotImage.src = button.dataset.image;
+    shotImage.alt = button.dataset.alt || "";
+    shotKicker.textContent = button.dataset.kicker || "";
+    shotTitle.textContent = button.dataset.title || "";
+    shotDescription.textContent = button.dataset.description || "";
   });
 }
 
@@ -64,7 +72,7 @@ if ("IntersectionObserver" in window) {
         observer.unobserve(entry.target);
       }
     },
-    { threshold: 0.16 }
+    { threshold: 0.12 }
   );
 
   for (const item of revealItems) {

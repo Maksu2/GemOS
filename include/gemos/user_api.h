@@ -97,4 +97,22 @@ static inline int32_t gemos_console_clear(int32_t handle) {
   return gemos_syscall1(SYS_console_clear, (uintptr_t)handle);
 }
 
+static inline int32_t gemos_console_present(int32_t handle,
+                                            const gemos_console_frame_t *frame) {
+  return gemos_syscall2(SYS_console_present, (uintptr_t)handle,
+                        (uintptr_t)frame);
+}
+
+static inline int32_t gemos_file_read(const char *name, char *buffer,
+                                      size_t capacity) {
+  return gemos_syscall3(SYS_file_read, (uintptr_t)name, (uintptr_t)buffer,
+                        capacity);
+}
+
+static inline int32_t gemos_file_write(const char *name, const char *buffer,
+                                       size_t length) {
+  return gemos_syscall3(SYS_file_write, (uintptr_t)name, (uintptr_t)buffer,
+                        length);
+}
+
 #endif /* GEMOS_USER_API_H */

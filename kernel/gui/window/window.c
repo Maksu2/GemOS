@@ -1,5 +1,6 @@
 #include "window.h"
 #include "../../gfx/context.h"
+#include <string.h>
 
 // Hardcoded style constants
 #define BORDER_WIDTH 1
@@ -35,6 +36,12 @@ void window_update_rects(window_t *win) {
 }
 
 void window_init(window_t *win, int x, int y, int w, int h) {
+  if (!win) {
+    return;
+  }
+
+  memset(win, 0, sizeof(*win));
+
   win->x = x;
   win->y = y;
   win->width = w;
@@ -51,12 +58,6 @@ void window_init(window_t *win, int x, int y, int w, int h) {
 
   win->visible = true;
   win->focused = false;
-
-  win->app = 0;
-  win->user_data = 0;
-  win->prev = 0;
-  win->next = 0;
-
   window_update_rects(win);
 
   // Initialize context

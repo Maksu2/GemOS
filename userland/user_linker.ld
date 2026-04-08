@@ -4,13 +4,12 @@ ENTRY(_start)
 
 PHDRS
 {
-    text PT_LOAD FLAGS(5);
-    data PT_LOAD FLAGS(6);
+    all PT_LOAD FILEHDR PHDRS FLAGS(7);
 }
 
 SECTIONS
 {
-    . = 0x02000000;
+    . = 0x02000000 + SIZEOF_HEADERS;
 
     .text ALIGN(4) :
     {
@@ -18,16 +17,20 @@ SECTIONS
         *(.text.*)
         *(.rodata)
         *(.rodata.*)
-    } :text
+    } :all
 
     .data ALIGN(4) :
     {
         *(.data)
         *(.data.*)
+    } :all
+
+    .bss ALIGN(4) (NOLOAD) :
+    {
         *(.bss)
         *(.bss.*)
         *(COMMON)
-    } :data
+    } :all
 
     /DISCARD/ :
     {

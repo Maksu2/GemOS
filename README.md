@@ -1,196 +1,190 @@
 # GemOS
 
-> A from-scratch 32-bit desktop operating system for x86, written in C and asm.
+From-scratch 32-bit desktop operating system for x86, written in C and assembly.
 
-[![Status](https://img.shields.io/badge/status-active-2f7d32)](https://github.com/Maksu2/GemOS)
-[![Architecture](https://img.shields.io/badge/arch-x86%2032--bit-005bbb)](https://github.com/Maksu2/GemOS)
-[![Boot](https://img.shields.io/badge/boot-own%20stage1%20%2B%20stage2-1f2937)](https://github.com/Maksu2/GemOS)
-[![Userland](https://img.shields.io/badge/userland-ring%203%20MVP-b45309)](https://github.com/Maksu2/GemOS)
-[![Pages](https://img.shields.io/badge/site-GitHub%20Pages-7c3aed)](https://maksu2.github.io/GemOS/)
-[![Wiki](https://img.shields.io/badge/docs-Wiki-0f766e)](https://github.com/Maksu2/GemOS/wiki)
+[Project site](https://maksu2.github.io/GemOS/) • [Wiki](https://github.com/Maksu2/GemOS/wiki) • [Repository](https://github.com/Maksu2/GemOS)
 
-GemOS is not a toy kernel and not a “look, it booted” demo. It is a classic desktop-style OS built end-to-end with its own boot chain, memory management, interrupt path, GUI stack, filesystem, scheduler, and now a working Ring 3 / userland MVP.
+<p align="center">
+  <img src="docs/assets/screenshots/desktop-overview.png" alt="GemOS desktop overview" width="900">
+</p>
 
-The project goal is simple:
+<table>
+  <tr>
+    <td><img src="docs/assets/screenshots/uterm.png" alt="UTERM userland terminal" width="280"></td>
+    <td><img src="docs/assets/screenshots/about.png" alt="About GemOS userland app" width="280"></td>
+    <td><img src="docs/assets/screenshots/utextedit.png" alt="UTEXTEDIT userland text editor" width="280"></td>
+  </tr>
+  <tr>
+    <td><strong>UTERM.ELF</strong><br>Hosted userland terminal</td>
+    <td><strong>ABOUT.ELF</strong><br>Small informational userland app</td>
+    <td><strong>UTEXTEDIT.ELF</strong><br>Userland text editor in active bring-up</td>
+  </tr>
+</table>
 
-- build a calm, usable, technically coherent desktop OS
-- keep the architecture boring, stable, and understandable
-- avoid dependency creep, framework creep, and fake complexity
+GemOS is a classic desktop-style operating system built end-to-end: bootloader, protected-mode bring-up, kernel, memory management, interrupt path, graphics stack, filesystem, scheduler, Ring 3 transition and now practical userland applications.
 
-## Why GemOS
+The project goal is not novelty for its own sake. The goal is to build a calm, coherent, technically honest system where architecture comes first and big rewrites are earned, not assumed.
 
-GemOS is built around a few hard rules:
+## Why this project matters
 
-- **System, not demo**: features are added only when they fit the architecture.
-- **Boring is success**: stability beats novelty.
-- **Architecture before features**: infrastructure comes first.
-- **Own the whole stack**: bootloader, kernel, GUI, filesystem, userland path.
+- It owns the whole path from the boot sector to the desktop.
+- It treats “boring is success” as an engineering rule, not a slogan.
+- It is already past the fake userland stage: isolated Ring 3 processes run real apps while the desktop remains stable.
 
-## What Works Now
+## What works now
 
 ### Boot and kernel foundations
 
 - 2-stage bootloader
 - A20, protected mode, kernel entry
 - kernel-owned GDT for ring 0 / ring 3
-- TSS, `ltr`, and kernel stack switching via `esp0`
-- IDT, ISR/IRQ handling, PIC remap, PIT, RTC
-- serial debug output
+- TSS, `ltr`, and `esp0` stack switching
+- IDT, ISR / IRQ handling, PIC remap, PIT, RTC
+- serial debug path
 
 ### Memory and execution
 
 - heap allocator
-- legacy 32-bit paging with 4 KB pages
-- per-process `CR3`
-- shared supervisor-only kernel mapping as transition model
+- 32-bit legacy paging with 4 KB pages
+- separate `CR3` per process
+- shared supervisor-only kernel mapping as the transition model
 - preemptive round-robin scheduler
 - `process_t` / `task_t` split
+- faulted user processes are killed without panicking the whole kernel
 
-### Desktop and drivers
+### Desktop, drivers and storage
 
 - VBE LFB graphics
 - page-flipped rendering path
 - PS/2 keyboard and mouse
-- window manager
-- topbar, dock, menus
 - TrueType font rendering
-
-### Storage and apps
-
+- window manager
+- topbar, dock, menus and focus model
 - ATA PIO
 - GemFS
-- kernel-space desktop apps
-- ELF32 static loader MVP
+
+### Userland transition
+
+- Ring 3 (`CPL=3`)
+- ELF32 static `ET_EXEC` loader
 - `int 0x80` syscall layer
-- first userland path with Ring 3 isolation
-- first real userland terminal path via kernel-hosted console service
+- safe copy helpers for user pointers
+- hosted app model: kernel hosts the window/surface, userland owns app state and render logic
+- hosted close requests, keyboard modifiers and thin file read/write syscalls
 
-## Current Milestone
+## Current architecture
 
-GemOS currently sits at this transition point:
+GemOS is intentionally in a transition architecture:
 
-- kernel desktop remains alive and stable
-- userland is real, not simulated
-- user processes can run in `CPL=3`
-- faults in userland kill the process instead of panicking the whole kernel
-- the next step is expanding practical userspace, not redesigning the kernel again
+- the desktop shell, WM, topbar, dock and window decorations remain in kernel space
+- userland applications run as isolated processes with their own address spaces
+- userland apps talk to the system through a small syscall surface and a hosted text-surface window model
 
-## Userland MVP
-
-Already implemented:
-
-- `CPL=3`
-- separate `CR3` per process
-- ELF32 `ET_EXEC` loader
-- `int 0x80`
-- safe `copy_from_user` / `copy_to_user`
-- minimal syscalls:
-  - `SYS_exit`
-  - `SYS_yield`
-  - `SYS_debug_write`
-  - `SYS_getpid`
-  - `SYS_ticks_ms`
-  - `SYS_console_open`
-  - `SYS_console_write`
-  - `SYS_console_poll_event`
-  - `SYS_console_clear`
-
-This is intentionally small. No POSIX layer, no `fork`, no dynamic linker, no large userspace SDK.
-
-## First Real User App
-
-The first practical userland app is `UTERM.ELF`.
-
-Design choice:
-
-- WM, desktop, topbar, dock, and decorations stay in kernel space
-- the terminal logic itself runs in userland
-- the console window is kernel-hosted, text-oriented, and deliberately thin
-
-That gives GemOS a real userspace app without forcing a full userspace GUI API too early.
-
-## Repo Map
+That is deliberate. GemOS is not trying to jump straight from “all apps in kernel space” to “full userspace GUI toolkit” in one rewrite.
 
 ```text
-boot/              boot chain: stage1 + stage2
-kernel/            kernel core, scheduler, paging, ELF, syscalls, WM
-drivers/           hardware drivers
-apps/              kernel-space desktop apps and launchers
-userland/          user-space binaries and tiny runtime
-docs/              GitHub Pages site and project docs
-lib/               freestanding support code
+boot/ stage1 + stage2
+        ↓
+kernel core: interrupts, paging, heap, scheduler, ELF, syscalls
+        ↓
+drivers and graphics: VBE, PS/2, ATA, serial, fonts
+        ↓
+desktop shell: WM, topbar, dock, menus, kernel-hosted windows
+        ↓
+hosted app services: console/window surface, input delivery, file I/O
+        ↓
+userland apps: UTERM.ELF, ABOUT.ELF, UTEXTEDIT.ELF
 ```
 
-## Build
+## Current userland
+
+| App | State | What it proves |
+| --- | --- | --- |
+| `UTERM.ELF` | Usable | Real Ring 3 terminal with input, output and hosted-window lifecycle |
+| `ABOUT.ELF` | Stable | Small polished userland app with timed updates and clean close flow |
+| `UTEXTEDIT.ELF` | Active bring-up | Hosted editor with document state, multiline render, caret movement and dirty state |
+
+The current text editor is intentionally in progress. Basic document editing is in place; file open/save and unsaved-close flow are the next steps.
+
+## Build / Run / Debug
 
 ### Tooling
 
 - `nasm`
-- `make`
 - `qemu-system-i386`
-- `i686-elf-*` or `x86_64-elf-*` cross-toolchain recommended
+- `i686-elf-*` or `x86_64-elf-*` cross-toolchain
 
-### macOS
+On macOS:
 
 ```bash
 brew install nasm qemu
 ```
 
-### Linux
-
-```bash
-sudo apt install nasm qemu-system-x86
-```
-
-## Run
+Build and run:
 
 ```bash
 make all
 make run
 ```
 
-For GDB:
+Run under GDB:
 
 ```bash
 make debug
 ```
 
-Then in another terminal:
+Then in another shell:
 
 ```bash
 i686-elf-gdb build/kernel.elf
 target remote :1234
 ```
 
-## Project Links
+## Repo map
 
-- Site: https://maksu2.github.io/GemOS/
-- Wiki: https://github.com/Maksu2/GemOS/wiki
-- Repo: https://github.com/Maksu2/GemOS
+```text
+boot/       stage1 + stage2 boot chain
+kernel/     kernel core, scheduler, paging, ELF, syscalls, WM
+drivers/    hardware drivers
+apps/       kernel-space apps and desktop launchers
+userland/   user-space binaries, runtime and shared helpers
+docs/       GitHub Pages site and supporting docs
+lib/        freestanding support code
+```
 
-## What GemOS Is Not Doing Right Now
+## Roadmap
 
-Not in the current scope:
+Near term:
 
+- finish `UTEXTEDIT.ELF` open/save flow and unsaved-close behavior
+- keep hardening hosted app lifecycle and cleanup
+- keep migrating small apps to userland only when the pattern is mature
+
+After that:
+
+- migrate more practical apps, starting with file-oriented workflows
+- continue tightening scheduler / task lifecycle primitives
+- expand file-facing APIs only when real userland needs prove them out
+
+## Out of scope right now
+
+Not the current focus:
+
+- POSIX compatibility
+- `fork/exec`
+- dynamic linking
+- a large userspace GUI toolkit
 - USB
 - TCP/IP
 - audio
-- dynamic linking
-- `fork/exec`
-- POSIX compatibility
-- shared memory
-- high-half kernel rewrite
-- moving the whole desktop to userspace in one jump
+- a high-half kernel rewrite
+- moving the entire desktop stack to userspace in one jump
 
-## Design Direction
+## Links
 
-GemOS is intentionally moving in small, defensible steps:
-
-1. own the boot process
-2. own the kernel and desktop stack
-3. add isolation without breaking the existing system
-4. introduce userspace through thin, stable interfaces
-5. only generalize APIs after at least two real consumers need them
+- Project site: https://maksu2.github.io/GemOS/
+- Wiki: https://github.com/Maksu2/GemOS/wiki
+- Repository: https://github.com/Maksu2/GemOS
 
 ## License
 

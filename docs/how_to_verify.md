@@ -1,4 +1,8 @@
-# Procedura Weryfikacji Manualnej GemOS (Phase 2.6)
+# Manual Verification Notes
+
+> Historical note: most of the detailed checks below were written for an earlier pre-userland milestone.
+>
+> GemOS has moved forward since then. For the current project overview, start with the main [README](../README.md), the [project site](./index.html) and the GitHub wiki.
 
 ## 1. Wstęp — Zakres weryfikacji
 
@@ -556,7 +560,6 @@ Potwierdzamy "nudę" systemową.
 **Interpretacja:**
 Jeśli tak -> Mamy System Font.
 Przechodzimy do UI.
-
 
 
 

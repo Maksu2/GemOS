@@ -14,10 +14,20 @@ static process_t process_table[MAX_PROCESSES];
 static uint32_t next_pid = 1;
 static uint8_t process_file_buffer[GEMFS_MAX_FILESIZE];
 
+typedef enum {
+  PROCESS_IMAGE_SOURCE_NONE = 0,
+  PROCESS_IMAGE_SOURCE_GEMFS,
+  PROCESS_IMAGE_SOURCE_EMBEDDED,
+} process_image_source_t;
+
 extern uint8_t _binary_build_usrsmoke_elf_start[];
 extern uint8_t _binary_build_usrsmoke_elf_end[];
-extern uint8_t _binary_build_uterm_elf_start[];
-extern uint8_t _binary_build_uterm_elf_end[];
+extern uint8_t _binary_build_uterm_image_bin_start[];
+extern uint8_t _binary_build_uterm_image_bin_end[];
+extern uint8_t _binary_build_about_image_bin_start[];
+extern uint8_t _binary_build_about_image_bin_end[];
+extern uint8_t _binary_build_utextedit_image_bin_start[];
+extern uint8_t _binary_build_utextedit_image_bin_end[];
 
 typedef struct {
   const char *name;
@@ -28,7 +38,12 @@ typedef struct {
 static embedded_user_program_t embedded_user_programs[] = {
     {"USRSMOKE.ELF", _binary_build_usrsmoke_elf_start,
      _binary_build_usrsmoke_elf_end},
-    {"UTERM.ELF", _binary_build_uterm_elf_start, _binary_build_uterm_elf_end},
+    {"UTERM.ELF", _binary_build_uterm_image_bin_start,
+     _binary_build_uterm_image_bin_end},
+    {"ABOUT.ELF", _binary_build_about_image_bin_start,
+     _binary_build_about_image_bin_end},
+    {"UTEXTEDIT.ELF", _binary_build_utextedit_image_bin_start,
+     _binary_build_utextedit_image_bin_end},
 };
 
 #define PROCESS_INITIAL_FRAME_WORDS 16U
@@ -81,22 +96,31 @@ static int process_copy_embedded_image(const char *name, int *image_size) {
   return 1;
 }
 
-static int process_load_image(const char *name, int *image_size) {
+static int process_load_image(const char *name, int *image_size,
+                              process_image_source_t *source) {
   int file_size;
 
-  if (name == NULL || image_size == NULL) {
+  if (name == NULL || image_size == NULL || source == NULL) {
     return 0;
   }
+
+  *source = PROCESS_IMAGE_SOURCE_NONE;
 
   file_size =
       gemfs_read(name, (char *)process_file_buffer, sizeof(process_file_buffer));
   if (file_size > 0 &&
       process_has_elf_magic(process_file_buffer, (size_t)file_size)) {
     *image_size = file_size;
+    *source = PROCESS_IMAGE_SOURCE_GEMFS;
     return 1;
   }
 
-  return process_copy_embedded_image(name, image_size);
+  if (!process_copy_embedded_image(name, image_size)) {
+    return 0;
+  }
+
+  *source = PROCESS_IMAGE_SOURCE_EMBEDDED;
+  return 1;
 }
 
 static process_t *process_allocate(void) {
@@ -203,12 +227,13 @@ int process_spawn_user_from_file(const char *name) {
   int image_size;
   int task_id;
   uint32_t initial_esp;
+  process_image_source_t image_source;
 
   if (name == NULL) {
     return -1;
   }
 
-  if (!process_load_image(name, &image_size)) {
+  if (!process_load_image(name, &image_size, &image_source)) {
     serial_print("[PROC] Failed to read user image: ");
     serial_print(name);
     serial_print("\n");
@@ -243,8 +268,20 @@ int process_spawn_user_from_file(const char *name) {
       (uintptr_t)(process->kernel_stack_base + TASK_STACK_SIZE);
 
   if (!elf_load_into_process(process, process_file_buffer, (size_t)image_size)) {
-    process_destroy(process);
-    return -1;
+    if (image_source == PROCESS_IMAGE_SOURCE_GEMFS &&
+        process_copy_embedded_image(name, &image_size)) {
+      serial_print("[PROC] GemFS image rejected, retrying embedded: ");
+      serial_print(name);
+      serial_print("\n");
+      if (!elf_load_into_process(process, process_file_buffer,
+                                 (size_t)image_size)) {
+        process_destroy(process);
+        return -1;
+      }
+    } else {
+      process_destroy(process);
+      return -1;
+    }
   }
 
   initial_esp = process_build_initial_frame(process);

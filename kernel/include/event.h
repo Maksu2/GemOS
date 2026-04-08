@@ -20,6 +20,7 @@ typedef struct {
     struct {
       uint8_t key_code;
       char character;
+      uint32_t modifiers;
     } key;
     struct {
       int32_t x;

@@ -1,5 +1,6 @@
 #include "keyboard.h"
 #include "../include/io.h"
+#include "../include/gemos/console_abi.h"
 #include "../kernel/include/event.h"
 #include "../kernel/isr.h"
 #include "pic.h"
@@ -12,10 +13,16 @@
 #define SC_LSHIFT_RELEASE 0xAA
 #define SC_RSHIFT_PRESS 0x36
 #define SC_RSHIFT_RELEASE 0xB6
+#define SC_LCTRL_PRESS 0x1D
+#define SC_LCTRL_RELEASE 0x9D
+#define SC_LALT_PRESS 0x38
+#define SC_LALT_RELEASE 0xB8
 #define SC_CAPSLOCK 0x3A
 
 /* Modifier state (0 = off, 1 = on) */
 static int shift_pressed = 0;
+static int ctrl_pressed = 0;
+static int alt_pressed = 0;
 static int caps_lock = 0;
 
 /* Lowercase scancode map (Scancode Set 1) */
@@ -50,10 +57,32 @@ static char scancode_upper[128] = {
 /* For visual testing */
 static uint8_t last_key = 0;
 
+static uint32_t keyboard_modifiers(void) {
+  uint32_t modifiers = 0;
+
+  if (ctrl_pressed) {
+    modifiers |= GEMOS_KEYMOD_CTRL;
+  }
+  if (shift_pressed) {
+    modifiers |= GEMOS_KEYMOD_SHIFT;
+  }
+  if (alt_pressed) {
+    modifiers |= GEMOS_KEYMOD_ALT;
+  }
+
+  return modifiers;
+}
+
 void keyboard_callback(registers_t *regs) {
   (void)regs;
 
   uint8_t scancode = inb(KBD_DATA_PORT);
+  static int e0_prefix = 0;
+
+  if (scancode == 0xE0) {
+    e0_prefix = 1;
+    return;
+  }
 
   /* Handle key release (bit 7 set) */
   if (scancode & 0x80) {
@@ -64,13 +93,21 @@ void keyboard_callback(registers_t *regs) {
         release_code == (SC_RSHIFT_PRESS)) {
       shift_pressed = 0;
     }
+    if (!e0_prefix && release_code == SC_LCTRL_PRESS) {
+      ctrl_pressed = 0;
+    }
+    if (!e0_prefix && release_code == SC_LALT_PRESS) {
+      alt_pressed = 0;
+    }
 
     /* Push key release event */
     event_t ev;
     ev.type = EVENT_KEY_RELEASE;
     ev.data.key.key_code = release_code;
     ev.data.key.character = 0;
+    ev.data.key.modifiers = keyboard_modifiers();
     event_push(ev);
+    e0_prefix = 0;
   } else {
     /* Key press */
     last_key = scancode;
@@ -80,19 +117,20 @@ void keyboard_callback(registers_t *regs) {
       shift_pressed = 1;
       return;
     }
+    if (!e0_prefix && scancode == SC_LCTRL_PRESS) {
+      ctrl_pressed = 1;
+      return;
+    }
+    if (!e0_prefix && scancode == SC_LALT_PRESS) {
+      alt_pressed = 1;
+      return;
+    }
 
     /* Handle CapsLock toggle */
     if (scancode == SC_CAPSLOCK) {
       caps_lock = !caps_lock;
       serial_print("[KBD] CapsLock: ");
       serial_print(caps_lock ? "ON\n" : "OFF\n");
-      return;
-    }
-
-    /* Handle Extended Keys (E0 Prefix) */
-    static int e0_prefix = 0;
-    if (scancode == 0xE0) {
-      e0_prefix = 1;
       return;
     }
 
@@ -107,12 +145,17 @@ void keyboard_callback(registers_t *regs) {
         key = KEY_LEFT;
       else if (scancode == 0x4D)
         key = KEY_RIGHT;
+      else if (scancode == 0x47)
+        key = GEMOS_KEY_HOME;
+      else if (scancode == 0x4F)
+        key = GEMOS_KEY_END;
 
       if (key != 0) {
         event_t ev;
         ev.type = EVENT_KEY_PRESS;
         ev.data.key.key_code = scancode; // Raw scancode
         ev.data.key.character = key;     // Mapped key
+        ev.data.key.modifiers = keyboard_modifiers();
         event_push(ev);
       }
       return;
@@ -142,6 +185,7 @@ void keyboard_callback(registers_t *regs) {
         ev.type = EVENT_KEY_PRESS;
         ev.data.key.key_code = scancode;
         ev.data.key.character = key;
+        ev.data.key.modifiers = keyboard_modifiers();
         event_push(ev);
       }
     }

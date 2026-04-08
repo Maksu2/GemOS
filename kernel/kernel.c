@@ -39,6 +39,9 @@ extern uintptr_t __kernel_end;
 
 /* Global Screen Context */
 gfx_context_t screen_ctx;
+static bool pending_redraw = true;
+
+void kernel_request_redraw(void) { pending_redraw = true; }
 
 void kernel_main(void) {
   /* Initialize Serial Port for debugging */
@@ -179,8 +182,8 @@ void kernel_main(void) {
   extern void testapp_register(void);
   testapp_register();
 
-  extern void about_register(void);
-  about_register();
+  extern void uabout_launcher_register(void);
+  uabout_launcher_register();
 
   extern void terminal_register(void);
   terminal_register();
@@ -188,8 +191,8 @@ void kernel_main(void) {
   extern void uterm_launcher_register(void);
   uterm_launcher_register();
 
-  extern void textedit_register(void);
-  textedit_register();
+  extern void utextedit_launcher_register(void);
+  utextedit_launcher_register();
 
   extern void explorer_init(void);
   explorer_init();
@@ -206,7 +209,6 @@ void kernel_main(void) {
 
   /* Main kernel loop */
   event_t ev;
-  bool pending_redraw = true; /* Force initial redraw */
   uint64_t last_render_tick = 0;
 
   /* Target FPS: 60 -> ~16.6ms per frame */
@@ -260,6 +262,8 @@ void kernel_main(void) {
           wm_handle_event(&ev);
         }
 
+        pending_redraw = true;
+      } else if (ev.type == EVENT_REDRAW_REQUEST) {
         pending_redraw = true;
       } else if (ev.type == EVENT_TIMER_TICK) {
         /* Frame Pacing Check */

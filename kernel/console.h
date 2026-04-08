@@ -14,6 +14,9 @@ int console_write(uint32_t owner_pid, int handle, const char *buffer,
 int console_poll_event(uint32_t owner_pid, int handle,
                        gemos_console_event_t *event);
 int console_clear(uint32_t owner_pid, int handle);
+int console_present(uint32_t owner_pid, int handle,
+                    const gemos_console_frame_t *frame,
+                    const gemos_console_cell_t *cells);
 void console_destroy_for_pid(uint32_t owner_pid);
 
 #endif /* CONSOLE_H */

@@ -6,47 +6,164 @@
     <title>GemOS</title>
     <meta
       name="description"
-      content="GemOS is a from-scratch 32-bit desktop operating system for x86, written in C and asm."
+      content="GemOS is a from-scratch 32-bit desktop operating system for x86, with its own boot chain, kernel, GUI stack and practical Ring 3 userland transition."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div class="page-shell">
+    <div class="site-shell">
       <header class="hero">
-        <p class="eyebrow">GemOS</p>
-        <h1>Desktop OS, from the boot sector up.</h1>
-        <p class="lead">
-          A from-scratch 32-bit x86 operating system with its own bootloader,
-          kernel, GUI stack, filesystem, scheduler, Ring 3 path and userland MVP.
-        </p>
-        <div class="hero-actions">
-          <a class="button primary" href="https://github.com/Maksu2/GemOS">View Repo</a>
-          <a class="button secondary" href="https://github.com/Maksu2/GemOS/wiki">Open Wiki</a>
+        <div class="hero-copy">
+          <p class="eyebrow">GemOS</p>
+          <h1>Desktop OS, built from the boot sector up.</h1>
+          <p class="lead">
+            A from-scratch 32-bit operating system for x86 with its own
+            bootloader, kernel, GUI stack, scheduler, filesystem and a real
+            Ring 3 transition already running practical userland apps.
+          </p>
+          <p class="hero-note">
+            GemOS is not trying to be flashy. It is trying to be technically
+            coherent, calm to use and honest about what is done versus what is
+            still in transition.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="https://github.com/Maksu2/GemOS">View Repository</a>
+            <a class="button secondary" href="https://github.com/Maksu2/GemOS/wiki">Open Wiki</a>
+          </div>
         </div>
-        <div class="hero-grid">
-          <div class="metric">
-            <span class="metric-label">Target</span>
-            <strong>x86 / 32-bit</strong>
+
+        <aside class="hero-sheet">
+          <div class="sheet-row">
+            <span class="sheet-label">Target</span>
+            <strong>x86 · 32-bit</strong>
           </div>
-          <div class="metric">
-            <span class="metric-label">UI Model</span>
-            <strong>Classic desktop</strong>
+          <div class="sheet-row">
+            <span class="sheet-label">Desktop model</span>
+            <strong>Kernel-hosted shell</strong>
           </div>
-          <div class="metric">
-            <span class="metric-label">Userland</span>
-            <strong>Ring 3 MVP</strong>
+          <div class="sheet-row">
+            <span class="sheet-label">Userland model</span>
+            <strong>Hosted apps in Ring 3</strong>
           </div>
-          <div class="metric">
-            <span class="metric-label">Philosophy</span>
+          <div class="sheet-row">
+            <span class="sheet-label">Current milestone</span>
+            <strong>Userland transition, not a rewrite</strong>
+          </div>
+          <div class="sheet-row">
+            <span class="sheet-label">Philosophy</span>
             <strong>Boring is success</strong>
           </div>
-        </div>
+        </aside>
       </header>
 
-      <main>
-        <section class="panel" data-reveal>
+      <main class="main-grid">
+        <section class="panel panel-wide" data-reveal>
           <div class="section-head">
-            <p class="eyebrow">Status</p>
+            <p class="eyebrow">Project</p>
+            <h2>What GemOS is</h2>
+          </div>
+          <div class="split-grid">
+            <div>
+              <p>
+                GemOS is a classic desktop-style operating system built
+                end-to-end: own boot chain, protected-mode bring-up, memory
+                management, graphics, input, filesystem, scheduler, window
+                manager and now real isolated userland applications.
+              </p>
+              <p>
+                The point is not novelty for its own sake. The point is to
+                build a system that earns each new layer without throwing away
+                the working one underneath.
+              </p>
+            </div>
+            <ul class="principle-list">
+              <li>System, not demo</li>
+              <li>Architecture before features</li>
+              <li>Small steps over big rewrites</li>
+              <li>Thin interfaces before abstraction sprawl</li>
+              <li>Own the whole stack</li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="panel panel-wide showcase" data-reveal>
+          <div class="section-head">
+            <p class="eyebrow">Screenshots</p>
+            <h2>Real system state</h2>
+          </div>
+
+          <div class="showcase-grid">
+            <figure class="showcase-frame">
+              <img
+                id="showcase-image"
+                src="./assets/screenshots/desktop-overview.png"
+                alt="GemOS desktop overview"
+              />
+            </figure>
+
+            <div class="showcase-copy">
+              <div class="showcase-meta">
+                <span class="meta-pill" id="showcase-kicker">Desktop overview</span>
+                <h3 id="showcase-title">Kernel-hosted desktop shell</h3>
+                <p id="showcase-description">
+                  The current desktop stays in kernel space on purpose while the
+                  userland path matures through smaller, safer interfaces.
+                </p>
+              </div>
+
+              <div class="thumb-grid" id="shot-picker">
+                <button
+                  class="shot-thumb is-active"
+                  data-image="./assets/screenshots/desktop-overview.png"
+                  data-alt="GemOS desktop overview"
+                  data-kicker="Desktop overview"
+                  data-title="Kernel-hosted desktop shell"
+                  data-description="The current desktop stays in kernel space on purpose while the userland path matures through smaller, safer interfaces."
+                >
+                  <img src="./assets/screenshots/desktop-overview.png" alt="" />
+                  <span>Desktop</span>
+                </button>
+                <button
+                  class="shot-thumb"
+                  data-image="./assets/screenshots/uterm.png"
+                  data-alt="UTERM running in GemOS"
+                  data-kicker="Userland app"
+                  data-title="UTERM.ELF"
+                  data-description="The first practical userland app: terminal logic in Ring 3, window hosting and presentation still in kernel space."
+                >
+                  <img src="./assets/screenshots/uterm.png" alt="" />
+                  <span>UTERM</span>
+                </button>
+                <button
+                  class="shot-thumb"
+                  data-image="./assets/screenshots/about.png"
+                  data-alt="About GemOS userland app"
+                  data-kicker="Userland app"
+                  data-title="ABOUT.ELF"
+                  data-description="A small polished informational app that proves the hosted-app pattern is not just for technical demos."
+                >
+                  <img src="./assets/screenshots/about.png" alt="" />
+                  <span>About</span>
+                </button>
+                <button
+                  class="shot-thumb"
+                  data-image="./assets/screenshots/utextedit.png"
+                  data-alt="UTEXTEDIT userland app"
+                  data-kicker="Active bring-up"
+                  data-title="UTEXTEDIT.ELF"
+                  data-description="The current editor prototype already has a real document model, multiline render, caret movement and dirty state."
+                >
+                  <img src="./assets/screenshots/utextedit.png" alt="" />
+                  <span>TextEdit</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel panel-wide" data-reveal>
+          <div class="section-head">
+            <p class="eyebrow">Current state</p>
             <h2>What works right now</h2>
           </div>
 
@@ -56,151 +173,201 @@
             <button class="chip" data-filter="kernel">Kernel</button>
             <button class="chip" data-filter="desktop">Desktop</button>
             <button class="chip" data-filter="userland">Userland</button>
+            <button class="chip" data-filter="storage">Storage</button>
           </div>
 
           <div class="status-grid">
             <article class="status-card" data-tags="boot kernel">
               <h3>Boot chain</h3>
-              <p>Stage 1 + Stage 2, A20, GDT, protected mode, kernel entry.</p>
+              <p>Own stage 1 + stage 2, A20, protected mode, kernel entry.</p>
             </article>
             <article class="status-card" data-tags="kernel">
-              <h3>Execution core</h3>
-              <p>IDT, IRQ/ISR, PIC, PIT, RTC, serial debug, scheduler, heap, paging MVP.</p>
+              <h3>Kernel core</h3>
+              <p>IDT, ISR/IRQ, PIC, PIT, RTC, heap, paging, scheduler and serial debug.</p>
+            </article>
+            <article class="status-card" data-tags="desktop kernel">
+              <h3>Graphics and input</h3>
+              <p>VBE LFB, page-flipped rendering, PS/2 keyboard and mouse, TrueType text.</p>
             </article>
             <article class="status-card" data-tags="desktop">
-              <h3>Desktop stack</h3>
-              <p>VBE LFB, page-flipped rendering, WM, topbar, dock, menus, TTF text.</p>
+              <h3>Desktop shell</h3>
+              <p>Window manager, topbar, dock, menus, focus routing and window decorations.</p>
             </article>
-            <article class="status-card" data-tags="kernel desktop">
+            <article class="status-card" data-tags="storage kernel">
               <h3>Storage</h3>
-              <p>ATA PIO and GemFS with working kernel-space apps.</p>
+              <p>ATA PIO and GemFS with working read/write paths and seeded userland binaries.</p>
             </article>
             <article class="status-card" data-tags="userland kernel">
               <h3>Isolation</h3>
-              <p>Ring 3, per-process CR3, TSS, `esp0`, faulted user process cleanup.</p>
+              <p>Ring 3, separate CR3 per process, TSS/esp0 updates and fault containment.</p>
             </article>
             <article class="status-card" data-tags="userland">
-              <h3>Userland MVP</h3>
-              <p>ELF32 static loader, `int 0x80`, minimal syscalls, first real terminal path.</p>
+              <h3>Hosted app model</h3>
+              <p>Userland owns app state and render logic; kernel hosts the window and surface.</p>
+            </article>
+            <article class="status-card" data-tags="userland">
+              <h3>Current apps</h3>
+              <p>UTERM and About are real userland apps; TextEdit is in active bring-up.</p>
             </article>
           </div>
         </section>
 
-        <section class="split">
+        <section class="split-grid">
           <article class="panel" data-reveal>
             <div class="section-head">
               <p class="eyebrow">Architecture</p>
-              <h2>Layered on purpose</h2>
+              <h2>Transition by layers</h2>
             </div>
             <div class="stack">
-              <div class="stack-row">User apps: `UTERM.ELF`, `USRSMOKE.ELF`</div>
-              <div class="stack-row">Syscalls and console service</div>
+              <div class="stack-row">User apps: UTERM.ELF, ABOUT.ELF, UTEXTEDIT.ELF</div>
+              <div class="stack-row">Thin hosted-app services and syscalls</div>
               <div class="stack-row">Scheduler, process model, ELF loader</div>
               <div class="stack-row">Paging, heap, interrupts, timer</div>
               <div class="stack-row">VBE, PS/2, ATA, serial, RTC</div>
-              <div class="stack-row">Bootloader stage1 + stage2</div>
+              <div class="stack-row">Own boot chain</div>
             </div>
           </article>
 
           <article class="panel" data-reveal>
             <div class="section-head">
-              <p class="eyebrow">Principles</p>
-              <h2>No fake complexity</h2>
+              <p class="eyebrow">Current rule</p>
+              <h2>Userland without a GUI rewrite</h2>
             </div>
             <ul class="plain-list">
-              <li>System, not demo</li>
-              <li>Architecture before features</li>
-              <li>Small steps over grand rewrites</li>
-              <li>Own the whole stack</li>
-              <li>Only generalize APIs after real use proves it</li>
+              <li>WM, topbar, dock and decorations remain in kernel space</li>
+              <li>Userland apps run isolated and talk through a small ABI</li>
+              <li>APIs stay thin until multiple real apps prove they need more</li>
+              <li>The desktop stays stable while userspace grows around it</li>
             </ul>
           </article>
         </section>
 
-        <section class="panel" data-reveal>
+        <section class="panel panel-wide" data-reveal>
           <div class="section-head">
-            <p class="eyebrow">Milestones</p>
-            <h2>Interactive roadmap</h2>
+            <p class="eyebrow">Applications</p>
+            <h2>What userland looks like today</h2>
           </div>
-          <div class="timeline" id="timeline">
-            <button class="timeline-item is-open" data-target="m1">
-              <span>Foundation</span>
-              <strong>Boot, interrupts, memory, drivers</strong>
-            </button>
-            <button class="timeline-item" data-target="m2">
-              <span>Desktop</span>
-              <strong>WM, topbar, dock, apps, GemFS</strong>
-            </button>
-            <button class="timeline-item" data-target="m3">
-              <span>Userland</span>
-              <strong>Ring 3, ELF32, console syscalls, UTERM</strong>
-            </button>
-          </div>
-          <div class="timeline-panels">
-            <article class="timeline-panel is-open" id="m1">
-              <p>
-                GemOS owns the boot process and kernel infrastructure instead of
-                leaning on GRUB or a hosted runtime.
-              </p>
+
+          <div class="apps-grid">
+            <article class="app-card">
+              <img src="./assets/screenshots/uterm.png" alt="UTERM screenshot" />
+              <div class="app-copy">
+                <div class="app-head">
+                  <h3>UTERM.ELF</h3>
+                  <span class="tag">Usable</span>
+                </div>
+                <p>First practical userland app. Exercises input, output, focus, fault containment and hosted-window lifecycle.</p>
+              </div>
             </article>
-            <article class="timeline-panel" id="m2">
-              <p>
-                The desktop stack is already usable: windows, dragging, focus,
-                menu flow, dock, fonts, storage-backed apps.
-              </p>
+            <article class="app-card">
+              <img src="./assets/screenshots/about.png" alt="About screenshot" />
+              <div class="app-copy">
+                <div class="app-head">
+                  <h3>ABOUT.ELF</h3>
+                  <span class="tag">Stable</span>
+                </div>
+                <p>Small informational app with periodic updates and a clean, low-boilerplate hosted-app pattern.</p>
+              </div>
             </article>
-            <article class="timeline-panel" id="m3">
-              <p>
-                The current transition phase is about turning working isolation
-                into practical userspace through thin, stable services.
-              </p>
+            <article class="app-card">
+              <img src="./assets/screenshots/utextedit.png" alt="TextEdit screenshot" />
+              <div class="app-copy">
+                <div class="app-head">
+                  <h3>UTEXTEDIT.ELF</h3>
+                  <span class="tag tag-warn">In progress</span>
+                </div>
+                <p>Current bring-up target for real text editing: document state, multiline render, caret movement and dirty tracking are already landing.</p>
+              </div>
             </article>
           </div>
         </section>
 
-        <section class="panel" data-reveal>
-          <div class="section-head">
-            <p class="eyebrow">Run</p>
-            <h2>Build and test</h2>
-          </div>
-          <div class="code-card">
-            <pre><code>make all
+        <section class="split-grid">
+          <article class="panel" data-reveal>
+            <div class="section-head">
+              <p class="eyebrow">Build</p>
+              <h2>Build and run</h2>
+            </div>
+            <div class="code-card">
+              <pre><code>make all
 make run
 
 # debug
 make debug
-# then in another shell:
 i686-elf-gdb build/kernel.elf
 target remote :1234</code></pre>
-            <button class="copy-button" data-copy-target="build-commands">Copy commands</button>
-            <textarea id="build-commands" class="copy-source" readonly>make all
+              <button class="copy-button" data-copy-target="build-commands">Copy commands</button>
+              <textarea id="build-commands" class="copy-source" readonly>make all
 make run
 
 make debug
 i686-elf-gdb build/kernel.elf
 target remote :1234</textarea>
-          </div>
+            </div>
+          </article>
+
+          <article class="panel" data-reveal>
+            <div class="section-head">
+              <p class="eyebrow">Tooling</p>
+              <h2>Expected environment</h2>
+            </div>
+            <ul class="plain-list">
+              <li>`nasm`</li>
+              <li>`qemu-system-i386`</li>
+              <li>`i686-elf-*` or `x86_64-elf-*` cross-toolchain</li>
+              <li>macOS and Linux are both supported as host environments</li>
+            </ul>
+          </article>
         </section>
 
-        <section class="panel" data-reveal>
+        <section class="split-grid">
+          <article class="panel" data-reveal>
+            <div class="section-head">
+              <p class="eyebrow">Roadmap</p>
+              <h2>Next milestones</h2>
+            </div>
+            <ul class="plain-list">
+              <li>Finish TextEdit open/save flow and unsaved-close behavior</li>
+              <li>Keep hardening hosted app lifecycle and cleanup</li>
+              <li>Move more small apps to userland only after the pattern is stable</li>
+              <li>Expand file-facing APIs only when real apps force the need</li>
+            </ul>
+          </article>
+
+          <article class="panel" data-reveal>
+            <div class="section-head">
+              <p class="eyebrow">Not now</p>
+              <h2>Deliberately out of scope</h2>
+            </div>
+            <ul class="plain-list">
+              <li>POSIX compatibility and `fork/exec`</li>
+              <li>Dynamic linking</li>
+              <li>A large userspace GUI toolkit</li>
+              <li>USB, TCP/IP and audio</li>
+              <li>A giant userspace rewrite of the desktop shell</li>
+            </ul>
+          </article>
+        </section>
+
+        <section class="panel panel-wide" data-reveal>
           <div class="section-head">
-            <p class="eyebrow">Explore</p>
-            <h2>Deep links</h2>
+            <p class="eyebrow">Links</p>
+            <h2>Start here</h2>
           </div>
-          <div class="status-grid">
-            <article class="status-card">
+          <div class="links-grid">
+            <article class="link-card">
               <h3>README</h3>
-              <p>Project overview, current milestone, build/run instructions, scope boundaries.</p>
+              <p>The best quick technical entry point for the repo.</p>
               <a class="inline-link" href="https://github.com/Maksu2/GemOS/blob/main/README.md">Open README</a>
             </article>
-            <article class="status-card">
+            <article class="link-card">
               <h3>Wiki</h3>
-              <p>Architecture notes, build/debug workflow, roadmap, and userland milestone summary.</p>
+              <p>Architecture notes, build/debug guidance and milestone context.</p>
               <a class="inline-link" href="https://github.com/Maksu2/GemOS/wiki">Open Wiki</a>
             </article>
-            <article class="status-card">
-              <h3>Repo</h3>
-              <p>Source for the boot chain, kernel, drivers, apps, userland, and supporting docs.</p>
+            <article class="link-card">
+              <h3>Repository</h3>
+              <p>Boot chain, kernel, drivers, apps, userland and docs all live in one place.</p>
               <a class="inline-link" href="https://github.com/Maksu2/GemOS">Open Repository</a>
             </article>
           </div>

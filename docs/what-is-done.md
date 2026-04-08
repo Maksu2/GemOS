@@ -1,100 +1,51 @@
-# GemOS Status Report
-> Stan na: 30 Stycznia 2026
+# GemOS Status Snapshot
 
----
+GemOS is already beyond the “kernel boots” stage.
 
-## ✅ Gotowe (Production Ready)
+## Current state
 
-### Jądro i Infrastruktura
-- **Bootloader** – Dwuetapowy (Stage1 + Stage2), ładowanie kernela z dyskietki
-- **Zarządzanie pamięcią** – Heap z `kalloc`/`kfree`, 12MB dla systemu
-- **Przerwania (ISR/IRQ)** – Obsługa PIC, PIT (1000Hz), klawiatura, mysz
-- **Sterownik ATA PIO** – Zapis/odczyt sektorów na dysk twardy
-- **Port szeregowy** – Debug output przez `serial_print`
+### Boot and kernel
 
-### System Plików (GemFS v2)
-- Hierarchiczna struktura katalogów z `parent_id`
-- Obsługa plików i folderów (`GEMFS_TYPE_FILE`, `GEMFS_TYPE_DIR`)
-- Persistencja na osobnym dysku (`data.img`)
-- API: `gemfs_create`, `gemfs_create_dir`, `gemfs_read`, `gemfs_write`, `gemfs_find`
+- own stage 1 + stage 2 boot chain
+- protected mode bring-up
+- kernel entry at `0x100000`
+- heap allocator
+- 32-bit legacy paging
+- interrupt and exception handling
+- PIT, RTC and serial debug
 
-### Grafika i UI
-- **VBE Driver** – 1920x1080x32 z double buffering
-- **Font Engine** – TrueType rasterizer z cache, antyaliasing
-- **Window Manager** – Z-order, fokus, przeciąganie, minimalizacja, maksymalizacja
-- **Top Bar** – Menu systemowe (GemOS, Apps), zegar
-- **Dock** – Pasek z otwartymi oknami
-- **Menu System** – Dropdowny, nawigacja klawiaturą, obsługa kliknięć
+### Desktop stack
 
-### Aplikacje
-| Aplikacja | Status | Funkcje |
-|-----------|--------|---------|
-| **About GemOS** | ✅ | Splash screen z info |
-| **Terminal** | ✅ | Podstawowe wyjście tekstowe |
-| **Text Editor** | ✅ | Edycja, Save/Open, File Picker, rozszerzenie `.gemtext` |
-| **File Explorer** | ✅ | Grid view, nawigacja folderów, tworzenie folderów, asocjacje plików |
+- VBE LFB graphics
+- page-flipped rendering
+- TrueType font rendering
+- window manager
+- topbar, dock and menus
+- PS/2 keyboard and mouse input
 
----
+### Storage and execution
 
-## 🔧 W Najbliższych Planach (Next Sprint)
+- ATA PIO
+- GemFS
+- preemptive round-robin scheduler
+- per-process `CR3`
+- Ring 3 isolation
+- ELF32 `ET_EXEC` loader
 
-### File Explorer Rozszerzenia
-- [ ] Drag & Drop (przenoszenie plików między folderami) – Kod stub istnieje, potrzebuje `gemfs_move`
-- [ ] Ikony per typ pliku (zamiast kolorowych kwadratów)
-- [ ] Kontekstowe menu (PPM: usuń, zmień nazwę)
-- [ ] Odświeżanie widoku po zmianach
+### Userland transition
 
-### GemFS v3
-- [ ] `gemfs_move(src_id, dest_parent_id)`
-- [ ] `gemfs_delete(id)`
-- [ ] `gemfs_rename(id, new_name)`
-- [ ] Metadata: data modyfikacji, rozmiar pliku
+- hosted app model: kernel hosts the window and surface
+- userland apps own state, logic and render composition
+- `UTERM.ELF`
+- `ABOUT.ELF`
+- `UTEXTEDIT.ELF` in active bring-up
 
-### UX Polish
-- [ ] Podwójne kliknięcie z debounce (zamiast "klik = select, drugi klik = open")
-- [ ] Kursor zmienia się nad aktywnymi elementami
-- [ ] Animacje przejść (fade in/out okien)
+## What this means
 
----
+GemOS is in a deliberate transition phase:
 
-## 🚀 Długoterminowe (Backlog)
+- the desktop shell remains in kernel space
+- userland is real and isolated
+- APIs stay thin until multiple practical apps prove they need more
 
-### Nowe Aplikacje
-- **Calculator** – Kalkulator z GUI
-- **Paint** – Prosty edytor graficzny
-- **System Settings** – Zmiana tapety, rozdzielczości, kolorów
-- **Image Viewer** – Przeglądarka BMP/PNG
-
-### Infrastruktura
-- **Wielozadaniowość** – Scheduler, procesy, przełączanie kontekstu
-- **Networking** – NE2000/RTL8139, TCP/IP stack
-- **Dźwięk** – AC'97/SB16 driver, format WAV
-- **USB** – UHCI/OHCI, klawiatura/mysz USB
-
-### System Plików
-- **FAT32** – Kompatybilność z pendrive'ami
-- **Partycje** – MBR/GPT parsing
-- **Montowanie** – `/mnt/usb`, `/mnt/cdrom`
-
-### GUI Zaawansowane
-- **Compositor** – Alpha blending, cienie, blur
-- **Theming** – Zmiana kolorów, czcionek, stylów okien
-- **Multi-monitor** – Obsługa wielu ekranów
-- **HiDPI** – Skalowanie UI (już częściowo: `ui_scale`)
-
----
-
-## 📊 Metryki Projektu
-
-| Metryka | Wartość |
-|---------|---------|
-| Linie kodu C | ~15,000 |
-| Linie ASM | ~1,500 |
-| Rozmiar kernela | ~420 KB |
-| Czas startu | <2s |
-| Rozdzielczość | 1920x1080 |
-| FPS UI | ~60 |
-
----
-
-*GemOS – System operacyjny tworzony od zera, bez magii, z architekturą przed fetyszem funkcji.*
+For the most current overview, use the main [README](../README.md), the [project site](./index.html) and the GitHub wiki.
