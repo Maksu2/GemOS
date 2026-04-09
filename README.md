@@ -2,7 +2,7 @@
 
 From-scratch 32-bit desktop operating system for x86, written in C and assembly.
 
-[Project site](https://maksu2.github.io/GemOS/) • [Wiki](https://github.com/Maksu2/GemOS/wiki) • [Repository](https://github.com/Maksu2/GemOS)
+[Project site]([https://maksu2.github.io/GemOS/](http://gemos.maksu.online)) • [Wiki](https://github.com/Maksu2/GemOS/wiki) • [Repository](https://github.com/Maksu2/GemOS)
 
 <p align="center">
   <img src="docs/assets/screenshots/desktop-overview.png" alt="GemOS desktop overview" width="900">
@@ -182,7 +182,7 @@ Not the current focus:
 
 ## Links
 
-- Project site: https://maksu2.github.io/GemOS/
+- Project site: [https://maksu2.github.io/GemOS/](http://gemos.maksu.online)
 - Wiki: https://github.com/Maksu2/GemOS/wiki
 - Repository: https://github.com/Maksu2/GemOS
 
