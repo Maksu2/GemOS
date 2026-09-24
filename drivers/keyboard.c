@@ -54,9 +54,6 @@ static char scancode_upper[128] = {
     KEY_SPACE, 0,               /* Caps Lock */
 };
 
-/* For visual testing */
-static uint8_t last_key = 0;
-
 static uint32_t keyboard_modifiers(void) {
   uint32_t modifiers = 0;
 
@@ -110,8 +107,6 @@ void keyboard_callback(registers_t *regs) {
     e0_prefix = 0;
   } else {
     /* Key press */
-    last_key = scancode;
-
     /* Handle Shift press */
     if (scancode == SC_LSHIFT_PRESS || scancode == SC_RSHIFT_PRESS) {
       shift_pressed = 1;
@@ -190,12 +185,6 @@ void keyboard_callback(registers_t *regs) {
       }
     }
   }
-}
-
-uint8_t keyboard_get_last_key(void) {
-  uint8_t k = last_key;
-  last_key = 0;
-  return k;
 }
 
 void init_keyboard(void) {

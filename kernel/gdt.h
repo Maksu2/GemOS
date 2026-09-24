@@ -55,6 +55,5 @@ typedef struct {
 
 void gdt_init(void);
 void gdt_set_kernel_stack(uint32_t stack_top);
-const tss32_t *gdt_get_tss(void);
 
 #endif /* GDT_H */

@@ -22,9 +22,7 @@ static menu_t *menu_apps = NULL;
 
 static app_t *active_app_with_menu = NULL; /* Cached focus state */
 
-void action_about(void) { serial_print("[ACTION] About GemOS\n"); }
 void action_exit(void) { serial_print("[ACTION] Shutdown Request\n"); }
-void action_open_testapp(void) { app_open("Test App"); }
 void action_open_about(void) { app_open("About GemOS"); }
 void action_open_terminal(void) { app_open("User Terminal"); }
 void action_open_log_viewer(void) { app_open("Log Viewer"); }

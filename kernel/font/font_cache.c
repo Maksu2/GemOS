@@ -8,15 +8,6 @@ static glyph_cache_entry_t cache[CACHE_SIZE];
 
 void font_cache_init(void) { memset(cache, 0, sizeof(cache)); }
 
-void font_cache_clear(void) {
-  for (int i = 0; i < CACHE_SIZE; i++) {
-    if (cache[i].used && cache[i].bitmap) {
-      kfree(cache[i].bitmap);
-    }
-  }
-  memset(cache, 0, sizeof(cache));
-}
-
 static uint32_t hash_key(cache_key_t key) {
   /* Simple hash */
   return (key ^ (key >> 12)) % CACHE_SIZE;

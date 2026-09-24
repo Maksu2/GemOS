@@ -6,7 +6,6 @@
 
 /* Initialize keyboard driver */
 void init_keyboard(void);
-uint8_t keyboard_get_last_key(void);
 
 /* Keyboard IRQ Handler */
 void keyboard_callback(registers_t *regs);

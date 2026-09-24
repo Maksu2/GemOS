@@ -16,7 +16,6 @@
 
 void init_pic(void);
 void pic_send_eoi(uint8_t irq);
-void pic_set_mask(uint8_t irq_line);
 void pic_clear_mask(uint8_t irq_line);
 
 #endif

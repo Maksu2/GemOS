@@ -3,8 +3,6 @@
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
-bool rect_is_empty(rect_t *r) { return (r->w <= 0 || r->h <= 0); }
-
 bool rect_contains(rect_t *r, int x, int y) {
   return (x >= r->x && x < r->x + r->w && y >= r->y && y < r->y + r->h);
 }

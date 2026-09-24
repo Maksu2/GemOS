@@ -141,8 +141,8 @@ void kernel_main(void) {
   serial_print("[BOOT] Desktop drawn\n");
 
   /* Initialize Scheduler (overrides IDT gate 32 with scheduler_irq0_stub).
-   * Must be called after heap_init() (task_create needs kalloc) and
-   * before STI (so the new IRQ0 handler is in place when interrupts fire). */
+   * Must be called before STI (so the new IRQ0 handler is in place when
+   * interrupts fire). */
   scheduler_init();
   syscall_init();
 

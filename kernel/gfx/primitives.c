@@ -167,58 +167,6 @@ void gfx_fill_circle(gfx_context_t *ctx, int cx, int cy, int radius,
   }
 }
 
-void gfx_fill_rect_alpha(gfx_context_t *ctx, int x, int y, int w, int h,
-                         uint32_t color, uint8_t alpha) {
-  if (alpha == 0)
-    return;
-
-  /* If fully opaque, use fast path */
-  if (alpha == 255) {
-    gfx_fill_rect(ctx, x, y, w, h, color);
-    return;
-  }
-
-  /* Scale Coordinates */
-  int sx = (int)(x * ui_scale);
-  int sy = (int)(y * ui_scale);
-  int sw = (int)(w * ui_scale);
-  int sh = (int)(h * ui_scale);
-
-  rect_t draw_rect = {sx, sy, sw, sh};
-  rect_t clipped_rect;
-
-  if (!rect_intersect(&draw_rect, &ctx->clip_rect, &clipped_rect)) {
-    return;
-  }
-
-  /* Source color components */
-  uint8_t src_r = (color >> 16) & 0xFF;
-  uint8_t src_g = (color >> 8) & 0xFF;
-  uint8_t src_b = color & 0xFF;
-
-  int bytes_per_pixel = ctx->bpp / 8;
-  uint16_t inv_alpha = 255 - alpha;
-
-  for (int cy = clipped_rect.y; cy < clipped_rect.y + clipped_rect.h; cy++) {
-    uint8_t *row_ptr = (uint8_t *)ctx->framebuffer + cy * ctx->pitch;
-    uint8_t *pixel_ptr = row_ptr + clipped_rect.x * bytes_per_pixel;
-
-    for (int cx = 0; cx < clipped_rect.w; cx++) {
-      /* Read destination */
-      uint8_t dst_b = pixel_ptr[0];
-      uint8_t dst_g = pixel_ptr[1];
-      uint8_t dst_r = pixel_ptr[2];
-
-      /* Blend */
-      pixel_ptr[0] = (uint8_t)((src_b * alpha + dst_b * inv_alpha) / 255);
-      pixel_ptr[1] = (uint8_t)((src_g * alpha + dst_g * inv_alpha) / 255);
-      pixel_ptr[2] = (uint8_t)((src_r * alpha + dst_r * inv_alpha) / 255);
-
-      pixel_ptr += bytes_per_pixel;
-    }
-  }
-}
-
 void gfx_gradient_rect_v(gfx_context_t *ctx, int x, int y, int w, int h,
                          uint32_t top_color, uint32_t bottom_color) {
   if (h <= 0 || w <= 0)
@@ -271,19 +219,6 @@ void gfx_gradient_rect_v(gfx_context_t *ctx, int x, int y, int w, int h,
                      : "a"(row_color)
                      : "memory");
   }
-}
-
-void gfx_clear(gfx_context_t *ctx, uint32_t color) {
-  /* Clear is full logical screen? */
-  /* gfx_fill_rect expects logical. */
-  /* width/height in context are PHYSICAL. We must reverse scale? */
-  /* Or simpler: Use memset/fast fill and ignore scale for clear */
-  /* Let's keep it simple: clear uses fill_rect logic passing LOGICAL screen
-   * size. */
-  /* LOGICAL width = ctx->width / ui_scale */
-
-  gfx_fill_rect(ctx, 0, 0, (int)(ctx->width / ui_scale),
-                (int)(ctx->height / ui_scale), color);
 }
 
 /* ========================================================================= */

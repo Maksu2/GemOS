@@ -40,11 +40,8 @@ int paging_create_address_space(address_space_t *address_space);
 void paging_destroy_address_space(address_space_t *address_space);
 int paging_map_page(page_directory_t *directory, uintptr_t virtual_address,
                     uintptr_t physical_address, uint32_t flags);
-int paging_map_range(page_directory_t *directory, uintptr_t virtual_address,
-                     uintptr_t physical_address, size_t length, uint32_t flags);
 int paging_update_page_flags(page_directory_t *directory, uintptr_t virtual_address,
                              uint32_t flags);
-void paging_unmap_page(page_directory_t *directory, uintptr_t virtual_address);
 void paging_switch_directory(page_directory_t *directory);
 int paging_is_user_range_mapped(page_directory_t *directory, uintptr_t address,
                                 size_t length, int writable);
@@ -53,9 +50,5 @@ uintptr_t page_frame_alloc(void);
 void page_frame_free(uintptr_t frame);
 
 page_directory_t *paging_get_directory(void);
-page_directory_t *paging_get_current_directory(void);
-uintptr_t paging_get_current_cr3(void);
-page_table_t *paging_get_table_pool(void);
-size_t paging_get_table_count(void);
 
 #endif /* PAGING_H */

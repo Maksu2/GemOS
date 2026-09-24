@@ -30,8 +30,6 @@ static void gdt_write_tss(int index, uint32_t base, uint32_t limit) {
 
 void gdt_set_kernel_stack(uint32_t stack_top) { kernel_tss.esp0 = stack_top; }
 
-const tss32_t *gdt_get_tss(void) { return &kernel_tss; }
-
 void gdt_init(void) {
   uint32_t current_esp;
 

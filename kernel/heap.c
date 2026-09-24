@@ -95,8 +95,4 @@ void kfree(void *ptr) {
      This is acceptable for Phase 3.1. */
 }
 
-uintptr_t heap_get_start(void) { return heap_base; }
-
 uintptr_t heap_get_end(void) { return heap_base + heap_total_size; }
-
-size_t heap_get_size(void) { return heap_total_size; }

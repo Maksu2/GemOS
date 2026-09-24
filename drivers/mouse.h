@@ -20,6 +20,5 @@ void mouse_callback(registers_t *regs);
 
 /* Helpers */
 void mouse_wait(uint8_t type);
-void mouse_get_state(int32_t *x, int32_t *y, uint8_t *buttons);
 
 #endif

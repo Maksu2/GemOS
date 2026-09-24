@@ -42,8 +42,6 @@ typedef struct {
 extern void scheduler_irq0_stub(void);
 
 void     scheduler_init(void);
-int      task_create_kernel(void (*entry)(void));
-int      task_create(void (*entry)(void));
 int      task_create_user(struct process *process, uint32_t initial_esp);
 
 /* Called from assembly stub — returns new ESP to switch to */
@@ -57,8 +55,6 @@ void     scheduler_mark_current_fault(uint32_t vector, uint32_t error,
 int      scheduler_kill_task(uint32_t task_id);
 int      scheduler_get_current_pid(void);
 struct process *scheduler_get_current_process(void);
-const task_t *scheduler_get_current_task(void);
 void     scheduler_release_task(uint32_t task_id);
-int      scheduler_current_task_kind(void);
 
 #endif /* SCHEDULER_H */

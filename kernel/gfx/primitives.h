@@ -30,18 +30,11 @@ void gfx_draw_rect(gfx_context_t *ctx, int x, int y, int w, int h,
 void gfx_fill_circle(gfx_context_t *ctx, int cx, int cy, int radius,
                      uint32_t color);
 
-/* Fill a rectangle with alpha blending (0=transparent, 255=opaque) */
-void gfx_fill_rect_alpha(gfx_context_t *ctx, int x, int y, int w, int h,
-                         uint32_t color, uint8_t alpha);
-
 /* Fill a rectangle with a vertical gradient (top_color → bottom_color) */
 void gfx_gradient_rect_v(gfx_context_t *ctx, int x, int y, int w, int h,
                          uint32_t top_color, uint32_t bottom_color);
 
 /* Text functions moved to gfx/font/font.h */
-
-/* Clear the entire context (clipped to clip_rect) */
-void gfx_clear(gfx_context_t *ctx, uint32_t color);
 
 /* ========================================================================= */
 /* Icon / Bitmap Support                                                     */

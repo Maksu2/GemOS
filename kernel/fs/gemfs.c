@@ -223,17 +223,6 @@ int gemfs_read(const char *name, char *buf, uint32_t max_size) {
   return gemfs_read_id(idx, buf, max_size);
 }
 
-int gemfs_delete(const char *name) {
-  int idx = gemfs_find(name);
-  if (idx < 0)
-    return -1;
-
-  file_table[idx].name[0] = '\0';
-  file_table[idx].size = 0;
-  gemfs_sync_table();
-  return 0;
-}
-
 int gemfs_count(void) {
   int count = 0;
   for (int i = 0; i < GEMFS_MAX_FILES; i++) {
@@ -249,12 +238,6 @@ const char *gemfs_get_name(int index) {
     return (const char *)0;
   }
   return file_table[index].name;
-}
-
-uint32_t gemfs_get_size(int index) {
-  if (index >= 0 && index < GEMFS_MAX_FILES)
-    return file_table[index].size;
-  return 0;
 }
 
 uint8_t gemfs_get_type(int index) {

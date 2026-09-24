@@ -31,7 +31,4 @@ void font_cache_put(uint16_t glyph_index, uint16_t size, const uint8_t *bitmap,
                     int width, int height, int offset_x, int offset_y,
                     int advance);
 
-/* Clear the cache (frees all bitmaps) */
-void font_cache_clear(void);
-
 #endif

@@ -3,7 +3,6 @@
 #include "gdt.h"
 #include "idt.h"
 #include "process.h"
-#include "include/heap.h"
 #include "memory/paging.h"
 #include "../drivers/pit.h"
 #include "../drivers/pic.h"
@@ -100,78 +99,6 @@ void scheduler_init(void) {
 
     serial_print("[SCHED] Initialized — INT32 -> scheduler_irq0_stub\n");
 }
-
-int task_create_kernel(void (*entry)(void)) {
-    if (task_count >= MAX_TASKS) {
-        serial_print("[SCHED] task_create: max tasks reached\n");
-        return -1;
-    }
-
-    /* Find a free slot (slot 0 is always task0 / kernel) */
-    int slot = scheduler_find_free_slot();
-    if (slot < 0) return -1;
-
-    uint8_t *stack = (uint8_t *)kalloc(TASK_STACK_SIZE);
-    if (!stack) {
-        serial_print("[SCHED] task_create: out of memory\n");
-        return -1;
-    }
-
-    /*
-     * Build the initial interrupt frame on the new task's stack.
-     *
-     * The restore sequence in scheduler_irq0_stub is:
-     *   pop %eax (DS) / mov %ax, seg... / popa / add $8 / iret
-     *
-     * So we lay out the frame identically to what pusha + the surrounding
-     * stub would produce, from high address to low (each *--sp decrements):
-     *
-     *   highest: EFLAGS, CS, EIP, err_code, int_no,
-     *            EAX, ECX, EDX, EBX, ESP_snap, EBP, ESI, EDI, DS  :lowest
-     *
-     * task->esp will point at DS (the lowest element = what ESP points to
-     * after the stub saves the frame).
-     *
-     * pusha order: EAX first (highest addr), EDI last (lowest addr).
-     */
-    uint32_t *sp = (uint32_t *)(stack + TASK_STACK_SIZE);
-
-    *--sp = 0x00000202;        /* EFLAGS: IF=1, reserved bit 1 */
-    *--sp = GDT_KERNEL_CS;     /* CS: kernel code segment */
-    *--sp = (uint32_t)entry;   /* EIP: task entry point */
-    *--sp = 0;                 /* err_code */
-    *--sp = 32;                /* int_no */
-    /* pusha block (high -> low): EAX, ECX, EDX, EBX, ESP_snap, EBP, ESI, EDI */
-    *--sp = 0;                 /* EAX */
-    *--sp = 0;                 /* ECX */
-    *--sp = 0;                 /* EDX */
-    *--sp = 0;                 /* EBX */
-    *--sp = 0;                 /* ESP snapshot (popa ignores this field) */
-    *--sp = 0;                 /* EBP */
-    *--sp = 0;                 /* ESI */
-    *--sp = 0;                 /* EDI */
-    *--sp = GDT_KERNEL_DS;     /* DS: kernel data segment */
-
-    tasks[slot].id = (uint32_t)slot;
-    tasks[slot].kind = TASK_KIND_KERNEL;
-    tasks[slot].state = TASK_READY;
-    tasks[slot].stack = stack;
-    tasks[slot].kernel_stack_top = (uint32_t)(uintptr_t)(stack + TASK_STACK_SIZE);
-    tasks[slot].esp = (uint32_t)(uintptr_t)sp;
-    tasks[slot].ticks_remaining = TASK_QUANTUM;
-    tasks[slot].process = NULL;
-    task_count++;
-
-    serial_print("[SCHED] Task created: id=");
-    serial_print_dec(slot);
-    serial_print(" esp=0x");
-    serial_print_hex(tasks[slot].esp);
-    serial_print("\n");
-
-    return slot;
-}
-
-int task_create(void (*entry)(void)) { return task_create_kernel(entry); }
 
 int task_create_user(struct process *process, uint32_t initial_esp) {
     int slot;
@@ -342,8 +269,6 @@ struct process *scheduler_get_current_process(void) {
     return tasks[current_task].process;
 }
 
-const task_t *scheduler_get_current_task(void) { return &tasks[current_task]; }
-
 void scheduler_release_task(uint32_t task_id) {
     if (task_id == 0 || task_id >= MAX_TASKS) {
         return;
@@ -353,8 +278,4 @@ void scheduler_release_task(uint32_t task_id) {
     if (task_count > 1) {
         task_count--;
     }
-}
-
-int scheduler_current_task_kind(void) {
-    return (int)tasks[current_task].kind;
 }
