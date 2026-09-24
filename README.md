@@ -50,7 +50,7 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 - shared supervisor-only kernel mapping as the transition model
 - preemptive round-robin scheduler
 - `process_t` / `task_t` split
-- faulted user processes are killed without panicking the whole kernel
+- user processes that fault with #DE, #UD, #TS, #NP, #SS, #GP or #PF are killed and reaped; any other exception raised in ring 3 still halts the whole system
 
 ### Desktop, drivers and storage
 
@@ -70,7 +70,8 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 - `int 0x80` syscall layer
 - safe copy helpers for user pointers
 - hosted app model: kernel hosts the window/surface, userland owns app state and render logic
-- hosted close requests, keyboard modifiers and thin file read/write syscalls
+- hosted close requests and keyboard modifiers
+- thin file read/write syscalls (no app uses them yet)
 
 ## Current architecture
 
@@ -104,7 +105,7 @@ userland apps: UTERM.ELF, ABOUT.ELF, UTEXTEDIT.ELF
 | `ABOUT.ELF` | Stable | Small polished userland app with timed updates and clean close flow |
 | `UTEXTEDIT.ELF` | Active bring-up | Hosted editor with document state, multiline render, caret movement and dirty state |
 
-The current text editor is intentionally in progress. Basic document editing is in place; file open/save and unsaved-close flow are the next steps.
+The current text editor is intentionally in progress. Basic document editing is in place; file open/save and the unsaved-close flow come after the kernel concurrency work (see [Roadmap](#roadmap)).
 
 ## Build / Run / Debug
 
@@ -112,20 +113,30 @@ The current text editor is intentionally in progress. Basic document editing is 
 
 - `nasm`
 - `qemu-system-i386`
-- `i686-elf-*` or `x86_64-elf-*` cross-toolchain
+- an `i686-elf-*` or `x86_64-elf-*` cross toolchain, or a host `gcc`/`binutils` that accepts `-m32` (the Makefile falls back to it automatically; CI uses this path)
+- Python 3 for the smoke test
 
 On macOS:
 
 ```bash
-brew install nasm qemu
+brew install nasm qemu i686-elf-gcc
 ```
 
-Build and run:
+On Debian/Ubuntu (host `gcc -m32` fallback):
 
 ```bash
-make all
-make run
+sudo apt-get install nasm qemu-system-x86 gcc
 ```
+
+Build, test and run:
+
+```bash
+make all          # build/gemos.img
+tools/smoke.sh    # build, boot headless in QEMU, start UTERM/ABOUT/UTEXTEDIT
+make run          # QEMU window with the GemFS data disk (build/data.img)
+```
+
+`tools/smoke.sh` prints one PASS/FAIL line per check and keeps the serial log and screenshots in `build/smoke/`. CI runs `make all` and the smoke test on every push and pull request.
 
 Run under GDB:
 
@@ -148,23 +159,23 @@ kernel/     kernel core, scheduler, paging, ELF, syscalls, WM
 drivers/    hardware drivers
 apps/       kernel-space apps and desktop launchers
 userland/   user-space binaries, runtime and shared helpers
-docs/       GitHub Pages site and supporting docs
+include/    freestanding C headers and the userland ABI (include/gemos)
 lib/        freestanding support code
+assets/     system font (Inter) and its license
+tools/      QEMU smoke test
+docs/       GitHub Pages site and the code audit
 ```
 
 ## Roadmap
 
-Near term:
+The work follows the stages of the [September 2026 code audit](docs/AUDIT-2026-09.md) (section 8.2). No new features before stage 3 is done:
 
-- finish `UTEXTEDIT.ELF` open/save flow and unsaved-close behavior
-- keep hardening hosted app lifecycle and cleanup
-- keep migrating small apps to userland only when the pattern is mature
-
-After that:
-
-- migrate more practical apps, starting with file-oriented workflows
-- continue tightening scheduler / task lifecycle primitives
-- expand file-facing APIs only when real userland needs prove them out
+0. Safety net: CI and the QEMU smoke test (done)
+1. Clean-up: dead code, duplicated headers, stale docs (done)
+2. Boot and memory: zeroed BSS, boot info with the E820 map, memory detection, a new loader, an ATA driver with timeouts
+3. Concurrency and isolation: syscalls stop changing GUI and filesystem state directly, blocking waits, FPU state, a fault in ring 3 kills only the process
+4. Storage: GemFS with a superblock and allocation, files larger than 8 KB
+5. GUI and apps: clipping, window placement, `UTEXTEDIT.ELF` open/save, then retiring the kernel text editor
 
 ## Out of scope right now
 
@@ -188,4 +199,6 @@ Not the current focus:
 
 ## License
 
-MIT
+GemOS is released under the MIT License, see [LICENSE](LICENSE).
+
+The bundled system font `assets/font.ttf` is [Inter](https://github.com/rsms/inter) 4.001, © The Inter Project Authors, licensed under the SIL Open Font License 1.1, see [assets/OFL.txt](assets/OFL.txt).

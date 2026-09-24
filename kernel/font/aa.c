@@ -1,5 +1,4 @@
 #include "../gfx/primitives.h"
-#include "font.h"
 
 /*
    Grayscale Anti-Aliasing Blending

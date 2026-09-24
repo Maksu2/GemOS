@@ -1,5 +1,5 @@
 #include "truetype.h"
-#include "../../include/string.h"
+#include <string.h>
 #include "../gfx/primitives.h" // For kprintf/serial debugging if needed
 #include "../include/heap.h"
 

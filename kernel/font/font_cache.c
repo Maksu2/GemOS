@@ -1,5 +1,5 @@
 #include "font_cache.h"
-#include "../../include/string.h"
+#include <string.h>
 #include "../include/heap.h"
 
 #define CACHE_SIZE 512
@@ -7,15 +7,6 @@
 static glyph_cache_entry_t cache[CACHE_SIZE];
 
 void font_cache_init(void) { memset(cache, 0, sizeof(cache)); }
-
-void font_cache_clear(void) {
-  for (int i = 0; i < CACHE_SIZE; i++) {
-    if (cache[i].used && cache[i].bitmap) {
-      kfree(cache[i].bitmap);
-    }
-  }
-  memset(cache, 0, sizeof(cache));
-}
 
 static uint32_t hash_key(cache_key_t key) {
   /* Simple hash */
@@ -64,13 +55,8 @@ void font_cache_put(uint16_t glyph_index, uint16_t size, const uint8_t *bitmap,
     idx = (idx + 1) % CACHE_SIZE;
   } while (idx != start_idx);
 
-  /* 2. If full, just overwrite the hashed slot (Direct Mapped fallback for
-     collision) Wait, simple linear probe shouldn't just overwrite arbitrary
-     unless full. If we didn't find empty slot, cache is FULL. In "Simple"
-     implementation, let's just use the START_IDX if full, forcing an eviction
-     of whatever hashed there. Actually, `idx` looped back to `start_idx`. Cache
-     is full. Let's evict the start_idx.
-  */
+  /* 2. The probe wrapped around without a free slot: the cache is full, so
+     evict the entry at the key's hash position. */
 
   if (empty_slot == -1) {
     // Force eviction at hash position

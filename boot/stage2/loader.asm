@@ -249,7 +249,6 @@ setup_vbe:
     jne .vbe_error
     
     ; Get pointer to mode list
-    ; vbe_info + 14 is segment, + 16 is offset? No.
     ; Offset 14: DWORD VideoModePtr (Far Pointer: Offset:Segment)
     mov ax, [vbe_info + 16]     ; Segment
     mov es, ax
@@ -322,9 +321,8 @@ setup_vbe:
     jmp .mode_loop
     
 .no_mode_found:
-    ; Fallback to safe mode (800x600) if 1080p fails?
-    ; For now, just error out as requested to enforce 1080p
-    ; User said: "Docelowa rozdzielczość: 1920x1080"
+    ; 1920x1080x32 with a linear framebuffer is required; there is no
+    ; fallback mode
     jmp .vbe_error
 
 .vbe_error:

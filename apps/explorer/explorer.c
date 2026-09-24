@@ -6,7 +6,7 @@
 #include "../../kernel/gfx/primitives.h"
 #include "../../kernel/gui/wm/wm.h"
 #include "../../kernel/include/heap.h"
-#include "explorer_icons.h"
+#include "../../kernel/gfx/icons.h"
 #include <stddef.h>
 
 #define GRID_COLS 5
@@ -194,12 +194,7 @@ static void explorer_handle_event(window_t *win, event_t *ev) {
     if (ry < TOP_BAR_H && ry > 0) {
       if (rx > 5 && rx < 45) { /* UP */
         if (current_folder_id != -1) {
-          /* Find parent's parent?
-             Wait, directory entries store their parent,
-             but we need to know the parent OF current_folder_id.
-             gemfs doesn't have "get_entry(id)", we have accessors.
-             We need gemfs_get_parent(current_folder_id).
-          */
+          /* Go to the parent of the current folder */
           current_folder_id = gemfs_get_parent(current_folder_id);
           selected_id = -1;
         }

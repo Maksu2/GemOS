@@ -11,7 +11,6 @@
 #include <stdint.h>
 
 /* Read current time from CMOS RTC */
-uint8_t rtc_get_seconds(void);
 uint8_t rtc_get_minutes(void);
 uint8_t rtc_get_hours(void);
 

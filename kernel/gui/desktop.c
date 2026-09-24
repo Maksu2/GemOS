@@ -6,8 +6,6 @@
 #define WALLPAPER_TOP 0x1A1A3E    /* Dark navy */
 #define WALLPAPER_BOTTOM 0x0A4D4D /* Deep teal */
 
-void desktop_init(void) { /* Nothing to init */ }
-
 void desktop_draw(gfx_context_t *ctx) {
   /* Gradient fill: writes each row with its interpolated color.
    * This is FASTER than a cached memcpy because:

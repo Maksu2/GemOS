@@ -17,15 +17,6 @@
 #define GEMFS_TYPE_FILE 0
 #define GEMFS_TYPE_DIR 1
 
-typedef struct {
-  char name[GEMFS_MAX_FILENAME];
-  uint32_t size;
-  char data[GEMFS_MAX_FILESIZE];
-  int used;
-  uint8_t type;
-  int8_t parent_id; /* -1 for root */
-} gemfs_file_t;
-
 /* Initialize file system */
 void gemfs_init(void);
 
@@ -46,9 +37,6 @@ int gemfs_write_id(int id, const char *data, uint32_t size);
 int gemfs_read(const char *name, char *buf, uint32_t max_size);
 int gemfs_read_id(int id, char *buf, uint32_t max_size);
 
-/* Delete a file (returns 0 on success, -1 on error) */
-int gemfs_delete(const char *name);
-
 /* Find file by name in parent (returns index or -1) */
 int gemfs_find_in_dir(int parent_id, const char *name);
 
@@ -59,7 +47,6 @@ int gemfs_find(
 /* Get file info */
 int gemfs_count(void);
 const char *gemfs_get_name(int index);
-uint32_t gemfs_get_size(int index);
 uint8_t gemfs_get_type(int index);
 int8_t gemfs_get_parent(int index);
 

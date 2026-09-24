@@ -35,11 +35,6 @@ static int rtc_is_bcd(void) {
   return !(status_b & 0x04);
 }
 
-uint8_t rtc_get_seconds(void) {
-  uint8_t val = cmos_read(RTC_REG_SECONDS);
-  return rtc_is_bcd() ? bcd_to_bin(val) : val;
-}
-
 uint8_t rtc_get_minutes(void) {
   uint8_t val = cmos_read(RTC_REG_MINUTES);
   return rtc_is_bcd() ? bcd_to_bin(val) : val;

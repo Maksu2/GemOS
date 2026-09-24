@@ -159,23 +159,6 @@ void mouse_callback(registers_t *regs) {
   }
 }
 
-/* Getter for visual test - non-blocking */
-static uint8_t mouse_buttons = 0;
-void mouse_get_state(int32_t *x, int32_t *y, uint8_t *buttons) {
-  if (x)
-    *x = cursor.x;
-  if (y)
-    *y = cursor.y;
-
-  /* We need to extract buttons from the last packet */
-  /* Flags byte (byte 0) contains buttons: Left=bit0, Right=bit1, Middle=bit2 */
-  /* Since we don't store it globally yet, we update it from byte 0 */
-  mouse_buttons = mouse_byte[0] & 0x07;
-
-  if (buttons)
-    *buttons = mouse_buttons;
-}
-
 void init_mouse(void) {
   uint8_t status;
 

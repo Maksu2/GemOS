@@ -41,21 +41,6 @@ void pic_send_eoi(uint8_t irq) {
   outb(PIC1_COMMAND, PIC_EOI);
 }
 
-void pic_set_mask(uint8_t irq_line) {
-  uint16_t port;
-  uint8_t value;
-
-  if (irq_line < 8) {
-    port = PIC1_DATA;
-  } else {
-    port = PIC2_DATA;
-    irq_line -= 8;
-  }
-
-  value = inb(port) | (1 << irq_line);
-  outb(port, value);
-}
-
 void pic_clear_mask(uint8_t irq_line) {
   uint16_t port;
   uint8_t value;

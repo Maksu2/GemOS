@@ -260,9 +260,7 @@ static void action_font_20(void) { current_font_size = 20; }
 static void action_font_28(void) { current_font_size = 28; }
 
 static void action_font_menu(void) {
-  /* Show font menu at mouse position? Or center? */
-  /* Use fixed position relative to click or cascade? */
-  /* Simplified: Show at fixed offset */
+  /* Shown at a fixed position */
   menu_show(font_menu, 100, 100);
 }
 
@@ -386,14 +384,7 @@ static void textedit_render(window_t *win) {
   }
 
   if (caret_visible && win->focused) {
-    /* Recompute caret pos for drawing */
-    /* Already computed above in caret_x/y! Wait, did line height logic match?
-     * Yes. */
-
-    /* But wait, recompute again to be safe due to loop logic matching text
-     * loop? */
-    /* The first loop calculated caret_x/y based on flow. Should be correct. */
-
+    /* caret_x/caret_y were computed by the text layout loop above */
     /* Check bounds */
     if (caret_y >= text_y && caret_y < text_y + h - TEXT_PADDING) {
       gfx_fill_rect(&win->ctx, caret_x, caret_y, 2, current_font_size + 2,
@@ -415,12 +406,12 @@ static void textedit_handle_event(window_t *win, event_t *ev) {
     caret_visible = 1;
     blink_counter = 0;
 
-    if (c == KEY_BACKSPACE) {
+    if (c == GEMOS_KEY_BACKSPACE) {
       if (cursor_pos > 0) {
         cursor_pos--;
         text_buffer[cursor_pos] = '\0';
       }
-    } else if (c == KEY_ENTER) {
+    } else if (c == GEMOS_KEY_ENTER) {
       if (cursor_pos < TEXT_BUFFER_SIZE - 1) {
         text_buffer[cursor_pos++] = '\n';
         text_buffer[cursor_pos] = '\0';
@@ -475,8 +466,7 @@ static void textedit_init(void) {
     menu_add_item(file_menu, "Save", action_save);
     menu_add_item(file_menu, "Save As...", action_save_as);
 
-    /* Font Size Submenu? No real submenus yet. */
-    /* Workaround: "Font Size ->" Action opens another menu */
+    /* There are no submenus: "Font Size..." opens a second menu */
     menu_add_item(file_menu, "Font Size...", action_font_menu);
 
     /* Set Title for TopBar */
@@ -491,8 +481,7 @@ static void textedit_init(void) {
     menu_add_item(font_menu, "Huge (28)", action_font_28);
   }
 
-  /* Create a combined menu? No, we attach FILE menu to app */
-  /* Topbar will confirm current app and show this menu */
+  /* The topbar shows the File menu while this app has focus */
   textedit_app.menu = file_menu;
 }
 

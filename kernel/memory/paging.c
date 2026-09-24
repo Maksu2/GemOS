@@ -16,7 +16,6 @@ static page_directory_t kernel_page_directory
     __attribute__((aligned(PAGE_SIZE)));
 static page_table_t kernel_page_tables[PAGING_STATIC_KERNEL_TABLES]
     __attribute__((aligned(PAGE_SIZE)));
-static size_t kernel_page_table_count = PAGING_STATIC_KERNEL_TABLES;
 static int paging_initialized = 0;
 static uintptr_t frame_pool_start = 0;
 static uintptr_t frame_pool_end = 0;
@@ -318,30 +317,6 @@ int paging_map_page(page_directory_t *directory, uintptr_t virtual_address,
   return 1;
 }
 
-int paging_map_range(page_directory_t *directory, uintptr_t virtual_address,
-                     uintptr_t physical_address, size_t length, uint32_t flags) {
-  uintptr_t current_virtual;
-  uintptr_t current_physical;
-  uintptr_t end;
-
-  if (length == 0) {
-    return 1;
-  }
-
-  current_virtual = PAGE_ALIGN_DOWN(virtual_address);
-  current_physical = PAGE_ALIGN_DOWN(physical_address);
-  end = PAGE_ALIGN_UP(virtual_address + length);
-
-  for (; current_virtual < end;
-       current_virtual += PAGE_SIZE, current_physical += PAGE_SIZE) {
-    if (!paging_map_page(directory, current_virtual, current_physical, flags)) {
-      return 0;
-    }
-  }
-
-  return 1;
-}
-
 int paging_update_page_flags(page_directory_t *directory, uintptr_t virtual_address,
                              uint32_t flags) {
   uint32_t directory_index;
@@ -371,29 +346,6 @@ int paging_update_page_flags(page_directory_t *directory, uintptr_t virtual_addr
     paging_flush_tlb(virtual_address);
   }
   return 1;
-}
-
-void paging_unmap_page(page_directory_t *directory, uintptr_t virtual_address) {
-  uint32_t directory_index;
-  uint32_t table_index;
-  page_table_t *table;
-
-  if (directory == NULL) {
-    return;
-  }
-
-  virtual_address = PAGE_ALIGN_DOWN(virtual_address);
-  directory_index = PAGE_DIRECTORY_INDEX((uint32_t)virtual_address);
-  table_index = PAGE_TABLE_INDEX((uint32_t)virtual_address);
-  table = paging_get_table(directory, directory_index);
-  if (table == NULL) {
-    return;
-  }
-
-  table->entries[table_index] = 0;
-  if (directory == current_page_directory) {
-    paging_flush_tlb(virtual_address);
-  }
 }
 
 void paging_switch_directory(page_directory_t *directory) {
@@ -462,13 +414,3 @@ int paging_is_user_range_mapped(page_directory_t *directory, uintptr_t address,
 }
 
 page_directory_t *paging_get_directory(void) { return &kernel_page_directory; }
-
-page_directory_t *paging_get_current_directory(void) {
-  return current_page_directory;
-}
-
-uintptr_t paging_get_current_cr3(void) { return paging_read_cr3(); }
-
-page_table_t *paging_get_table_pool(void) { return &kernel_page_tables[0]; }
-
-size_t paging_get_table_count(void) { return kernel_page_table_count; }

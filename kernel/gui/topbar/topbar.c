@@ -22,9 +22,7 @@ static menu_t *menu_apps = NULL;
 
 static app_t *active_app_with_menu = NULL; /* Cached focus state */
 
-void action_about(void) { serial_print("[ACTION] About GemOS\n"); }
 void action_exit(void) { serial_print("[ACTION] Shutdown Request\n"); }
-void action_open_testapp(void) { app_open("Test App"); }
 void action_open_about(void) { app_open("About GemOS"); }
 void action_open_terminal(void) { app_open("User Terminal"); }
 void action_open_log_viewer(void) { app_open("Log Viewer"); }
@@ -72,7 +70,7 @@ void topbar_on_focus_changed(focus_state_t *state) {
 void topbar_render(gfx_context_t *ctx) {
   int logical_width = (int)(ctx->width / ui_scale);
 
-  /* 1. Background - dark semi-transparent bar */
+  /* 1. Background - dark bar */
   gfx_fill_rect(ctx, 0, 0, logical_width, TOPBAR_HEIGHT, COLOR_TOPBAR_BG);
 
   /* Subtle bottom line */

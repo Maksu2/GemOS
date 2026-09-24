@@ -1,8 +1,8 @@
 /**
  * Text Editor Application
  *
- * Minimal write-only text editor for GemOS.
- * Phase 5.2 implementation.
+ * Minimal kernel text editor (not registered; the menu starts
+ * UTEXTEDIT.ELF instead).
  */
 
 #ifndef TEXTEDIT_H

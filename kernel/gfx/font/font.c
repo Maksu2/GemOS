@@ -1,5 +1,5 @@
 #include "font.h"
-#include "../../../include/string.h"
+#include <string.h>
 #include "../../font/font_cache.h"
 #include "../../font/scanline.h"
 #include "../../font/truetype.h"
@@ -69,10 +69,6 @@ void font_draw_text(gfx_context_t *ctx, int x, int y, const char *text,
     uint32_t cp = (unsigned char)c;
     uint16_t gid = tt_get_glyph_index(&g_font, cp);
 
-    if (gid == 0) {
-      // Missing glyph logic?
-    }
-
     /* 1. Try Cache */
     glyph_cache_entry_t *entry = font_cache_get(gid, (int)(size_px * ui_scale));
     if (entry) {
@@ -108,8 +104,8 @@ void font_draw_text(gfx_context_t *ctx, int x, int y, const char *text,
         /* Find bounding box of actual pixels */
         int min_x = 256, max_x = -1, min_y = 256, max_y = -1;
 
-        // Use the conservative bounds from vector as start? No, scan actual
-        // buffer for tight bounds Optimization: scan the buffer
+        // Scan the raster buffer, limited to the outline's bounds, for the
+        // tight bitmap bounds
         int b_min_x = (int)((glyph.x_min * combined_scale) + buf_off_x) - 1;
         int b_max_x = (int)((glyph.x_max * combined_scale) + buf_off_x) + 2;
         int b_min_y = (int)((glyph.y_max * -combined_scale) + buf_off_y) - 1;
@@ -168,7 +164,7 @@ void font_draw_text(gfx_context_t *ctx, int x, int y, const char *text,
                 }
               }
             }
-            kfree(bmp); // Cache made a copy? Yes cache_put makes a copy.
+            kfree(bmp); // font_cache_put() keeps its own copy
           }
         } else {
           // Empty glyph (space?)

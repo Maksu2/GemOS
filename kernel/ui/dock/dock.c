@@ -40,7 +40,7 @@ void dock_register_window(window_t *win) {
 
   dock_items[dock_item_count].window = win;
   dock_items[dock_item_count].active =
-      false; // Initially false? Or check win->focused?
+      false; /* wm_add_window() focuses the window right after this */
   dock_item_count++;
   serial_print("[DOCK] Window Registered\n");
 }
@@ -164,12 +164,8 @@ bool dock_handle_event(event_t *event) {
               win->visible = true; // Ensure visible
               wm_focus_window(win);
             } else {
-              /* If already active, maybe minimize? Or just focus? */
               if (win->focused) {
-                // Minimize on click if already focused? Windows/macOS behavior
-                // varies. User said: "Restore (klik w Dock)..." Let's implement
-                // Restore/Focus. If I click focused window in dock, usually
-                // nothing or minimize. Let's stick to Restore/Focus for now.
+                /* Already focused: nothing to do */
               } else {
                 wm_focus_window(win);
               }
@@ -179,9 +175,9 @@ bool dock_handle_event(event_t *event) {
         }
       }
 
-      return true; /* Consumed click in dock background? User: "Dock nie
-                      przechwytuje imputu globalnie - tylko w swoim obszarze".
-                      So YES, consume click in dock area. */
+      /* Clicks anywhere in the dock area are consumed, including the
+       * empty background */
+      return true;
     }
   }
 

@@ -11,9 +11,6 @@ typedef struct {
   int h;
 } rect_t;
 
-/* Check if rect is empty/invalid */
-bool rect_is_empty(rect_t *r);
-
 /* Check if point is inside rect */
 bool rect_contains(rect_t *r, int x, int y);
 

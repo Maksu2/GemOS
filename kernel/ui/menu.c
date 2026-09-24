@@ -2,7 +2,8 @@
 #include "../../drivers/serial.h"
 #include "../gfx/font/font.h"
 #include "../gfx/primitives.h"
-#include "../include/string.h"
+#include <gemos/console_abi.h>
+#include <string.h>
 #include "ui_scale.h"
 #include <stddef.h>
 
@@ -77,11 +78,6 @@ void menu_add_item(menu_t *menu, const char *label, menu_action_t action) {
 void menu_show(menu_t *menu, int x, int y) {
   if (!menu)
     return;
-  if (active_menu == menu) {
-    /* Toggle off if clicking self trigger? No, usually handled by caller. */
-    /* But if called, we show it. */
-  }
-
   active_menu = menu;
   active_menu->x = x;
   active_menu->y = y;
@@ -147,23 +143,21 @@ bool menu_handle_event(event_t *event) {
   if (event->type == EVENT_KEY_PRESS) {
     uint8_t key = (uint8_t)event->data.key.character;
     /* Navigation */
-    if (key == 0x80) { /* KEY_UP - hardcoded or from header? include driver
-                          header? using raw val 0x80 from my def */
-      /* Use values from keyboard.h or assume 0x80/81 mapping maintained */
+    if (key == GEMOS_KEY_UP) {
       if (active_menu->hover_index > 0) {
         active_menu->hover_index--;
       } else {
         active_menu->hover_index = active_menu->item_count - 1; /* Wrap */
       }
       return true;
-    } else if (key == 0x81) { /* KEY_DOWN */
+    } else if (key == GEMOS_KEY_DOWN) {
       if (active_menu->hover_index < active_menu->item_count - 1) {
         active_menu->hover_index++;
       } else {
         active_menu->hover_index = 0; /* Wrap */
       }
       return true;
-    } else if (key == 0x0A) { /* KEY_ENTER */
+    } else if (key == GEMOS_KEY_ENTER) {
       int index = active_menu->hover_index;
       if (index >= 0 && index < active_menu->item_count) {
         menu_action_t action = active_menu->items[index].action;
@@ -178,7 +172,8 @@ bool menu_handle_event(event_t *event) {
         }
       }
       return true;
-    } else if (event->data.key.key_code == 0x01 || key == 0x1B) { /* ESC */
+    } else if (event->data.key.key_code == 0x01 /* Esc scancode */ ||
+               key == GEMOS_KEY_ESC) {
       menu_hide();
       return true; /* Consumed */
     }
@@ -203,8 +198,8 @@ bool menu_handle_event(event_t *event) {
       active_menu->hover_index = -1;
     }
 
-    return true; /* Consume mouse move if menu active? */
-                 /* Yes, block windows from seeing hover if menu open */
+    /* Windows get no hover events while a menu is open */
+    return true;
   } else if (event->type == EVENT_MOUSE_CLICK) {
     int mx = event->data.mouse.x;
     int my = event->data.mouse.y;
@@ -240,39 +235,13 @@ bool menu_handle_event(event_t *event) {
       /* Click outside -> Close Menu */
       menu_hide();
 
-      /* Return TRUE or FALSE? */
-      /* User said: "przechwytuje input... blokuje interakcję z oknami pod
-       * spodem" */
-      /* BUT "Click outside -> close" should it allows the click to propagate?
-       */
-      /* Standard OS: Click outside closes menu and DOES NOT trigger click on
-       * window underneath (usually). */
-      /* Or does it? Windows: Click outside closes menu, swallows click. */
-      /* macOS: Click outside closes menu, swallows click. */
-      /* So we return TRUE (Consumed) even if outside, to prevent accidental
-       * click on window/desktop. */
-
-      /* EXCEPTION: Top Bar triggers. If I click "File" while "GemOS" menu open.
-       */
-      /* Top Bar handles usage. Ideally Top Bar logic runs AFTER menu if menu
-       * didn't swallow. */
-      /* But we stipulated: Priority 1. Menu, 2. TopBar. */
-      /* If Menu returns True, TopBar sees nothing. */
-      /* So if I click "File", Menu closes, consumes click. "File" DOES NOT
-       * open. */
-      /* That feels clunky. "File" should open. */
-      /* Improvement: Check if click is in TopBar area. If so, return false? */
-
-      /* Let's stick to "Blocking" first as requested ("menu... blokuje
-       * interakcję z oknami"). */
-      /* Top Bar is not a window. */
-      /* Implementation Plan says: "If open, all clicks outside menu close it."
-       */
-      /* Let's return TRUE primarily. UX refinement later if needed. */
-
+      /* The click is consumed: it does not reach the window, desktop or
+       * topbar item underneath (clicking another topbar menu only closes
+       * the open one). */
       return true;
     }
   }
 
-  return true; /* Block all other events while menu open? */
+  /* An open menu consumes every other event as well */
+  return true;
 }

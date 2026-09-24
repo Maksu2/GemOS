@@ -13,14 +13,7 @@ void window_update_rects(window_t *win) {
   win->frame_rect.w = win->width;
   win->frame_rect.h = win->height;
 
-  // Client rect is inside the border and title bar
-  // x = win->x + BORDER_WIDTH
-  // y = win->y + TITLE_BAR_HEIGHT + BORDER_WIDTH (Title bar is inside top
-  // border? Or replaces it?) Let's assume standard: Border surrounds
-  // everything. Title bar is at top inside border.
-
-  // Actually simplicity:
-  // Frame = [x, y, w, h]
+  // Client rect is inside the border and below the title bar:
   // Client = [x+1, y+1+Title, w-2, h-2-Title]
 
   win->client_rect.x = win->x + BORDER_WIDTH;
