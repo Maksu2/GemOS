@@ -23,7 +23,7 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
     - za mało RAM kończy start komunikatem; minimum przy 1920×1080 to ok. 16 MB.
   - Paging 4 KB: identity map 0–32 MB + 16 MB framebuffera, osobny katalog stron na proces.
 - **Procesy:**
-  - Round-robin, kwant 10 ms, maksymalnie 16 zadań plus zadanie idle. Wywłaszczany jest tylko kod w Ring 3 (reguła niżej). Zadanie 0 to pętla GUI w `kernel_main`: po każdej iteracji oddaje CPU i śpi (`TASK_BLOCKED`), dopóki nie ma zdarzeń. `hlt` wykonuje tylko idle.
+  - Round-robin, kwant 10 ms, maksymalnie 16 zadań plus zadanie idle. Każde zadanie ma własny stan FPU/SSE (`kernel/fpu.c`, FXSAVE/FXRSTOR przy każdym przełączeniu); z `float` w jądrze korzysta tylko silnik fontów. Wywłaszczany jest tylko kod w Ring 3 (reguła niżej). Zadanie 0 to pętla GUI w `kernel_main`: po każdej iteracji oddaje CPU i śpi (`TASK_BLOCKED`), dopóki nie ma zdarzeń. `hlt` wykonuje tylko idle.
   - Programy użytkownika to statyczne ELF32 `ET_EXEC` linkowane pod `0x02000000`, ze stosem 8 KB pod `0x07FFF000`. Maksymalny rozmiar programu to ok. 8 KB (bufor loadera, slot GemFS).
   - Każdy wyjątek wywołany w Ring 3 (wektory 0–31 poza NMI, #DF i #MC) kończy tylko ten proces (`[USERFAULT]`, potem `Faulted PID=…`). Wyjątek w jądrze to panika z pełnym zrzutem rejestrów (także CR0–CR4) i zatrzymanie.
 - **Syscalle:** `int 0x80`, 13 wywołań (`include/gemos/syscall_abi.h`), każde od wejścia do `iret` z IF=0. Wskaźniki użytkownika przechodzą przez `copy_from_user`/`copy_to_user` (sprawdzanie tablic stron). `SYS_console_wait_event` blokuje proces do zdarzenia albo timeoutu: przy blokadzie EIP cofa się na `int $0x80` i syscall wykonuje się ponownie po obudzeniu.
@@ -47,7 +47,6 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
 Nie obchodzić ich po cichu; plan naprawy jest w §8.2 audytu.
 
 - **Syscalle z IF=0:** długi syscall (zapis pliku to do ~24 sektorów ATA) wstrzymuje przerwania, a PIT gubi ticki.
-- **Brak zapisu stanu FPU przy przełączaniu zadań.** Z `float` korzysta tylko silnik fontów (task 0).
 - **Render całej klatki (1080p) w task 0 nie jest przerywany:** procesy czekają na koniec iteracji.
 - **GemFS bez sygnatury** pisze po surowym dysku; chroni go tylko to, że pomija dyski z sygnaturą rozruchową (etap 4).
 - **RAM powyżej 32 MB nie jest używany** (okno identity map, patrz wyżej).

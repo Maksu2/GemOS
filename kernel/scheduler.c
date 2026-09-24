@@ -17,6 +17,7 @@
  */
 #include "scheduler.h"
 
+#include "fpu.h"
 #include "gdt.h"
 #include "idt.h"
 #include "include/irq.h"
@@ -36,6 +37,7 @@
 extern void isr129(void);
 
 static task_t tasks[MAX_TASKS + 1];
+static fpu_state_t fpu_states[MAX_TASKS + 1];
 static int    current_task = 0;
 static int    task_count   = 0;
 static int    yield_requested = 0;
@@ -98,6 +100,10 @@ static uint32_t scheduler_resume_task(int next, uint32_t fallback_esp) {
     if (next < 0) {
         return fallback_esp;
     }
+
+    /* the FPU holds the state of the task being left */
+    fpu_save(&fpu_states[current_task]);
+    fpu_restore(&fpu_states[next]);
 
     current_task = next;
     tasks[current_task].state = TASK_RUNNING;
@@ -173,6 +179,7 @@ void scheduler_init(void) {
         (uint32_t)(uintptr_t)(idle_stack + sizeof(idle_stack));
     tasks[IDLE_TASK].esp = scheduler_build_kernel_frame(
         idle_stack, sizeof(idle_stack), scheduler_idle_main);
+    fpu_init_state(&fpu_states[IDLE_TASK]);
 
     gdt_set_kernel_stack(tasks[0].kernel_stack_top);
 
@@ -218,6 +225,7 @@ int task_create_user(struct process *process, uint32_t initial_esp) {
     tasks[slot].esp = initial_esp;
     tasks[slot].ticks_remaining = TASK_QUANTUM;
     tasks[slot].process = process;
+    fpu_init_state(&fpu_states[slot]);
     task_count++;
     irq_restore(flags);
 

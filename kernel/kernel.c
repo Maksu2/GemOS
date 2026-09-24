@@ -5,6 +5,7 @@
 #include "../drivers/serial.h"
 #include "../drivers/vbe.h"
 #include "console.h"
+#include "fpu.h"
 #include "gdt.h"
 #include "isr.h"
 #include "process.h"
@@ -116,6 +117,10 @@ void kernel_main(const boot_info_t *loader_info) {
 
   /* Initialize Interrupt Service Routines */
   init_isr();
+
+  /* FPU before any floating point code and before the scheduler, which
+   * gives every task its own FPU state */
+  fpu_init();
   serial_print("[BOOT] ISR initialized\n");
 
   /* Initialize PIC */
@@ -227,14 +232,6 @@ void kernel_main(const boot_info_t *loader_info) {
   /* Enable Interrupts */
   serial_print("[BOOT] Enabling Interrupts (STI)...\n");
   __asm__ volatile("sti");
-
-  /* Enable FPU */
-  uint32_t cr0;
-  __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-  cr0 &= ~(1 << 2); // Clear EM
-  cr0 |= (1 << 1);  // Set MP
-  __asm__ volatile("mov %0, %%cr0" ::"r"(cr0));
-  __asm__ volatile("fninit");
 
   /* Load Font */
   extern uint8_t _binary_font_ttf_start[];
