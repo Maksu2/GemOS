@@ -317,6 +317,8 @@ static uint32_t syscall_file_error(int error) {
     return (uint32_t)GEMOS_ERR_TOO_BIG;
   case GEMFS_ERR_SOURCE:
     return (uint32_t)GEMOS_ERR_FAULT;
+  case GEMFS_ERR_DENIED:
+    return (uint32_t)GEMOS_ERR_DENIED;
   default:
     return (uint32_t)GEMOS_ERR_INVAL;
   }
@@ -398,8 +400,9 @@ static uint32_t syscall_file_write(uintptr_t user_path,
     return status;
   }
 
-  result = gemfs_write_from(path, (uint32_t)length, syscall_user_source,
-                            &user_buffer, 0, 0);
+  /* programs and system files are read-only for processes */
+  result = gemfs_write_user(path, (uint32_t)length, syscall_user_source,
+                            &user_buffer);
   if (result < 0) {
     return syscall_file_error(result);
   }

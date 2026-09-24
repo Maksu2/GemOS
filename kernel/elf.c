@@ -55,8 +55,8 @@ typedef struct {
 } elf_load_region_t;
 
 /* [offset, offset + length) lies inside the image. Written without adding
- * offset and length: the file is untrusted (GemFS copies can be rewritten
- * by any process) and a 32-bit sum wraps around. */
+ * offset and length: the file is untrusted (a copy on GemFS may be damaged
+ * or written on another machine) and a 32-bit sum wraps around. */
 static int elf_range_in_image(uint32_t offset, uint32_t length,
                               size_t image_size) {
   return offset <= image_size && length <= image_size - offset;

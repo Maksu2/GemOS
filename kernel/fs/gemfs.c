@@ -823,8 +823,18 @@ static void gemfs_undo_blocks(const gemfs_inode_t *inode, uint32_t allocated) {
   (void)bitmap_sync();
 }
 
-int gemfs_write_from(const char *path, uint32_t size, gemfs_source_t source,
-                     void *ctx, uint32_t flags, uint32_t version) {
+/* A program: a name ending in ".ELF", in any case. */
+static int name_is_program(const char *name) {
+  size_t length = strlen(name);
+
+  return length >= 4 && name[length - 4] == '.' &&
+         (name[length - 3] | 0x20) == 'e' && (name[length - 2] | 0x20) == 'l' &&
+         (name[length - 1] | 0x20) == 'f';
+}
+
+static int gemfs_write_file(const char *path, uint32_t size,
+                            gemfs_source_t source, void *ctx, uint32_t flags,
+                            uint32_t version, int user) {
   char name[GEMFS_NAME_MAX + 1];
   gemfs_inode_t fresh;
   gemfs_inode_t old;
@@ -854,6 +864,21 @@ int gemfs_write_from(const char *path, uint32_t size, gemfs_source_t source,
   }
   if (existing != 0 && type != GEMFS_TYPE_FILE) {
     return GEMFS_ERR_ISDIR;
+  }
+  if (user) {
+    /* checked on the parsed name and the inode the write would replace */
+    if (name_is_program(name)) {
+      return GEMFS_ERR_DENIED;
+    }
+    if (existing != 0) {
+      result = inode_read(existing, &old);
+      if (result != GEMFS_OK) {
+        return result;
+      }
+      if (old.flags & GEMFS_FLAG_SYSTEM) {
+        return GEMFS_ERR_DENIED;
+      }
+    }
   }
   count = (size + GEMFS_BLOCK_SIZE - 1U) / GEMFS_BLOCK_SIZE;
   /* data, the indirect block, and maybe a block for the directory entry */
@@ -944,6 +969,16 @@ int gemfs_write_from(const char *path, uint32_t size, gemfs_source_t source,
   }
   generation++;
   return result == GEMFS_OK ? (int)size : result;
+}
+
+int gemfs_write_from(const char *path, uint32_t size, gemfs_source_t source,
+                     void *ctx, uint32_t flags, uint32_t version) {
+  return gemfs_write_file(path, size, source, ctx, flags, version, 0);
+}
+
+int gemfs_write_user(const char *path, uint32_t size, gemfs_source_t source,
+                     void *ctx) {
+  return gemfs_write_file(path, size, source, ctx, 0, 0, 1);
 }
 
 int gemfs_mkdir(const char *path) {
@@ -1147,6 +1182,7 @@ const char *gemfs_error(int error) {
   case GEMFS_ERR_IO: return "disk error";
   case GEMFS_ERR_CORRUPT: return "corrupted file system";
   case GEMFS_ERR_SOURCE: return "cannot read the data";
+  case GEMFS_ERR_DENIED: return "protected file";
   default: return "unknown error";
   }
 }

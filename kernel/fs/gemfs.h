@@ -43,6 +43,7 @@ enum {
   GEMFS_ERR_IO = -9,       /* the disk failed */
   GEMFS_ERR_CORRUPT = -10, /* metadata that makes no sense */
   GEMFS_ERR_SOURCE = -11,  /* the data source failed (gemfs_write_from) */
+  GEMFS_ERR_DENIED = -12,  /* a process may not change it (gemfs_write_user) */
 };
 
 typedef struct {
@@ -91,6 +92,11 @@ int gemfs_write(const char *path, const void *data, uint32_t size,
                 uint32_t flags, uint32_t version);
 int gemfs_write_from(const char *path, uint32_t size, gemfs_source_t source,
                      void *ctx, uint32_t flags, uint32_t version);
+
+/* gemfs_write_from for a process: a program (a name ending in ".ELF", in
+ * any case) or a system file is never created or replaced. */
+int gemfs_write_user(const char *path, uint32_t size, gemfs_source_t source,
+                     void *ctx);
 
 int gemfs_mkdir(const char *path);
 
