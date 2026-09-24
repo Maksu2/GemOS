@@ -43,6 +43,10 @@ typedef struct {
 static gemfs_entry_t file_table[GEMFS_MAX_FILES];
 static uint8_t sector_buf[512]; /* Temp buffer */
 
+/* ATA device holding the file system, -1 when there is none: the kernel
+ * then runs without files (empty table, reads and writes fail). */
+static int gemfs_device = -1;
+
 /* Helper: String utils */
 static int gemfs_strcmp(const char *a, const char *b) {
   while (*a && *b && *a == *b) {
@@ -67,24 +71,59 @@ static void gemfs_memset(void *ptr, int val, int size) {
     p[i] = (uint8_t)val;
 }
 
-static void gemfs_sync_table(void) {
-  /* Write table to LBA 1000 */
+static int gemfs_sync_table(void) {
   /* 64 files * 32 bytes = 2048 bytes = 4 sectors */
-  for (int i = 0; i < 4; i++) {
-    ata_write_sector(GEMFS_START_LBA + i, (uint8_t *)file_table + (i * 512));
+  if (gemfs_device < 0 ||
+      ata_write(gemfs_device, GEMFS_START_LBA, 4, file_table) != ATA_OK) {
+    return -1;
   }
+  return 0;
+}
+
+/* GemFS has no signature yet (audit stage 4), so it must never be put on
+ * a disk that something boots from: skip disks with an MBR boot signature,
+ * such as the GemOS hard disk image. */
+static int gemfs_pick_device(void) {
+  for (int i = 0; i < ATA_MAX_DEVICES; i++) {
+    const ata_device_t *dev = ata_get_device(i);
+
+    if (dev == NULL || dev->sectors < GEMFS_START_LBA + 4 +
+                                          GEMFS_MAX_FILES * GEMFS_FILE_SECTORS) {
+      continue;
+    }
+    if (ata_read(i, 0, 1, sector_buf) != ATA_OK) {
+      continue;
+    }
+    if (sector_buf[510] == 0x55 && sector_buf[511] == 0xAA) {
+      serial_print("[GemFS] Skipping bootable disk: ");
+      serial_print(dev->model);
+      serial_print("\n");
+      continue;
+    }
+    return i;
+  }
+  return -1;
 }
 
 void gemfs_init(void) {
   ata_init();
 
-  /* Read LBA 1000-1003 (Table) */
-  for (int i = 0; i < 4; i++) {
-    ata_read_sector(GEMFS_START_LBA + i, (uint8_t *)file_table + (i * 512));
+  gemfs_memset(file_table, 0, sizeof(file_table));
+  gemfs_device = gemfs_pick_device();
+  if (gemfs_device >= 0 &&
+      ata_read(gemfs_device, GEMFS_START_LBA, 4, file_table) != ATA_OK) {
+    gemfs_memset(file_table, 0, sizeof(file_table));
+    gemfs_device = -1;
   }
 
+  if (gemfs_device < 0) {
+    serial_print("[GemFS] No data disk: running without a file system\n");
+    return;
+  }
   serial_print("[GemFS] v2 Mounted. Cache loaded.\n");
 }
+
+int gemfs_available(void) { return gemfs_device >= 0; }
 
 /* Core Find: Parent + Name */
 int gemfs_find_in_dir(int parent_id, const char *name) {
@@ -111,7 +150,7 @@ static int gemfs_allocate_slot(void) {
 }
 
 int gemfs_create_file(int parent_id, const char *name) {
-  if (gemfs_find_in_dir(parent_id, name) >= 0)
+  if (gemfs_device < 0 || gemfs_find_in_dir(parent_id, name) >= 0)
     return -1;
 
   int i = gemfs_allocate_slot();
@@ -125,7 +164,10 @@ int gemfs_create_file(int parent_id, const char *name) {
   file_table[i].type = GEMFS_TYPE_FILE;
   file_table[i].parent_idx = (int8_t)parent_id;
 
-  gemfs_sync_table();
+  if (gemfs_sync_table() < 0) {
+    file_table[i].name[0] = '\0';
+    return -1;
+  }
   serial_print("[GemFS] Created File: ");
   serial_print(name);
   serial_print("\n");
@@ -133,7 +175,7 @@ int gemfs_create_file(int parent_id, const char *name) {
 }
 
 int gemfs_create_dir(int parent_id, const char *name) {
-  if (gemfs_find_in_dir(parent_id, name) >= 0)
+  if (gemfs_device < 0 || gemfs_find_in_dir(parent_id, name) >= 0)
     return -1;
 
   int i = gemfs_allocate_slot();
@@ -146,7 +188,10 @@ int gemfs_create_dir(int parent_id, const char *name) {
   file_table[i].type = GEMFS_TYPE_DIR;
   file_table[i].parent_idx = (int8_t)parent_id;
 
-  gemfs_sync_table();
+  if (gemfs_sync_table() < 0) {
+    file_table[i].name[0] = '\0';
+    return -1;
+  }
   serial_print("[GemFS] Created Dir: ");
   serial_print(name);
   serial_print("\n");
@@ -157,7 +202,7 @@ int gemfs_create_dir(int parent_id, const char *name) {
 int gemfs_create(const char *name) { return gemfs_create_file(-1, name); }
 
 int gemfs_write_id(int id, const char *data, uint32_t size) {
-  if (id < 0 || id >= GEMFS_MAX_FILES)
+  if (gemfs_device < 0 || id < 0 || id >= GEMFS_MAX_FILES)
     return -1;
 
   /* Clamp size */
@@ -175,11 +220,14 @@ int gemfs_write_id(int id, const char *data, uint32_t size) {
         sector_buf[k] = data[ptr++];
       }
     }
-    ata_write_sector(file_table[id].start_lba + s, sector_buf);
+    if (ata_write(gemfs_device, file_table[id].start_lba + s, 1,
+                  sector_buf) != ATA_OK)
+      return -1;
   }
 
   file_table[id].size = size;
-  gemfs_sync_table();
+  if (gemfs_sync_table() < 0)
+    return -1;
   return size;
 }
 
@@ -194,7 +242,7 @@ int gemfs_write(const char *name, const char *data, uint32_t size) {
 }
 
 int gemfs_read_id(int id, char *buf, uint32_t max_size) {
-  if (id < 0 || id >= GEMFS_MAX_FILES)
+  if (gemfs_device < 0 || id < 0 || id >= GEMFS_MAX_FILES)
     return -1;
 
   uint32_t size = file_table[id].size;
@@ -205,7 +253,9 @@ int gemfs_read_id(int id, char *buf, uint32_t max_size) {
   int ptr = 0;
 
   for (int s = 0; s < sectors; s++) {
-    ata_read_sector(file_table[id].start_lba + s, sector_buf);
+    if (ata_read(gemfs_device, file_table[id].start_lba + s, 1, sector_buf) !=
+        ATA_OK)
+      return -1;
     for (int k = 0; k < 512; k++) {
       if ((uint32_t)ptr < size) {
         buf[ptr++] = sector_buf[k];

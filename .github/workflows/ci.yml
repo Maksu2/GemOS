@@ -70,3 +70,33 @@ jobs:
             build/stress/*.log
             build/stress/*.txt
           if-no-files-found: ignore
+
+  matrix:
+    name: make all + QEMU boot matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nasm and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
+
+      - name: Build
+        run: make all
+
+      # 32/64/256 MB, no data disk, 4 MB VRAM, boot from the hard disk image
+      - name: Smoke test on every machine variant
+        run: tools/smoke.sh --no-build --matrix
+
+      - name: Upload matrix artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matrix-artifacts
+          path: |
+            build/matrix/*/*.png
+            build/matrix/*/*.log
+            build/matrix/*/*.txt
+          if-no-files-found: ignore

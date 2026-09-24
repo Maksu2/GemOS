@@ -14,6 +14,10 @@ the monitor:
   * the serial log has no PANIC, user fault or allocation failure, and no
     line was printed into the middle of another one.
 
+With --matrix it runs the smoke test once per machine variant (32/64/256 MB
+of RAM, no data disk, 4 MB of VRAM, boot from the hard disk image); each
+variant also checks log lines that show which path the kernel took.
+
 With --stress N it runs a load test instead: N cycles of opening all
 three programs from the menus, typing into them and moving the mouse while
 they start and exit, then closing them (Esc or the close button, taking
@@ -39,10 +43,34 @@ import tempfile
 import time
 import zlib
 
-# The desktop runs at 1920x1080 with ui_scale 2.0 (kernel/ui/ui_scale.c), so
+# The desktop runs at 1920x1080 with ui_scale 2.0 (kernel/kernel.c), so
 # PS/2 mouse deltas and all coordinates below are logical (960x540) pixels.
+# Smaller modes use ui_scale 1.0; --resolution changes both.
 UI_SCALE = 2
 SCREEN_SIZE = (1920, 1080)
+
+
+def set_resolution(width, height):
+    global UI_SCALE, SCREEN_SIZE
+    SCREEN_SIZE = (width, height)
+    UI_SCALE = 2 if width >= 1920 and height >= 1080 else 1
+
+# Machine variants for --matrix: name, extra arguments, log lines that
+# must appear (regular expressions).
+MATRIX = [
+    ("floppy-128M", [], [r"\[GFX\] BGA page flipping enabled",
+                         r"\[GemFS\] v2 Mounted"]),
+    ("32M", ["--memory", "32"], [r"\[MEM\] Heap 0x"]),
+    ("64M", ["--memory", "64"], [r"\[MEM\] Heap 0x"]),
+    ("256M", ["--memory", "256"], [r"not used above 32 MB"]),
+    ("no-data-disk", ["--no-data-disk"],
+     [r"\[GemFS\] No data disk", r"No file system: programs run"]),
+    ("vga-4M", ["--vga-mem", "4", "--resolution", "1280x800"],
+     [r"Resolution: 1280x800x32", r"page flip unavailable, using memcpy"]),
+    ("hdd-boot", ["--boot", "hdd"],
+     [r"\[BOOT\] Boot drive 0x00000080", r"\[GemFS\] Skipping bootable disk",
+      r"\[GemFS\] v2 Mounted"]),
+]
 
 # Topbar menus (kernel/gui/topbar/topbar.c): "GemOS" at x 10..80, "Apps" at
 # x 90..160, bar height 28. Menus open at y=28 with 24 px items
@@ -254,7 +282,8 @@ class Pointer:
         self.y = None
 
     def home(self):
-        for _ in range(30):
+        logical = max(SCREEN_SIZE) // UI_SCALE
+        for _ in range(logical // self.STEP + 6):
             self.monitor.cmd("mouse_move -%d -%d" % (self.STEP, self.STEP))
             time.sleep(0.02)
         self.x, self.y = 0, 0
@@ -315,20 +344,33 @@ class Smoke:
         if os.path.isdir(self.out):
             shutil.rmtree(self.out)
         os.makedirs(self.out)
-        floppy = os.path.join(self.out, "gemos.img")
+        boot = os.path.join(self.out, os.path.basename(self.args.image))
         data = os.path.join(self.out, "data.img")
-        shutil.copyfile(self.args.image, floppy)
+        shutil.copyfile(self.args.image, boot)
         with open(data, "wb") as f:
             f.truncate(10 * 1024 * 1024)
 
         # unix socket paths are limited to ~108 bytes; keep it short
         self.sockdir = tempfile.mkdtemp(prefix="gemos-smoke-")
         sock = os.path.join(self.sockdir, "hmp.sock")
-        cmd = [
-            qemu,
-            "-drive", "file=%s,if=floppy,format=raw" % floppy,
-            "-drive", "file=%s,if=ide,format=raw" % data,
-            "-m", "128M",
+        cmd = [qemu]
+        if self.args.boot == "hdd":
+            # boot disk first; GemFS skips it (MBR signature) and uses the
+            # data disk behind it
+            cmd += ["-drive", "file=%s,if=ide,index=0,format=raw" % boot,
+                    "-boot", "c"]
+            data_drive = "file=%s,if=ide,index=1,format=raw" % data
+        else:
+            cmd += ["-drive", "file=%s,if=floppy,format=raw" % boot]
+            data_drive = "file=%s,if=ide,format=raw" % data
+        if not self.args.no_data_disk:
+            cmd += ["-drive", data_drive]
+        if self.args.vga_mem:
+            # (-global VGA.vgamem_mb leaves the machine without a VGA)
+            cmd += ["-vga", "none",
+                    "-device", "VGA,vgamem_mb=%d" % self.args.vga_mem]
+        cmd += [
+            "-m", "%dM" % self.args.memory,
             "-display", "none",
             "-serial", "file:%s" % self.serial_log,
             "-monitor", "unix:%s,server,nowait" % sock,
@@ -411,8 +453,10 @@ class Smoke:
                           "%.1f s" % (time.monotonic() - start))
 
     def desktop(self):
+        # logical points: topbar, dock (bottom of the screen), wallpaper
+        width, height = (v // UI_SCALE for v in SCREEN_SIZE)
         topbar = (300, 5)
-        dock = (900, 530)
+        dock = (width - 60, height - 10)
         wallpaper = (600, 300)
 
         def problem(image):
@@ -621,6 +665,9 @@ class Smoke:
         bad = interleaved_lines(text)
         self.check(not bad, "serial log: no interleaved lines",
                    "; ".join(repr(line) for line in bad[:3]))
+        for pattern in self.args.expect_log:
+            self.check(re.search(pattern, text) is not None,
+                       "serial log: /%s/" % pattern)
         self.check(self.qemu.poll() is None, "QEMU still running at the end")
 
     def save_diagnostics(self):
@@ -667,7 +714,24 @@ def main():
     parser.add_argument("--app-timeout", type=float, default=45.0)
     parser.add_argument("--stress", type=int, default=0, metavar="CYCLES",
                         help="run the load test with this many cycles")
+    parser.add_argument("--matrix", action="store_true",
+                        help="run the smoke test on every machine variant")
+    parser.add_argument("--boot", choices=("floppy", "hdd"),
+                        default="floppy",
+                        help="boot device (--image is the floppy or the "
+                        "hard disk image)")
+    parser.add_argument("--memory", type=int, default=128, metavar="MB")
+    parser.add_argument("--no-data-disk", action="store_true")
+    parser.add_argument("--vga-mem", type=int, default=0, metavar="MB",
+                        help="VRAM of the QEMU VGA (default: QEMU's 16)")
+    parser.add_argument("--resolution", default="1920x1080",
+                        help="screen size the kernel should pick")
+    parser.add_argument("--expect-log", action="append", default=[],
+                        metavar="REGEX", help="must match the serial log")
     args = parser.parse_args()
+    if args.matrix:
+        return run_matrix(args)
+    set_resolution(*(int(v) for v in args.resolution.split("x")))
 
     def on_signal(signum, _frame):
         raise SmokeError("interrupted by signal %d" % signum)
@@ -699,6 +763,32 @@ def main():
         return 2 if error and not smoke.results else 1
     print("SMOKE: PASS (%d checks); artifacts in %s" % (
         len(smoke.results), smoke.out), flush=True)
+    return 0
+
+
+def run_matrix(args):
+    """Run the smoke test once per MATRIX variant in its own QEMU."""
+    here = os.path.abspath(__file__)
+    images = {"floppy": args.image,
+              "hdd": os.path.join(os.path.dirname(args.image),
+                                  "gemos-hdd.img")}
+    failed = []
+    for name, extra, logs in MATRIX:
+        boot = extra[extra.index("--boot") + 1] if "--boot" in extra \
+            else "floppy"
+        cmd = [sys.executable, here, "--image", images[boot],
+               "--out", os.path.join(args.out, name),
+               "--timeout", str(args.timeout / len(MATRIX))] + extra
+        for pattern in logs:
+            cmd += ["--expect-log", pattern]
+        print("== matrix: %s" % name, flush=True)
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            failed.append(name)
+    if failed:
+        print("MATRIX: FAIL (%s)" % ", ".join(failed), flush=True)
+        return 1
+    print("MATRIX: PASS (%d variants)" % len(MATRIX), flush=True)
     return 0
 
 

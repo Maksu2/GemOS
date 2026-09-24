@@ -9,8 +9,6 @@ typedef struct block_header {
 } block_header_t;
 
 static block_header_t *heap_start = NULL;
-static uintptr_t heap_base = 0;
-static size_t heap_total_size = 0;
 
 void heap_init(uintptr_t start, size_t size) {
   /* Align start addres to 4 bytes */
@@ -21,8 +19,6 @@ void heap_init(uintptr_t start, size_t size) {
   }
 
   heap_start = (block_header_t *)start;
-  heap_base = start;
-  heap_total_size = size;
   heap_start->next = NULL;
   heap_start->size = size - sizeof(block_header_t);
   heap_start->is_free = 1;
@@ -93,5 +89,3 @@ void kfree(void *ptr) {
      a doubly linked list (or a walk from the start), so free space can
      fragment over time. */
 }
-
-uintptr_t heap_get_end(void) { return heap_base + heap_total_size; }

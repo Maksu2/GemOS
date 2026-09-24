@@ -13,7 +13,4 @@ void *kalloc(size_t size);
 /* Free memory */
 void kfree(void *ptr);
 
-/* Heap metadata */
-uintptr_t heap_get_end(void);
-
 #endif /* HEAP_H */

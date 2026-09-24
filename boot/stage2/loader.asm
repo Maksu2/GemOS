@@ -3,14 +3,17 @@
 ; =============================================================================
 ;
 ; Memory Layout (Real Mode):
-;   0x0000:0x1000 - Kernel Load Buffer (Temporary, 64KB)
-;   0x0000:0x7E00 - Stage 2 Code (16KB)
-;   0x0000:0x9000 - Boot Info Structure (VBE Info)
+;   0x0000:0x7E00 - Stage 2 code and data, incl. the boot info block (16KB)
 ;   0x0000:0xBE00 - End of Stage 2
+;   0x2000:0x0000 - Disk read buffer (32KB); every chunk is copied to 1 MB
+;                   right away in unreal mode
 ;
 ; Memory Layout (Protected Mode):
 ;   0x00100000    - Kernel Code (1MB)
-;   0x00090000    - Kernel Stack (Top, grows down)
+;   0x0009F000    - Kernel Stack (Top, grows down)
+;
+; The kernel starts with EBX pointing to the boot info block (boot_info
+; below, boot_info_t in kernel/include/boot_info.h).
 ; =============================================================================
 
 [BITS 16]
@@ -20,16 +23,13 @@
 ; Constants
 ; -----------------------------------------------------------------------------
 STAGE2_SECTORS      equ 32          ; Size of Stage 2 in sectors (must match Stage 1)
-KERNEL_LOAD_SEG     equ 0x1000      ; Segment to load kernel (temporary)
-KERNEL_LOAD_OFF     equ 0x0000      ; Offset within segment
-KERNEL_SECTORS      equ 1120        ; Sectors to load (~560KB, stays below VGA memory)
 KERNEL_START_SECTOR equ 33          ; Kernel starts after Stage 1 (1) + Stage 2 (32)
-
-VBE_MODE            equ 0x4115      ; 800x600x32bpp (safer choice)
-; Alternative modes:
-; 0x4112 = 640x480x32bpp
-; 0x4115 = 800x600x32bpp  
-; 0x4118 = 1024x768x32bpp
+KERNEL_MAGIC        equ 0x4B4D4547  ; "GEMK": header in kernel/entry.S
+KERNEL_MAX_SECTORS  equ 4096        ; sanity limit for the header (2 MB)
+BUFFER_SEG          equ 0x2000      ; read buffer at 0x20000 (64 KB aligned,
+                                    ; so no floppy DMA crosses a 64 KB line)
+CHUNK_SECTORS       equ 64          ; 32 KB per read + copy
+READ_RETRIES        equ 3
 
 PROTECTED_MODE_BASE equ 0x100000    ; 1MB - where kernel will be in PM
 
@@ -39,6 +39,7 @@ PROTECTED_MODE_BASE equ 0x100000    ; 1MB - where kernel will be in PM
 stage2_start:
     ; Save boot drive number (passed in DL from Stage 1)
     mov [boot_drive_saved], dl
+    mov [bi_boot_drive], dl
     
     ; Print welcome message
     mov si, msg_stage2
@@ -214,116 +215,138 @@ check_a20:
 ; Memory Map (E820)
 ; =============================================================================
 get_memory_map:
-    mov di, memory_map          ; Destination buffer
+    mov di, bi_e820             ; Destination: boot info entries
     xor ebx, ebx                ; Continuation value
-    mov edx, 0x534D4150         ; 'SMAP' signature
-    
+
 .loop:
+    mov dword [di + 20], 1      ; ACPI 3.0 attributes: valid, if not returned
     mov eax, 0xE820             ; Function number
     mov ecx, 24                 ; Buffer size
+    mov edx, 0x534D4150         ; 'SMAP' signature
     int 0x15
-    
+
     jc .done                    ; Error or end
     cmp eax, 0x534D4150         ; Verify signature
     jne .done
-    
+
+    mov eax, [di + 8]           ; skip empty entries
+    or eax, [di + 12]
+    jz .next
+
     add di, 24                  ; Next entry
-    inc byte [memory_map_count]
-    
+    inc dword [bi_e820_count]
+    cmp dword [bi_e820_count], BOOT_INFO_E820_MAX
+    je .done
+
+.next:
     test ebx, ebx               ; Continue if ebx != 0
     jnz .loop
-    
+
 .done:
     ret
 
 ; =============================================================================
-; VBE Graphics Mode Setup
+; VBE Graphics Mode Setup: the best mode from vbe_preferred that the card
+; offers with 32 bpp and a linear framebuffer
 ; =============================================================================
 setup_vbe:
-    ; Get VBE controller info
+    mov dword [vbe_info], 'VBE2'    ; ask for the VBE 2.0+ info block
     mov ax, 0x4F00
     mov di, vbe_info
     int 0x10
-    
     cmp ax, 0x004F
     jne .vbe_error
-    
-    ; Get pointer to mode list
+
+    mov word [vbe_best_mode], 0xFFFF
+    mov byte [vbe_best_rank], VBE_PREFERRED_COUNT
+
     ; Offset 14: DWORD VideoModePtr (Far Pointer: Offset:Segment)
-    mov ax, [vbe_info + 16]     ; Segment
-    mov es, ax
-    mov di, [vbe_info + 14]     ; Offset
-    
+    mov si, [vbe_info + 14]
+    mov ax, [vbe_info + 16]
+    mov [vbe_list_seg], ax
+
 .mode_loop:
-    mov cx, [es:di]             ; Get mode number
-    cmp cx, 0xFFFF              ; End of list?
-    je .no_mode_found
-    add di, 2                   ; Next entry
-    
-    ; Get mode info
-    push es
-    push di
-    
-    ; Reset ES to our segment for buffer
-    push ax
+    mov es, [vbe_list_seg]
+    mov cx, [es:si]                 ; mode number
+    cmp cx, 0xFFFF                  ; end of list
+    je .scan_done
+    add si, 2
+    push si
+
     xor ax, ax
     mov es, ax
-    pop ax
-    
     mov ax, 0x4F01
     mov di, vbe_mode_info
+    push cx
     int 0x10
-    
+    pop cx
     cmp ax, 0x004F
     jne .next_mode
-    
-    ; Check properties
-    ; Offset 0: ModeAttributes
-    ; Bit 7 = Linear Frame Buffer
+
+    ; Offset 0: ModeAttributes, bit 0 = supported, bit 7 = linear framebuffer
     mov ax, [vbe_mode_info]
-    test ax, 0x0080
-    jz .next_mode
-    
-    ; Offset 18: XResolution
-    mov ax, [vbe_mode_info + 18]
-    cmp ax, 1920
+    and ax, 0x0081
+    cmp ax, 0x0081
     jne .next_mode
-    
-    ; Offset 20: YResolution
-    mov ax, [vbe_mode_info + 20]
-    cmp ax, 1080
-    jne .next_mode
-    
     ; Offset 25: BitsPerPixel
-    mov al, [vbe_mode_info + 25]
-    cmp al, 32
+    cmp byte [vbe_mode_info + 25], 32
     jne .next_mode
-    
-    ; FOUND IT!
-    ; CX contains mode number
-    pop di
-    pop es
-    
-    ; Set Mode (CX) | LFB (0x4000)
+
+    ; Offsets 18/20: XResolution/YResolution. Rank = position in the list.
+    mov ax, [vbe_mode_info + 18]
+    mov dx, [vbe_mode_info + 20]
+    xor bx, bx
+    mov di, vbe_preferred
+.rank_loop:
+    cmp bl, [vbe_best_rank]
+    jae .next_mode                  ; no better than the best so far
+    cmp ax, [di]
+    jne .rank_next
+    cmp dx, [di + 2]
+    jne .rank_next
+    mov [vbe_best_rank], bl
+    mov [vbe_best_mode], cx
+    jmp .next_mode
+.rank_next:
+    add di, 4
+    inc bx
+    jmp .rank_loop
+
+.next_mode:
+    pop si
+    jmp .mode_loop
+
+.scan_done:
+    xor ax, ax
+    mov es, ax
+    mov cx, [vbe_best_mode]
+    cmp cx, 0xFFFF
+    je .vbe_error
+
+    ; mode info of the chosen mode, then set it with the LFB bit (0x4000)
+    mov ax, 0x4F01
+    mov di, vbe_mode_info
+    push cx
+    int 0x10
+    pop cx
+    cmp ax, 0x004F
+    jne .vbe_error
+
+    mov [bi_vbe_mode], cx
     mov bx, cx
     or bx, 0x4000
     mov ax, 0x4F02
     int 0x10
-    
     cmp ax, 0x004F
     jne .vbe_error
-    
+
+    ; hand the mode info to the kernel
+    cld
+    mov si, vbe_mode_info
+    mov di, bi_vbe_mode_info
+    mov cx, 256
+    rep movsb
     ret
-    
-.next_mode:
-    pop di
-    pop es
-    jmp .mode_loop
-    
-.no_mode_found:
-    ; 1920x1080x32 with a linear framebuffer is required; there is no
-    ; fallback mode
-    jmp .vbe_error
 
 .vbe_error:
     mov si, msg_vbe_fail
@@ -331,68 +354,200 @@ setup_vbe:
     jmp halt
 
 ; =============================================================================
-; Load Kernel
+; Disk access: INT 13h extensions (LBA) if the BIOS has them for the boot
+; drive (hard disks), CHS with the geometry from AH=08h otherwise (floppies)
+; =============================================================================
+disk_init:
+    mov byte [disk_use_lba], 0
+    mov ah, 0x41
+    mov bx, 0x55AA
+    mov dl, [boot_drive_saved]
+    int 0x13
+    jc .chs
+    cmp bx, 0xAA55
+    jne .chs
+    test cx, 1                  ; fixed disk access subset (AH=42h)
+    jz .chs
+    mov byte [disk_use_lba], 1
+    ret
+.chs:
+    push es
+    mov ah, 0x08
+    mov dl, [boot_drive_saved]
+    xor di, di                  ; ES:DI = 0 works around some BIOSes
+    mov es, di
+    int 0x13
+    pop es
+    jc disk_error
+    and cx, 0x3F                ; CL[5:0] = sectors per track
+    jz disk_error
+    mov [disk_spt], cx
+    mov dl, dh                  ; DH = last head
+    xor dh, dh
+    inc dx
+    mov [disk_heads], dx
+    ret
+
+; Read CX sectors (1..CHUNK_SECTORS) starting at LBA EAX into BUFFER_SEG:0.
+read_sectors:
+    cmp byte [disk_use_lba], 0
+    je .chs
+    mov [dap_count], cx
+    mov word [dap_offset], 0
+    mov word [dap_segment], BUFFER_SEG
+    mov [dap_lba], eax
+    mov dword [dap_lba + 4], 0
+    mov di, READ_RETRIES
+.lba_retry:
+    mov si, dap
+    mov ah, 0x42
+    mov dl, [boot_drive_saved]
+    int 0x13
+    jnc .done
+    call reset_disk
+    dec di
+    jnz .lba_retry
+    jmp disk_error
+.chs:
+    push es
+    mov bx, BUFFER_SEG
+    mov es, bx
+    xor bx, bx
+.chs_next:
+    push eax
+    push cx
+    call read_chs_sector
+    pop cx
+    pop eax
+    inc eax
+    add bx, 512
+    loop .chs_next
+    pop es
+.done:
+    ret
+
+; Read LBA AX (below 65536) into ES:BX with CHS.
+read_chs_sector:
+    xor dx, dx
+    div word [disk_spt]         ; AX = track, DX = sector - 1
+    inc dx
+    mov cl, dl                  ; CL[5:0] = sector
+    xor dx, dx
+    div word [disk_heads]       ; AX = cylinder, DX = head
+    mov ch, al                  ; CH = cylinder bits 0-7
+    shl ah, 6
+    or cl, ah                   ; CL[7:6] = cylinder bits 8-9
+    mov dh, dl                  ; DH = head
+    mov dl, [boot_drive_saved]
+    mov di, READ_RETRIES
+.retry:
+    mov ax, 0x0201              ; read 1 sector
+    int 0x13
+    jnc .ok
+    call reset_disk
+    dec di
+    jnz .retry
+    jmp disk_error
+.ok:
+    ret
+
+; Reset the disk controller before a retry (keeps all registers but AX).
+reset_disk:
+    push dx
+    xor ah, ah
+    mov dl, [boot_drive_saved]
+    int 0x13
+    pop dx
+    ret
+
+; Copy ECX dwords from linear ESI to linear EDI (above 1 MB) in unreal
+; mode: DS/ES get 4 GB limits from a short trip through protected mode.
+; Interrupts stay off until the copy is done, so no BIOS code can reload
+; the segment limits in between.
+copy_high:
+    cli
+    push ds
+    push es
+    lgdt [gdt_descriptor]
+    mov eax, cr0
+    or al, 1
+    mov cr0, eax
+    jmp .pm
+.pm:
+    mov ax, DATA_SEG
+    mov ds, ax
+    mov es, ax
+    mov eax, cr0
+    and al, 0xFE
+    mov cr0, eax
+    jmp .rm
+.rm:
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    cld
+    a32 rep movsd
+    pop es
+    pop ds
+    sti
+    ret
+
+; =============================================================================
+; Load Kernel: header first, then the image in chunks to 1 MB
 ; =============================================================================
 load_kernel:
-    mov ax, KERNEL_LOAD_SEG
-    mov es, ax
-    mov bx, KERNEL_LOAD_OFF
-    
-    mov cx, KERNEL_SECTORS
-    mov ax, KERNEL_START_SECTOR     ; Start LBA
+    call disk_init
 
-.read_loop:
-    push cx             ; Save loop counter
-    push ax             ; Save current LBA
-    
-    mov dl, [boot_drive_saved]  ; Restore correct drive number
-    call lba_to_chs     ; Converts AX (LBA) -> CHS
-    
-    mov ah, 0x02        ; Read sectors
-    mov al, 1           ; Read 1 sector
-    int 0x13
-    jc .disk_read_fail  ; Jump to error handler
-    
-    pop ax              ; Restore current LBA
-    inc ax              ; Next LBA
-    
-    mov dx, es
-    add dx, 32          ; Advance ES by 512 bytes (32 paragraphs)
-    mov es, dx
-    
-    pop cx              ; Restore loop counter
-    loop .read_loop
-    
+    ; kernel header (kernel/entry.S): magic at +4, image bytes at +8
+    mov eax, KERNEL_START_SECTOR
+    mov cx, 1
+    call read_sectors
+    push ds
+    mov ax, BUFFER_SEG
+    mov ds, ax
+    mov eax, [4]
+    mov ecx, [8]
+    pop ds
+    cmp eax, KERNEL_MAGIC
+    jne .bad_header
+    test ecx, ecx
+    jz .bad_header
+    mov [bi_kernel_bytes], ecx
+    add ecx, 511
+    shr ecx, 9
+    cmp ecx, KERNEL_MAX_SECTORS
+    ja .bad_header
+    mov [load_left], cx
+    mov dword [load_lba], KERNEL_START_SECTOR
+    mov dword [load_dest], PROTECTED_MODE_BASE
+
+.chunk:
+    mov cx, [load_left]
+    cmp cx, CHUNK_SECTORS
+    jbe .read
+    mov cx, CHUNK_SECTORS
+.read:
+    mov [load_chunk], cx
+    mov eax, [load_lba]
+    call read_sectors
+
+    movzx ecx, word [load_chunk]
+    shl ecx, 7                  ; sectors -> dwords
+    mov esi, BUFFER_SEG * 16
+    mov edi, [load_dest]
+    call copy_high
+    mov [load_dest], edi
+
+    movzx eax, word [load_chunk]
+    add [load_lba], eax
+    sub [load_left], ax
+    jnz .chunk
     ret
 
-.disk_read_fail:
-    jmp disk_error      ; Jump to global error handler
-
-; Convert LBA (AX) to CHS
-; Output: CH=Cylinder, DH=Head, CL=Sector, DL=Drive (preserved)
-lba_to_chs:
-    push bx
-    push dx             ; Save original DX (contains Drive in DL)
-    
-    xor dx, dx
-    mov bx, 18          ; 18 sectors per track
-    div bx              ; AX = LBA / 18, DX = LBA % 18
-    
-    inc dx              ; Sector = (LBA % 18) + 1
-    mov cl, dl          ; CL = Sector
-    
-    xor dx, dx
-    mov bx, 2           ; 2 heads
-    div bx              ; AX = Cyl, DX = Head
-    
-    mov ch, al          ; CH = Cylinder
-    mov dh, dl          ; DH = Head
-    
-    pop bx              ; Restore original DX into BX
-    mov dl, bl          ; Restore Drive Number only
-    
-    pop bx
-    ret
+.bad_header:
+    mov si, msg_bad_header
+    call print_string
+    jmp halt
 
 disk_error:
     mov si, msg_kernel_fail
@@ -471,24 +626,11 @@ protected_mode_entry:
     mov gs, ax
     mov ss, ax
     
-    ; Copy kernel from temporary location to 1MB
-    mov esi, KERNEL_LOAD_SEG * 16 + KERNEL_LOAD_OFF
-    mov edi, PROTECTED_MODE_BASE
-    mov ecx, KERNEL_SECTORS * 512 / 4   ; Copy dwords
-    rep movsd
-
-    ; Set up the protected-mode stack after the copy so the temporary kernel
-    ; image can use the full low-memory staging window.
+    ; The kernel is already at 1 MB (load_kernel). Stack below the EBDA.
     mov esp, 0x9F000
-    
-    ; Prepare boot info structure for kernel
-    ; Store VBE info at a known location
-    mov esi, vbe_mode_info
-    mov edi, 0x9000             ; Boot info location
-    mov ecx, 256 / 4
-    rep movsd
-    
-    ; Jump to kernel!
+
+    ; Jump to kernel! EBX = boot info block
+    mov ebx, boot_info
     jmp PROTECTED_MODE_BASE
 
 ; =============================================================================
@@ -506,14 +648,67 @@ msg_vbe_ok:         db '  VBE mode set', 0x0D, 0x0A, 0
 msg_vbe_fail:       db '  VBE FAILED!', 0x0D, 0x0A, 0
 msg_kernel_ok:      db '  Kernel loaded', 0x0D, 0x0A, 0
 msg_kernel_fail:    db '  Kernel FAILED!', 0x0D, 0x0A, 0
+msg_bad_header:     db '  Bad kernel header!', 0x0D, 0x0A, 0
 
-memory_map_count:   db 0
+; disk access state (disk_init)
+disk_use_lba:       db 0
+disk_spt:           dw 0
+disk_heads:         dw 0
+
+; kernel load progress
+load_lba:           dd 0
+load_dest:          dd 0
+load_left:          dw 0
+load_chunk:         dw 0
+
+; Disk Address Packet for AH=42h
+align 4
+dap:                db 0x10, 0
+dap_count:          dw 0
+dap_offset:         dw 0
+dap_segment:        dw 0
+dap_lba:            dq 0
+
+; Video modes to try, best first (32 bpp with a linear framebuffer). The
+; kernel scales the UI 2x on 1920x1080 and 1x on the smaller ones.
+vbe_preferred:
+    dw 1920, 1080
+    dw 1680, 1050
+    dw 1600, 900
+    dw 1440, 900
+    dw 1366, 768
+    dw 1280, 1024
+    dw 1280, 800
+    dw 1280, 720
+    dw 1024, 768
+    dw 800, 600
+VBE_PREFERRED_COUNT equ ($ - vbe_preferred) / 4
+
+vbe_list_seg:       dw 0
+vbe_best_mode:      dw 0
+vbe_best_rank:      db 0
 
 ; Align to 16 bytes for VBE structures
 align 16
 vbe_info:           times 512 db 0
 vbe_mode_info:      times 256 db 0
-memory_map:         times 24*32 db 0    ; Space for 32 entries
+
+; -----------------------------------------------------------------------------
+; Boot info block for the kernel (boot_info_t, kernel/include/boot_info.h)
+; -----------------------------------------------------------------------------
+BOOT_INFO_MAGIC     equ 0x424D4547  ; "GEMB"
+BOOT_INFO_E820_MAX  equ 32
+
+align 16
+boot_info:
+bi_magic:           dd BOOT_INFO_MAGIC
+bi_version:         dd 1
+bi_boot_drive:      dd 0            ; BIOS drive number
+bi_kernel_bytes:    dd 0            ; bytes copied to 1 MB
+bi_vbe_mode:        dd 0            ; VBE mode number that was set
+bi_e820_count:      dd 0
+bi_e820:            times BOOT_INFO_E820_MAX * 24 db 0
+bi_vbe_mode_info:   times 256 db 0  ; ModeInfoBlock of bi_vbe_mode
 
 ; Pad Stage 2 to fill allocated sectors
 times (STAGE2_SECTORS * 512) - ($ - $$) db 0

@@ -22,8 +22,14 @@ static uint16_t fb_pitch = 0;
 /* BGA Page Flipping */
 #define BGA_INDEX_PORT 0x01CE
 #define BGA_DATA_PORT 0x01CF
+#define BGA_REG_ID 0x0000
+#define BGA_REG_XRES 0x0001
+#define BGA_REG_YRES 0x0002
+#define BGA_REG_BPP 0x0003
 #define BGA_REG_Y_OFFSET 0x0009
 #define BGA_REG_VIDEO_MEMORY_64K 0x000A
+#define BGA_ID_FIRST 0xB0C0 /* VBE_DISPI_ID0 .. ID5 */
+#define BGA_ID_LAST 0xB0C5
 
 static uint32_t page_size = 0;   /* Bytes per page */
 static int current_page = 0;     /* Currently displayed page (0 or 1) */
@@ -40,6 +46,17 @@ static uint16_t bga_read(uint16_t reg) {
   return inw(BGA_DATA_PORT);
 }
 
+/* A Bochs/QEMU display adapter that drives the mode the BIOS set. On other
+ * cards the ports read back 0xFFFF (or anything else). */
+static int bga_present(void) {
+  uint16_t id = bga_read(BGA_REG_ID);
+
+  return id >= BGA_ID_FIRST && id <= BGA_ID_LAST &&
+         bga_read(BGA_REG_XRES) == fb_width &&
+         bga_read(BGA_REG_YRES) == fb_height &&
+         bga_read(BGA_REG_BPP) == fb_bpp;
+}
+
 /* Initialize VBE driver */
 void vbe_init(uint32_t framebuffer_addr, uint16_t width, uint16_t height,
               uint8_t bpp, uint16_t pitch) {
@@ -51,15 +68,15 @@ void vbe_init(uint32_t framebuffer_addr, uint16_t width, uint16_t height,
 
   page_size = (uint32_t)pitch * height;
 
-  /* Check if BGA has enough VRAM for 2 pages */
-  uint16_t vram_64k = bga_read(BGA_REG_VIDEO_MEMORY_64K);
-  uint32_t vram_total = (uint32_t)vram_64k * 65536;
+  /* Page flipping needs a BGA and VRAM for two pages; otherwise the kernel
+   * copies each frame to the visible framebuffer. */
+  bga_flip_enabled = 0;
+  current_page = 0;
+  if (bga_present()) {
+    uint32_t vram_total =
+        (uint32_t)bga_read(BGA_REG_VIDEO_MEMORY_64K) * 65536U;
 
-  if (vram_total >= page_size * 2) {
-    bga_flip_enabled = 1;
-    current_page = 0;
-  } else {
-    bga_flip_enabled = 0;
+    bga_flip_enabled = vram_total >= page_size * 2U;
   }
 }
 

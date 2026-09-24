@@ -9,8 +9,9 @@
 #
 # Targets:
 #   make all    - build build/gemos.img (boot floppy)
-#   make run    - boot the image in QEMU with the GemFS data disk
-#   make debug  - same, paused, with a GDB stub on :1234
+#   make run    - boot the floppy image in QEMU with the GemFS data disk
+#   make run-hdd - boot the hard disk image instead (data disk second)
+#   make debug  - same as run, paused, with a GDB stub on :1234
 #   make clean  - remove build/
 #   make info   - show the toolchain and the object list
 #
@@ -68,6 +69,7 @@ BOOT_STAGE2 := $(BUILD_DIR)/loader.bin
 KERNEL_ELF := $(BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(BUILD_DIR)/kernel.bin
 OS_IMAGE := $(BUILD_DIR)/gemos.img
+HDD_IMAGE := $(BUILD_DIR)/gemos-hdd.img
 DATA_IMAGE := $(BUILD_DIR)/data.img
 
 # =============================================================================
@@ -81,7 +83,7 @@ KERNEL_ASM_SOURCES := kernel/entry.S kernel/interrupts.S \
 KERNEL_C_SOURCES := kernel/kernel.c kernel/console.c kernel/gdt.c kernel/idt.c \
                     kernel/isr.c kernel/scheduler.c kernel/process.c kernel/elf.c \
                     kernel/syscall.c kernel/heap.c \
-                    kernel/event.c kernel/memory/paging.c \
+                    kernel/event.c kernel/memory/paging.c kernel/memory/pmm.c \
                     kernel/gfx/rect.c kernel/gfx/context.c kernel/gfx/primitives.c \
                     kernel/gfx/icons.c \
                     kernel/gfx/font/font.c \
@@ -152,12 +154,12 @@ DEPS := $(KERNEL_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 # Targets
 # =============================================================================
 
-.PHONY: all clean run debug info
+.PHONY: all clean run run-hdd debug info
 
 # Keep intermediate files (e.g. build/uterm_image.bin) instead of deleting them
 .SECONDARY:
 
-all: $(OS_IMAGE)
+all: $(OS_IMAGE) $(HDD_IMAGE)
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -231,22 +233,33 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 # Layout:
 #   Sector 0:     Stage 1 (512 bytes)
 #   Sectors 1-32: Stage 2 (16KB)
-#   Sectors 33+:  Kernel, at most KERNEL_SECTORS sectors (stage 2 loads
-#                 exactly that many and would silently cut a larger kernel)
+#   Sectors 33+:  Kernel; stage 2 reads its size from the header at offset 4
+#                 of kernel.bin ("GEMK" + byte count, kernel/entry.S)
 FLOPPY_SECTORS := 2880
 KERNEL_START_SECTOR := $(shell sed -n 's/^KERNEL_START_SECTOR[[:space:]]*equ[[:space:]]*\([0-9][0-9]*\).*/\1/p' $(BOOT_DIR)/stage2/loader.asm)
-KERNEL_MAX_SECTORS := $(shell sed -n 's/^KERNEL_SECTORS[[:space:]]*equ[[:space:]]*\([0-9][0-9]*\).*/\1/p' $(BOOT_DIR)/stage2/loader.asm)
-ifeq ($(KERNEL_START_SECTOR)$(KERNEL_MAX_SECTORS),)
-    $(error Cannot read KERNEL_START_SECTOR / KERNEL_SECTORS from $(BOOT_DIR)/stage2/loader.asm)
+ifeq ($(KERNEL_START_SECTOR),)
+    $(error Cannot read KERNEL_START_SECTOR from $(BOOT_DIR)/stage2/loader.asm)
 endif
 
-$(OS_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
-	@size=$$(wc -c < $(KERNEL_BIN)); max=$$(( $(KERNEL_MAX_SECTORS) * 512 )); \
+# kernel.bin must start with the header and fit on the floppy
+define check-kernel-image
+	@size=$$(wc -c < $(KERNEL_BIN)); \
+	magic=$$(od -An -c -j4 -N4 $(KERNEL_BIN) | tr -d ' '); \
+	header=$$(od -An -tu4 -j8 -N4 $(KERNEL_BIN) | tr -d ' '); \
+	if [ "$$magic" != "GEMK" ] || [ "$$header" != "$$size" ]; then \
+	  echo "error: $(KERNEL_BIN) header says '$$magic' $$header bytes, the file has $$size bytes." >&2; \
+	  echo "       kernel/entry.S must be linked first and linker.ld must end the image after .data." >&2; \
+	  exit 1; \
+	fi; \
+	max=$$(( ($(FLOPPY_SECTORS) - $(KERNEL_START_SECTOR)) * 512 )); \
 	if [ $$size -gt $$max ]; then \
-	  echo "error: $(KERNEL_BIN) is $$size bytes, but stage 2 loads only $(KERNEL_MAX_SECTORS) sectors ($$max bytes)." >&2; \
-	  echo "       Raise KERNEL_SECTORS in $(BOOT_DIR)/stage2/loader.asm (the kernel must stay below 0xA0000 in real mode)." >&2; \
+	  echo "error: $(KERNEL_BIN) is $$size bytes, the boot floppy has room for $$max." >&2; \
 	  exit 1; \
 	fi
+endef
+
+$(OS_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
+	$(check-kernel-image)
 	@echo "Creating disk image..."
 	@rm -f $@ $@.tmp
 	dd if=/dev/zero of=$@.tmp bs=512 count=$(FLOPPY_SECTORS) 2>/dev/null
@@ -257,7 +270,23 @@ $(OS_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
 	@echo "Disk image created: $@"
 	@echo "  Stage 1: $$(wc -c < $(BOOT_STAGE1) | tr -d ' ') bytes"
 	@echo "  Stage 2: $$(wc -c < $(BOOT_STAGE2) | tr -d ' ') bytes"
-	@echo "  Kernel:  $$(wc -c < $(KERNEL_BIN) | tr -d ' ') of $$(( $(KERNEL_MAX_SECTORS) * 512 )) bytes"
+	@echo "  Kernel:  $$(wc -c < $(KERNEL_BIN) | tr -d ' ') bytes"
+
+# Bootable hard disk image (16 MB) with the floppy's layout: stage 1 in the
+# MBR, stage 2 in sectors 1-32, the kernel from sector 33. Both stages read
+# it with the INT 13h extensions (LBA). GemFS never uses a disk with a boot
+# signature, so the data disk goes second.
+HDD_SECTORS := 32768
+
+$(HDD_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
+	$(check-kernel-image)
+	@rm -f $@ $@.tmp
+	dd if=/dev/zero of=$@.tmp bs=512 count=$(HDD_SECTORS) 2>/dev/null
+	dd if=$(BOOT_STAGE1) of=$@.tmp conv=notrunc bs=512 count=1 2>/dev/null
+	dd if=$(BOOT_STAGE2) of=$@.tmp conv=notrunc bs=512 seek=1 2>/dev/null
+	dd if=$(KERNEL_BIN) of=$@.tmp conv=notrunc bs=512 seek=$(KERNEL_START_SECTOR) 2>/dev/null
+	@mv $@.tmp $@
+	@echo "Hard disk image created: $@"
 
 # GemFS data disk (10MB). Created once and kept between runs.
 $(DATA_IMAGE): | $(BUILD_DIR)
@@ -268,8 +297,13 @@ $(DATA_IMAGE): | $(BUILD_DIR)
 run: $(OS_IMAGE) $(DATA_IMAGE)
 	$(QEMU) -fda $(OS_IMAGE) -hda $(DATA_IMAGE) -serial stdio -m 128M
 
-# Debug mode (pause at start, enable GDB). The data disk is required: the
-# kernel waits forever in the ATA driver when no disk is attached.
+run-hdd: $(HDD_IMAGE) $(DATA_IMAGE)
+	$(QEMU) -drive file=$(HDD_IMAGE),if=ide,index=0,format=raw \
+	  -drive file=$(DATA_IMAGE),if=ide,index=1,format=raw -boot c \
+	  -serial stdio -m 128M
+
+# Debug mode (pause at start, enable GDB). Without the data disk the system
+# starts too, just without a file system.
 debug: $(OS_IMAGE) $(DATA_IMAGE)
 	$(QEMU) -fda $(OS_IMAGE) -hda $(DATA_IMAGE) -serial stdio -m 128M -S -s
 

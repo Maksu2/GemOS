@@ -25,18 +25,25 @@
 #include "../kernel/gui/topbar/topbar.h" // Top Bar Integration
 #include "../kernel/gui/window/window.h" // WM Integration
 #include "../kernel/gui/wm/wm.h"         // WM Integration
+#include "../kernel/include/boot_info.h"
 #include "../kernel/include/event.h"
 #include "../kernel/include/heap.h"
 #include "../kernel/include/irq.h"
 #include "../kernel/memory/paging.h"
+#include "../kernel/memory/pmm.h"
 #include "../kernel/ui/cursor.h"
 #include "../kernel/ui/dock/dock.h"
 #include "../kernel/ui/menu.h"
+#include "../kernel/ui/ui_scale.h"
 
 extern uintptr_t __kernel_end;
-/* Heap budget for kernel allocations and GUI backbuffers. */
-#define HEAP_SIZE (24 * 1024 * 1024)
+/* Heap beyond the backbuffer: glyph caches, windows, kernel stacks of
+ * processes (about 0.3 MB in use with three programs open). */
+#define HEAP_RESERVE (4 * 1024 * 1024)
 #define USERLAND_DEBUG_AUTOSTART 0
+
+/* Copy of the loader's boot info block (kernel/include/boot_info.h) */
+boot_info_t boot_info;
 
 /* Global Screen Context */
 gfx_context_t screen_ctx;
@@ -62,10 +69,48 @@ static void gui_wait(void) {
   irq_restore(flags);
 }
 
-void kernel_main(void) {
+static void boot_info_log(void) {
+  serial_print("[BOOT] Boot drive 0x");
+  serial_print_hex(boot_info.boot_drive);
+  serial_print(", kernel ");
+  serial_print_dec(boot_info.kernel_bytes);
+  serial_print(" bytes, VBE mode 0x");
+  serial_print_hex(boot_info.vbe_mode);
+  serial_print("\n");
+
+  for (uint32_t i = 0; i < boot_info.e820_count; ++i) {
+    const e820_entry_t *entry = &boot_info.e820[i];
+
+    serial_print("[BOOT] E820 0x");
+    if (entry->base >> 32) {
+      serial_print_hex((uint32_t)(entry->base >> 32));
+      serial_print(":");
+    }
+    serial_print_hex((uint32_t)entry->base);
+    serial_print(" +0x");
+    if (entry->length >> 32) {
+      serial_print_hex((uint32_t)(entry->length >> 32));
+      serial_print(":");
+    }
+    serial_print_hex((uint32_t)entry->length);
+    serial_print(entry->type == E820_USABLE ? " usable\n" : " reserved\n");
+  }
+}
+
+void kernel_main(const boot_info_t *loader_info) {
   /* Initialize Serial Port for debugging */
   serial_init();
   serial_print("\n[BOOT] GemOS Kernel Starting...\n");
+
+  /* The block lives in stage 2's memory: copy it before anything else. */
+  if (loader_info == NULL || loader_info->magic != BOOT_INFO_MAGIC ||
+      loader_info->e820_count > BOOT_INFO_E820_MAX) {
+    serial_print("[PANIC] No valid boot info from the loader\n");
+    for (;;)
+      __asm__ volatile("cli; hlt");
+  }
+  memcpy(&boot_info, loader_info, sizeof(boot_info));
+  boot_info_log();
 
   gdt_init();
 
@@ -80,8 +125,17 @@ void kernel_main(void) {
   /* Initialize System Timer (PIT) */
   init_pit();
 
-  /* Initialize Heap */
-  heap_init((uintptr_t)&__kernel_end, HEAP_SIZE);
+  /* Heap and page frames from the E820 map; the heap must hold the
+   * backbuffer of the video mode the loader set. */
+  const vbe_mode_info_t *mode = (const vbe_mode_info_t *)boot_info.vbe_mode_info;
+  memory_layout_t memory;
+  if (!pmm_plan((uintptr_t)&__kernel_end,
+                (size_t)mode->pitch * mode->height + HEAP_RESERVE, &memory)) {
+    serial_print("[PANIC] System halted: not enough memory\n");
+    for (;;)
+      __asm__ volatile("cli; hlt");
+  }
+  heap_init(memory.heap_start, memory.heap_size);
 
   /* Initialize Event System */
   event_init();
@@ -96,7 +150,7 @@ void kernel_main(void) {
   init_mouse();
 
   /* Print VBE info */
-  vbe_mode_info_t *vbe_info = (vbe_mode_info_t *)0x9000;
+  vbe_mode_info_t *vbe_info = (vbe_mode_info_t *)boot_info.vbe_mode_info;
 
   serial_print("[BOOT] VBE Mode Info:\n");
   serial_print("  Resolution: ");
@@ -114,8 +168,13 @@ void kernel_main(void) {
   vbe_init(vbe_info->physbase, vbe_info->width, vbe_info->height, vbe_info->bpp,
            vbe_info->pitch);
 
+  /* The loader falls back to smaller modes (boot/stage2/loader.asm): the UI
+   * is drawn 2x on Full HD and 1x below, so it keeps at least 800x540
+   * logical pixels. */
+  ui_scale = (vbe_info->width >= 1920 && vbe_info->height >= 1080) ? 2.0f : 1.0f;
+
   /* Enable kernel-owned paging and a dedicated 4 KB frame pool. */
-  paging_init();
+  paging_init(memory.frames_start, memory.frames_end);
   paging_self_test();
   process_init();
 

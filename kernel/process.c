@@ -197,6 +197,11 @@ void process_init(void) {
 int process_seed_userland(void) {
   int seeded = 0;
 
+  if (!gemfs_available()) {
+    serial_print("[PROC] No file system: programs run from the kernel image\n");
+    return 0;
+  }
+
   for (size_t i = 0; i < sizeof(embedded_user_programs) / sizeof(embedded_user_programs[0]);
        ++i) {
     const embedded_user_program_t *program = &embedded_user_programs[i];
