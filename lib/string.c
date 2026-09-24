@@ -101,14 +101,15 @@ char *strcpy(char *dest, const char *src) {
   return dest;
 }
 
-/* Copy string with limit */
+/* Copy string with limit: exactly n bytes, zero-padded (no terminator if
+ * src is n bytes or longer) */
 char *strncpy(char *dest, const char *src, size_t n) {
-  char *d = dest;
-  while (n && (*d++ = *src++)) {
-    n--;
+  size_t i = 0;
+  for (; i < n && src[i] != '\0'; i++) {
+    dest[i] = src[i];
   }
-  while (n--) {
-    *d++ = '\0';
+  for (; i < n; i++) {
+    dest[i] = '\0';
   }
   return dest;
 }
