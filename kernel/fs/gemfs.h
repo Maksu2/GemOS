@@ -20,6 +20,9 @@
 /* Initialize file system */
 void gemfs_init(void);
 
+/* Non-zero if a data disk holds the file system */
+int gemfs_available(void);
+
 /* Create file/dir (returns index) */
 int gemfs_create_file(int parent_id, const char *name);
 int gemfs_create_dir(int parent_id, const char *name);
