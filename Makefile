@@ -80,24 +80,21 @@ KERNEL_ASM_SOURCES := kernel/entry.S kernel/interrupts.S \
 
 KERNEL_C_SOURCES := kernel/kernel.c kernel/console.c kernel/gdt.c kernel/idt.c \
                     kernel/isr.c kernel/scheduler.c kernel/process.c kernel/elf.c \
-                    kernel/syscall.c kernel/tests.c tests/visual_test.c \
-                    tests/window_test.c tests/font_test.c kernel/heap.c \
+                    kernel/syscall.c kernel/heap.c \
                     kernel/event.c kernel/memory/paging.c \
                     kernel/gfx/rect.c kernel/gfx/context.c kernel/gfx/primitives.c \
-                    kernel/gfx/font/font.c kernel/gfx/font/glyphs.c \
+                    kernel/gfx/font/font.c \
                     kernel/gui/desktop.c kernel/gui/window/window.c \
                     kernel/gui/wm/wm.c kernel/gui/topbar/topbar.c \
                     kernel/ui/ui_scale.c kernel/ui/menu.c kernel/ui/dock/dock.c \
                     kernel/ui/cursor.c kernel/ui/focus.c \
                     kernel/app/app_manager.c apps/testapp/testapp.c \
-                    apps/about/about.c apps/about/uabout_launcher.c \
+                    apps/about/uabout_launcher.c \
                     apps/terminal/terminal.c apps/terminal/uterm_launcher.c \
                     apps/textedit/textedit.c apps/textedit/inputbox.c \
                     apps/textedit/filepicker.c apps/textedit/utextedit_launcher.c \
                     apps/explorer/explorer.c \
                     kernel/fs/gemfs.c \
-                    kernel/gfx/blur.c \
-                    kernel/font/glyphs_sys.c kernel/font/rasterizer.c \
                     kernel/font/aa.c kernel/font/truetype.c kernel/font/scanline.c \
                     kernel/font/font_cache.c
 
