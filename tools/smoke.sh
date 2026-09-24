@@ -8,8 +8,9 @@
 #   --matrix   the smoke test on every machine variant: 32/64/256 MB,
 #              no data disk, 4 MB VRAM (smaller mode, no page flip),
 #              boot from the hard disk image, a data disk without GemFS
-#              or with a damaged superblock (must stay unchanged), and a
-#              second boot of the same disk (must write nothing)
+#              or with a damaged superblock (must stay unchanged), a
+#              second boot of the same disk (must write nothing), and a
+#              disk that writes slowly
 #   --selftest build and boot the self-test image (make selftest):
 #              heap, pool, ELF loader, GemFS and the file syscalls, FPU
 #              state, every exception from Ring 3, and a kernel stack

@@ -88,7 +88,8 @@ jobs:
 
       # 32/64/256 MB, no data disk, 4 MB VRAM, boot from the hard disk image,
       # a data disk without GemFS or with a damaged superblock (must stay
-      # byte for byte unchanged), a second boot that must write nothing
+      # byte for byte unchanged), a second boot that must write nothing,
+      # a disk that writes slowly
       - name: Smoke test on every machine variant
         run: tools/smoke.sh --no-build --matrix
 

@@ -6,8 +6,9 @@
 /*
  * ATA PIO driver (LBA28). ata_init() probes the four legacy positions
  * (primary/secondary channel, master/slave) with IDENTIFY. Every wait on
- * the controller is bounded, so a missing or broken disk returns an error
- * instead of hanging the kernel.
+ * the controller is bounded (5 s for IDENTIFY, 30 s for a read, a write or
+ * a cache flush, timed with the PIT), so a missing or broken disk returns
+ * an error instead of hanging the kernel.
  *
  * Every disk starts read-only. Writes to a disk are refused until
  * ata_allow_writes() is called for it, which only GemFS does, for the disk

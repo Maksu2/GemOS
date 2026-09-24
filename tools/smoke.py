@@ -19,13 +19,15 @@ the monitor:
 The data disk is a fresh GemFS disk (tools/mkgemfs format), or with
 --data-disk "unsigned" (random bytes) or "damaged" (a GemFS superblock with
 a wrong checksum). --preboot boots once on the new disks and shuts down
-before the test, which then runs on a second boot. --expect-unchanged
+before the test, which then runs on a second boot. --slow-writes N lets
+QEMU write only N requests per second to the data disk. --expect-unchanged
 data|boot compares the SHA-256 of that disk image before and after the
 test: the kernel must not have written a single byte.
 
 With --matrix it runs the smoke test once per machine variant (32/64/256 MB
 of RAM, no data disk, 4 MB of VRAM, boot from the hard disk image, a data
-disk without GemFS or with a damaged superblock, a second boot); each
+disk without GemFS or with a damaged superblock, a second boot, a slow
+disk); each
 variant also checks log lines that show which path the kernel took.
 
 With --selftest it boots the self-test image (make selftest) instead, with
@@ -105,6 +107,11 @@ MATRIX = [
     ("second-boot", ["--preboot", "--expect-unchanged", "data"],
      [r"\[GemFS\] Mounted GemFS v3",
       r"\[PROC\] Programs on GemFS: 0 seeded, 4 up to date"]),
+    # every write takes about 80 ms, as on a busy host (CI once took longer
+    # than the old ATA timeout to flush a new disk image)
+    ("slow-disk", ["--slow-writes", "12"],
+     [r"\[GemFS\] Mounted GemFS v3",
+      r"\[PROC\] Programs on GemFS: 4 seeded, 0 up to date"]),
 ]
 
 # Topbar menus (kernel/gui/topbar/topbar.c): "GemOS" at x 10..80, "Apps" at
@@ -178,7 +185,7 @@ FAILURE_PATTERNS = [
     r"Alloc failed",
     r"Failed to",
     r"\[ELF\]",
-    r"\[ATA\] (Refused|read failed|write failed)",
+    r"\[ATA\] (Refused|[a-z ]+ failed)",
 ]
 
 # Kernel log lines start with a "[Tag] " prefix; indented lines continue the
@@ -521,7 +528,10 @@ class Smoke:
             index = 0
         for name in ("data", "spare"):
             if name in self.disks:
-                cmd += ["-drive", disk % (self.disks[name], index)]
+                drive = disk % (self.disks[name], index)
+                if name == "data" and self.args.slow_writes:
+                    drive += ",throttling.iops-write=%d" % self.args.slow_writes
+                cmd += ["-drive", drive]
                 index += 1
         if self.args.vga_mem:
             # (-global VGA.vgamem_mb leaves the machine without a VGA)
@@ -1003,6 +1013,9 @@ def main():
                         default="gemfs",
                         help="a fresh GemFS disk, random bytes, or a GemFS "
                         "disk with a wrong superblock checksum")
+    parser.add_argument("--slow-writes", type=int, default=0, metavar="N",
+                        help="let QEMU write at most N requests per second "
+                        "to the data disk")
     parser.add_argument("--preboot", action="store_true",
                         help="boot once on the new disks before the test")
     parser.add_argument("--expect-unchanged", action="append", default=[],
