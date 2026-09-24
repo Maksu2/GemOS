@@ -284,49 +284,36 @@ void kernel_main(void) {
         pending_redraw = true;
       } else if (ev.type == EVENT_REDRAW_REQUEST) {
         pending_redraw = true;
-      } else if (ev.type == EVENT_TIMER_TICK) {
-        /* Frame Pacing Check */
-        uint64_t current_tick = ev.data.timer.tick_count;
-        if (pending_redraw &&
-            (current_tick - last_render_tick >= TICKS_PER_FRAME)) {
+      }
+      /* EVENT_TIMER_TICK only wakes the loop for the frame pacing below. */
+    }
 
-          if (use_page_flip) {
-            /* BGA Page Flip: render to heap (fast), copy to VRAM back page,
-             * then atomic flip. Direct VRAM rendering is slow because
-             * MMIO writes go through QEMU's hypervisor per-pixel.
-             * Heap RAM rendering + one burst memcpy is much faster. */
-            screen_ctx.framebuffer = (uint32_t *)backbuffer;
+    /* At most one frame per TICKS_PER_FRAME ticks. The request is cleared
+     * before drawing, so a redraw requested while this frame is drawn gets
+     * the next frame instead of being lost. */
+    uint64_t now = timer_get_ticks();
+    if (pending_redraw && now - last_render_tick >= TICKS_PER_FRAME) {
+      pending_redraw = false;
+      last_render_tick = now;
 
-            desktop_draw(&screen_ctx);
-            dock_render(&screen_ctx);
-            wm_render_all();
-            topbar_render(&screen_ctx);
-            menu_render(&screen_ctx);
-            cursor_draw();
+      /* Render to the heap backbuffer, then copy the finished frame to VRAM
+       * in one burst: direct VRAM rendering is slow because MMIO writes go
+       * through QEMU's hypervisor per pixel. */
+      screen_ctx.framebuffer = (uint32_t *)backbuffer;
 
-            /* Copy completed frame to invisible VRAM back page */
-            uint32_t *back_page = vbe_get_back_page();
-            memcpy(back_page, backbuffer, buffer_size);
+      desktop_draw(&screen_ctx);
+      dock_render(&screen_ctx);
+      wm_render_all();
+      topbar_render(&screen_ctx);
+      menu_render(&screen_ctx);
+      cursor_draw();
 
-            /* Atomic page flip - display instantly shows the new page */
-            vbe_flip();
-          } else {
-            /* Fallback: render to heap backbuffer, memcpy to front VBE */
-            screen_ctx.framebuffer = (uint32_t *)backbuffer;
-
-            desktop_draw(&screen_ctx);
-            dock_render(&screen_ctx);
-            wm_render_all();
-            topbar_render(&screen_ctx);
-            menu_render(&screen_ctx);
-            cursor_draw();
-
-            memcpy(vbe_buffer, backbuffer, buffer_size);
-          }
-
-          last_render_tick = current_tick;
-          pending_redraw = false;
-        }
+      if (use_page_flip) {
+        /* BGA: copy to the invisible back page, then flip atomically */
+        memcpy(vbe_get_back_page(), backbuffer, buffer_size);
+        vbe_flip();
+      } else {
+        memcpy(vbe_buffer, backbuffer, buffer_size);
       }
     }
 
