@@ -34,6 +34,7 @@
 #include "../kernel/ui/cursor.h"
 #include "../kernel/ui/dock/dock.h"
 #include "../kernel/ui/menu.h"
+#include "../kernel/ui/ui_scale.h"
 
 extern uintptr_t __kernel_end;
 /* Heap beyond the backbuffer: glyph caches, windows, kernel stacks of
@@ -166,6 +167,11 @@ void kernel_main(const boot_info_t *loader_info) {
   /* Initialize VBE Driver */
   vbe_init(vbe_info->physbase, vbe_info->width, vbe_info->height, vbe_info->bpp,
            vbe_info->pitch);
+
+  /* The loader falls back to smaller modes (boot/stage2/loader.asm): the UI
+   * is drawn 2x on Full HD and 1x below, so it keeps at least 800x540
+   * logical pixels. */
+  ui_scale = (vbe_info->width >= 1920 && vbe_info->height >= 1080) ? 2.0f : 1.0f;
 
   /* Enable kernel-owned paging and a dedicated 4 KB frame pool. */
   paging_init(memory.frames_start, memory.frames_end);

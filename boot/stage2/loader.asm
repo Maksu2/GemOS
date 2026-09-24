@@ -31,12 +31,6 @@ BUFFER_SEG          equ 0x2000      ; read buffer at 0x20000 (64 KB aligned,
 CHUNK_SECTORS       equ 64          ; 32 KB per read + copy
 READ_RETRIES        equ 3
 
-VBE_MODE            equ 0x4115      ; 800x600x32bpp (safer choice)
-; Alternative modes:
-; 0x4112 = 640x480x32bpp
-; 0x4115 = 800x600x32bpp  
-; 0x4118 = 1024x768x32bpp
-
 PROTECTED_MODE_BASE equ 0x100000    ; 1MB - where kernel will be in PM
 
 ; -----------------------------------------------------------------------------
@@ -252,103 +246,107 @@ get_memory_map:
     ret
 
 ; =============================================================================
-; VBE Graphics Mode Setup
+; VBE Graphics Mode Setup: the best mode from vbe_preferred that the card
+; offers with 32 bpp and a linear framebuffer
 ; =============================================================================
 setup_vbe:
-    ; Get VBE controller info
+    mov dword [vbe_info], 'VBE2'    ; ask for the VBE 2.0+ info block
     mov ax, 0x4F00
     mov di, vbe_info
     int 0x10
-    
     cmp ax, 0x004F
     jne .vbe_error
-    
-    ; Get pointer to mode list
+
+    mov word [vbe_best_mode], 0xFFFF
+    mov byte [vbe_best_rank], VBE_PREFERRED_COUNT
+
     ; Offset 14: DWORD VideoModePtr (Far Pointer: Offset:Segment)
-    mov ax, [vbe_info + 16]     ; Segment
-    mov es, ax
-    mov di, [vbe_info + 14]     ; Offset
-    
+    mov si, [vbe_info + 14]
+    mov ax, [vbe_info + 16]
+    mov [vbe_list_seg], ax
+
 .mode_loop:
-    mov cx, [es:di]             ; Get mode number
-    cmp cx, 0xFFFF              ; End of list?
-    je .no_mode_found
-    add di, 2                   ; Next entry
-    
-    ; Get mode info
-    push es
-    push di
-    
-    ; Reset ES to our segment for buffer
-    push ax
+    mov es, [vbe_list_seg]
+    mov cx, [es:si]                 ; mode number
+    cmp cx, 0xFFFF                  ; end of list
+    je .scan_done
+    add si, 2
+    push si
+
     xor ax, ax
     mov es, ax
-    pop ax
-    
     mov ax, 0x4F01
     mov di, vbe_mode_info
+    push cx
     int 0x10
-    
+    pop cx
     cmp ax, 0x004F
     jne .next_mode
-    
-    ; Check properties
-    ; Offset 0: ModeAttributes
-    ; Bit 7 = Linear Frame Buffer
+
+    ; Offset 0: ModeAttributes, bit 0 = supported, bit 7 = linear framebuffer
     mov ax, [vbe_mode_info]
-    test ax, 0x0080
-    jz .next_mode
-    
-    ; Offset 18: XResolution
-    mov ax, [vbe_mode_info + 18]
-    cmp ax, 1920
+    and ax, 0x0081
+    cmp ax, 0x0081
     jne .next_mode
-    
-    ; Offset 20: YResolution
-    mov ax, [vbe_mode_info + 20]
-    cmp ax, 1080
-    jne .next_mode
-    
     ; Offset 25: BitsPerPixel
-    mov al, [vbe_mode_info + 25]
-    cmp al, 32
+    cmp byte [vbe_mode_info + 25], 32
     jne .next_mode
-    
-    ; FOUND IT!
-    ; CX contains mode number
-    pop di
-    pop es
-    
-    ; Set Mode (CX) | LFB (0x4000)
+
+    ; Offsets 18/20: XResolution/YResolution. Rank = position in the list.
+    mov ax, [vbe_mode_info + 18]
+    mov dx, [vbe_mode_info + 20]
+    xor bx, bx
+    mov di, vbe_preferred
+.rank_loop:
+    cmp bl, [vbe_best_rank]
+    jae .next_mode                  ; no better than the best so far
+    cmp ax, [di]
+    jne .rank_next
+    cmp dx, [di + 2]
+    jne .rank_next
+    mov [vbe_best_rank], bl
+    mov [vbe_best_mode], cx
+    jmp .next_mode
+.rank_next:
+    add di, 4
+    inc bx
+    jmp .rank_loop
+
+.next_mode:
+    pop si
+    jmp .mode_loop
+
+.scan_done:
+    xor ax, ax
+    mov es, ax
+    mov cx, [vbe_best_mode]
+    cmp cx, 0xFFFF
+    je .vbe_error
+
+    ; mode info of the chosen mode, then set it with the LFB bit (0x4000)
+    mov ax, 0x4F01
+    mov di, vbe_mode_info
+    push cx
+    int 0x10
+    pop cx
+    cmp ax, 0x004F
+    jne .vbe_error
+
     mov [bi_vbe_mode], cx
     mov bx, cx
     or bx, 0x4000
     mov ax, 0x4F02
     int 0x10
-    
     cmp ax, 0x004F
     jne .vbe_error
 
-    ; hand the mode info to the kernel (ES still points at the mode list)
-    xor ax, ax
-    mov es, ax
+    ; hand the mode info to the kernel
     cld
     mov si, vbe_mode_info
     mov di, bi_vbe_mode_info
     mov cx, 256
     rep movsb
-
     ret
-    
-.next_mode:
-    pop di
-    pop es
-    jmp .mode_loop
-    
-.no_mode_found:
-    ; 1920x1080x32 with a linear framebuffer is required; there is no
-    ; fallback mode
-    jmp .vbe_error
 
 .vbe_error:
     mov si, msg_vbe_fail
@@ -670,6 +668,25 @@ dap_count:          dw 0
 dap_offset:         dw 0
 dap_segment:        dw 0
 dap_lba:            dq 0
+
+; Video modes to try, best first (32 bpp with a linear framebuffer). The
+; kernel scales the UI 2x on 1920x1080 and 1x on the smaller ones.
+vbe_preferred:
+    dw 1920, 1080
+    dw 1680, 1050
+    dw 1600, 900
+    dw 1440, 900
+    dw 1366, 768
+    dw 1280, 1024
+    dw 1280, 800
+    dw 1280, 720
+    dw 1024, 768
+    dw 800, 600
+VBE_PREFERRED_COUNT equ ($ - vbe_preferred) / 4
+
+vbe_list_seg:       dw 0
+vbe_best_mode:      dw 0
+vbe_best_rank:      db 0
 
 ; Align to 16 bytes for VBE structures
 align 16
