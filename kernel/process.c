@@ -328,6 +328,14 @@ int process_kill_pid(uint32_t pid, int32_t exit_code) {
   return 1;
 }
 
+void process_wake(uint32_t pid) {
+  process_t *process = process_find_by_pid(pid);
+
+  if (process != NULL && process->task_id != 0) {
+    scheduler_wake(process->task_id);
+  }
+}
+
 void process_reap_zombies(void) {
   for (int i = 0; i < MAX_PROCESSES; ++i) {
     process_t *process = &process_table[i];

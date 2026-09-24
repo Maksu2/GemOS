@@ -16,7 +16,13 @@ enum {
   SYS_console_present = 9,
   SYS_file_read = 10,
   SYS_file_write = 11,
+  /* Like console_poll_event, but sleeps until an event arrives or
+   * timeout_ms passes: returns 1 with an event, 0 on timeout. */
+  SYS_console_wait_event = 12,
 };
+
+/* timeout_ms for SYS_console_wait_event: no timeout */
+#define GEMOS_WAIT_FOREVER 0xFFFFFFFFU
 
 enum {
   GEMOS_OK = 0,

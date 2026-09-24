@@ -52,6 +52,17 @@ gemos_hosted_app_poll_event(gemos_hosted_app_t *app) {
   return gemos_console_poll_event(app->console_handle, &app->event);
 }
 
+/* Sleep until an event arrives (1) or timeout_ms passes (0). */
+static inline int32_t gemos_hosted_app_wait_event(gemos_hosted_app_t *app,
+                                                  uint32_t timeout_ms) {
+  if (app == 0 || app->console_handle < 0) {
+    return -1;
+  }
+
+  return gemos_console_wait_event(app->console_handle, &app->event,
+                                  timeout_ms);
+}
+
 static inline int32_t gemos_hosted_app_present(gemos_hosted_app_t *app,
                                                gemos_console_cell_t *cells) {
   if (app == 0 || app->console_handle < 0 || cells == 0) {
@@ -61,7 +72,5 @@ static inline int32_t gemos_hosted_app_present(gemos_hosted_app_t *app,
   app->frame.cells = cells;
   return gemos_console_present(app->console_handle, &app->frame);
 }
-
-static inline void gemos_hosted_app_idle(void) { (void)gemos_yield(); }
 
 #endif /* GEMOS_USERLAND_COMMON_HOSTED_APP_H */

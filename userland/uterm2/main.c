@@ -28,22 +28,6 @@ int main(void) {
                          "Type 'help' to list commands.");
 
   for (;;) {
-    int saw_event = 0;
-
-    while ((poll_result = gemos_hosted_app_poll_event(&app_host)) == 1) {
-      saw_event = 1;
-      if (term_input_handle_event(&app_model, &app_host.event, app_command,
-                                  sizeof(app_command)) ==
-          TERM_INPUT_SUBMIT) {
-        term_model_append_command(&app_model, app_command);
-        term_commands_execute(&app_model, app_command);
-      }
-    }
-
-    if (poll_result < 0) {
-      return 2;
-    }
-
     if (app_model.dirty) {
       term_render_build_frame(&app_model, app_host.pid, &app_host.frame,
                               app_frame_cells);
@@ -57,8 +41,20 @@ int main(void) {
       return 0;
     }
 
-    if (!saw_event && !app_model.dirty) {
-      gemos_hosted_app_idle();
+    /* Sleep until the next event, then handle everything queued. */
+    poll_result = gemos_hosted_app_wait_event(&app_host, GEMOS_WAIT_FOREVER);
+    while (poll_result == 1) {
+      if (term_input_handle_event(&app_model, &app_host.event, app_command,
+                                  sizeof(app_command)) ==
+          TERM_INPUT_SUBMIT) {
+        term_model_append_command(&app_model, app_command);
+        term_commands_execute(&app_model, app_command);
+      }
+      poll_result = gemos_hosted_app_poll_event(&app_host);
+    }
+
+    if (poll_result < 0) {
+      return 2;
     }
   }
 }

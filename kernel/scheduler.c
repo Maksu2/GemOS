@@ -345,6 +345,9 @@ void scheduler_block_current(uint64_t wake_tick) {
     if (current_task != IDLE_TASK && task->state == TASK_RUNNING) {
         task->state = TASK_BLOCKED;
         task->wake_tick = wake_tick;
+        if (task->process != NULL) {
+            task->process->state = PROC_BLOCKED;
+        }
     }
     irq_restore(flags);
 }

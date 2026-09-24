@@ -174,6 +174,76 @@ static uint32_t syscall_console_poll_event(uint32_t handle,
   return 1;
 }
 
+/* The two bytes before the return address are "int $0x80" (CD 80). */
+static int syscall_can_restart(const registers_t *regs) {
+  uint8_t insn[2];
+
+  return regs->eip >= 2U &&
+         copy_from_user(insn, (const void *)(uintptr_t)(regs->eip - 2U), 2) &&
+         insn[0] == 0xCDU && insn[1] == 0x80U;
+}
+
+/*
+ * SYS_console_wait_event: console_poll_event that sleeps while the queue is
+ * empty. The process blocks with nothing on its kernel stack but the
+ * syscall frame, whose EIP is moved back to the int $0x80: when an event
+ * (process_wake) or the timeout (scheduler tick) wakes it, the syscall runs
+ * again and returns the event, or 0 once the deadline has passed. A killed
+ * process therefore never leaves kernel code half way.
+ */
+static void syscall_console_wait_event(registers_t *regs) {
+  process_t *process = syscall_current_process();
+  uintptr_t user_event_ptr = (uintptr_t)regs->ecx;
+  uint32_t timeout_ms = regs->edx;
+  gemos_console_event_t event;
+  int poll_result;
+  uint64_t now;
+
+  if (process == NULL || user_event_ptr == 0) {
+    regs->eax = (uint32_t)GEMOS_ERR_INVAL;
+    return;
+  }
+
+  poll_result = console_poll_event(process->pid, (int)regs->ebx, &event);
+  if (poll_result != 0) {
+    process->waiting = 0;
+    if (poll_result < 0) {
+      regs->eax = (uint32_t)poll_result;
+    } else if (!copy_to_user((void *)user_event_ptr, &event, sizeof(event))) {
+      regs->eax = (uint32_t)GEMOS_ERR_FAULT;
+    } else {
+      regs->eax = 1;
+    }
+    return;
+  }
+
+  /* PIT ticks are milliseconds (PIT_FREQ = 1000), like SYS_ticks_ms. */
+  now = timer_get_ticks();
+  if (!process->waiting) {
+    if (timeout_ms == 0) {
+      regs->eax = 0;
+      return;
+    }
+    process->waiting = 1;
+    process->wait_deadline =
+        timeout_ms == GEMOS_WAIT_FOREVER ? 0 : now + timeout_ms;
+  } else if (process->wait_deadline != 0 && now >= process->wait_deadline) {
+    process->waiting = 0;
+    regs->eax = 0;
+    return;
+  }
+
+  if (!syscall_can_restart(regs)) {
+    process->waiting = 0;
+    regs->eax = 0;
+    return;
+  }
+
+  /* EAX still holds SYS_console_wait_event, EBX..EDX the arguments. */
+  regs->eip -= 2U;
+  scheduler_block_current(process->wait_deadline);
+}
+
 static uint32_t syscall_console_clear(uint32_t handle) {
   process_t *process = syscall_current_process();
 
@@ -314,6 +384,9 @@ void syscall_interrupt_handler(registers_t *regs) {
   case SYS_console_poll_event:
     regs->eax =
         syscall_console_poll_event(regs->ebx, (uintptr_t)regs->ecx);
+    break;
+  case SYS_console_wait_event:
+    syscall_console_wait_event(regs);
     break;
   case SYS_console_clear:
     regs->eax = syscall_console_clear(regs->ebx);
