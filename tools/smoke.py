@@ -18,6 +18,12 @@ With --matrix it runs the smoke test once per machine variant (32/64/256 MB
 of RAM, no data disk, 4 MB of VRAM, boot from the hard disk image); each
 variant also checks log lines that show which path the kernel took.
 
+With --selftest it boots the self-test image (make selftest) instead:
+kernel/selftest.c checks the heap, the pool, the ELF loader, the FPU state
+and every exception a Ring 3 program can raise, logs "[SELFTEST] RESULT",
+then overflows its kernel stack on purpose; the log must end in the double
+fault panic that names the overflow.
+
 With --stress N it runs a load test instead: N cycles of opening all
 three programs from the menus, typing into them and moving the mouse while
 they start and exit, then closing them (Esc or the close button, taking
@@ -125,6 +131,15 @@ STRESS_WIGGLE = [(300, 200), (700, 300), (500, 480), (880, 520), (200, 400),
 # first render (about 1 s under TCG).
 DESKTOP_TIMEOUT = 20.0
 WINDOW_TIMEOUT = 10.0
+
+# The self-test: time for all of its checks, then for the deliberate
+# kernel stack overflow to reach the double fault handler.
+SELFTEST_TIMEOUT = 120.0
+SELFTEST_PANIC_TIMEOUT = 30.0
+SELFTEST_OVERFLOW = "[SELFTEST] Overflowing the kernel stack on purpose"
+SELFTEST_DOUBLE_FAULT = re.compile(
+    r"\[PANIC\] CPU Exception 8: Double Fault - kernel stack overflow "
+    r"\(guard page\)\n(?:  .*\n)*System Halted\.")
 
 FAILURE_PATTERNS = [
     r"PANIC",
@@ -652,6 +667,72 @@ class Smoke:
         self.check(True, "stress: %d cycles" % cycles,
                    "%.0f s" % (time.monotonic() - start))
 
+    # -- self-test -------------------------------------------------------------
+    def selftest(self):
+        start = time.monotonic()
+        result_re = re.compile(r"^\[SELFTEST\] RESULT: (PASS|FAIL) \("
+                               r"(?:\d+ of )?(\d+) checks(?:, (\d+) skipped)?"
+                               r"\)$", re.M)
+        panic_re = re.compile(r"^\[PANIC\][^\n]*(?=\n)", re.M)  # whole line
+
+        def finished(text):
+            # a panic before the result stops the kernel: no need to wait
+            text = text.replace("\r", "")
+            return result_re.search(text) or panic_re.search(text)
+
+        result = self.wait_for(finished, SELFTEST_TIMEOUT)
+        if result and result.re is panic_re:
+            self.check(False, "selftest: finished",
+                       "kernel panic before the result: %s" % result.group(0))
+            return
+        if not self.check(bool(result), "selftest: finished",
+                          "%.1f s" % (time.monotonic() - start)):
+            return
+        text = self.log_text().replace("\r", "")
+        passed = re.findall(r"^\[SELFTEST\] PASS (.*)$", text, re.M)
+        failed = re.findall(r"^\[SELFTEST\] FAIL (.*)$", text, re.M)
+        skipped = re.findall(r"^\[SELFTEST\] SKIP (.*)$", text, re.M)
+        total = int(result.group(2))
+        self.check(result.group(1) == "PASS" and not failed and
+                   len(passed) == total,
+                   "selftest: all %d checks passed" % total,
+                   "; ".join(failed[:3]) if failed else
+                   "%d PASS lines" % len(passed))
+        for line in skipped:
+            print("SKIP  selftest: %s" % line, flush=True)
+
+        # every fault test ended its program, and nothing else faulted
+        faults = [line for line in passed if line.startswith("fault ")]
+        user_faults = re.findall(r"^\[USERFAULT\] ", text, re.M)
+        self.check(len(faults) > 0 and len(user_faults) == len(faults),
+                   "selftest: one [USERFAULT] per fault test",
+                   "%d fault tests, %d [USERFAULT] lines"
+                   % (len(faults), len(user_faults)))
+        self.screendump("selftest")
+
+        overflow = self.wait_for(lambda t: SELFTEST_OVERFLOW in t,
+                                 SELFTEST_PANIC_TIMEOUT)
+        if not self.check(bool(overflow),
+                          "selftest: kernel stack overflow test started"):
+            return
+        text = self.log_text().replace("\r", "")
+        before = text[:text.index(SELFTEST_OVERFLOW)]
+        self.check("PANIC" not in before,
+                   "selftest: no panic before the overflow test")
+        bad = interleaved_lines(before)
+        self.check(not bad, "selftest: no interleaved lines",
+                   "; ".join(repr(line) for line in bad[:3]))
+
+        panic = self.wait_for(
+            lambda t: SELFTEST_DOUBLE_FAULT.search(t.replace("\r", "")),
+            SELFTEST_PANIC_TIMEOUT)
+        text = self.log_text()
+        self.check(bool(panic) and text.count("[PANIC]") == 1,
+                   "selftest: the overflow ends in the double fault handler",
+                   "guard page named, registers dumped" if panic else
+                   "no double fault panic naming the guard page")
+        self.check(self.qemu.poll() is None, "QEMU still running at the end")
+
     def scan_log(self):
         text = self.log_text()
         hits = []
@@ -688,13 +769,16 @@ class Smoke:
                 self.save_diagnostics()
                 return
             self.desktop()
-            if self.args.stress:
+            if self.args.selftest:
+                self.selftest()
+            elif self.args.stress:
                 self.stress()
             else:
                 for name, menu, item, updating_area in APPS:
                     self.run_app(name, menu, item, updating_area)
                     time.sleep(0.5)
-            self.scan_log()
+            if not self.args.selftest:
+                self.scan_log()
             if any(not ok for ok, _, _ in self.results):
                 self.save_diagnostics()
         except SmokeError:
@@ -716,6 +800,9 @@ def main():
                         help="run the load test with this many cycles")
     parser.add_argument("--matrix", action="store_true",
                         help="run the smoke test on every machine variant")
+    parser.add_argument("--selftest", action="store_true",
+                        help="check the report of the self-test image "
+                        "(--image build/selftest/gemos.img)")
     parser.add_argument("--boot", choices=("floppy", "hdd"),
                         default="floppy",
                         help="boot device (--image is the floppy or the "

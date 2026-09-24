@@ -100,3 +100,32 @@ jobs:
             build/matrix/*/*.log
             build/matrix/*/*.txt
           if-no-files-found: ignore
+
+  selftest:
+    name: make selftest + QEMU self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nasm and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
+
+      # Heap, pool, ELF loader, FPU state, every exception a program can
+      # raise from Ring 3, and a kernel stack overflow that must end in the
+      # double fault handler (kernel/selftest.c)
+      - name: Self-test
+        run: tools/smoke.sh --selftest
+
+      - name: Upload self-test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftest-artifacts
+          path: |
+            build/selftest-run/*.png
+            build/selftest-run/*.log
+            build/selftest-run/*.txt
+          if-no-files-found: ignore
