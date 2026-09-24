@@ -17,7 +17,7 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
 - **Jądro:**
   - GDT z segmentami ring 0/3 i TSS (`esp0` per zadanie); IDT, PIC pod `0x20/0x28`, PIT 1000 Hz.
   - Pamięć z mapy E820 (`kernel/memory/pmm.c`):
-    - sterta first-fit zaraz za `__kernel_end` (co najmniej backbuffer + 4 MB, najwyżej 24 MB; `kernel/heap.c`: nagłówki z magic, kanarek za blokiem, łączenie wolnych bloków w obie strony; double free, nadpisany nagłówek i zapis za koniec bloku to panika),
+    - sterta first-fit zaraz za `__kernel_end` (co najmniej backbuffer + 4 MB, najwyżej 24 MB; `kernel/heap.c`: nagłówki z magic, kanarek za blokiem, łączenie wolnych bloków w obie strony; double free, nadpisany nagłówek i zapis za koniec bloku to panika); silnik fontów bierze bloki do 4 KB z osobnej puli 1 MB (`kernel/memory/pool.c`, `kernel/font/font_mem.c`), większe ze sterty,
     - pula ramek dostaje resztę użytecznego RAM-u poniżej 32 MB,
     - RAM powyżej 32 MB nie jest używany: jądro widzi pamięć fizyczną tylko przez identity map 0–32 MB, a od 32 MB zaczyna się userland,
     - za mało RAM kończy start komunikatem; minimum przy 1920×1080 to ok. 16 MB.
@@ -59,7 +59,7 @@ Nie obchodzić ich po cichu; plan naprawy jest w §8.2 audytu.
 boot/       stage1 (MBR) + stage2 (A20, E820, jądro wg nagłówka, VBE, boot-info)
 kernel/     kernel.c (kernel_main + pętla GUI), gdt/idt/isr, scheduler, process,
             elf, syscall, console (okna aplikacji hostowanych), heap, event,
-            memory/ (paging, pmm), fs/ (GemFS), gfx/ (prymitywy, ikony, font),
+            memory/ (paging, pmm, stosy jądra, pula), fs/ (GemFS), gfx/ (prymitywy, ikony, font),
             gui/ (WM, okna, topbar, pulpit), ui/ (dock, menu, kursor, fokus),
             app/ (rejestr aplikacji), font/ (TrueType, rasteryzer, cache, AA)
 drivers/    serial, VBE/BGA, PIC, PIT, klawiatura, mysz, ATA PIO, RTC

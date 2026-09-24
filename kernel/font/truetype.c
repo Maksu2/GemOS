@@ -1,7 +1,7 @@
 #include "truetype.h"
 #include <string.h>
 #include "../gfx/primitives.h" // For kprintf/serial debugging if needed
-#include "../include/heap.h"
+#include "font_mem.h"
 
 /*
  * Helper Functions
@@ -216,9 +216,9 @@ void tt_free_glyph(tt_glyph_t *glyph) {
   if (!glyph)
     return;
   if (glyph->points)
-    kfree(glyph->points);
+    font_free(glyph->points);
   if (glyph->contours)
-    kfree(glyph->contours);
+    font_free(glyph->contours);
   glyph->points = NULL;
   glyph->contours = NULL;
   glyph->point_count = 0;
@@ -249,15 +249,15 @@ static bool merge_glyph(tt_glyph_t *base, tt_glyph_t *sub, float a, float b,
   /* Reallocate points */
   int new_point_count = base->point_count + sub->point_count;
   tt_point_t *new_points =
-      (tt_point_t *)kalloc(new_point_count * sizeof(tt_point_t));
+      (tt_point_t *)font_alloc(new_point_count * sizeof(tt_point_t));
   if (!new_points)
     return false;
 
   /* Reallocate contours */
   int new_contour_count = base->contour_count + sub->contour_count;
-  int *new_contours = (int *)kalloc(new_contour_count * sizeof(int));
+  int *new_contours = (int *)font_alloc(new_contour_count * sizeof(int));
   if (!new_contours) {
-    kfree(new_points);
+    font_free(new_points);
     return false;
   }
 
@@ -291,9 +291,9 @@ static bool merge_glyph(tt_glyph_t *base, tt_glyph_t *sub, float a, float b,
 
   /* Update Base */
   if (base->points)
-    kfree(base->points);
+    font_free(base->points);
   if (base->contours)
-    kfree(base->contours);
+    font_free(base->contours);
 
   base->points = new_points;
   base->contours = new_contours;
@@ -382,7 +382,7 @@ static bool load_composite_glyph(tt_font_t *font, tt_glyph_t *out_glyph,
 static bool internal_load_simple_glyph(tt_font_t *font, tt_glyph_t *out_glyph,
                                        uint32_t offset, int16_t num_contours) {
   out_glyph->contour_count = num_contours;
-  out_glyph->contours = (int *)kalloc(num_contours * sizeof(int));
+  out_glyph->contours = (int *)font_alloc(num_contours * sizeof(int));
   if (!out_glyph->contours)
     return false;
 
@@ -402,7 +402,7 @@ static bool internal_load_simple_glyph(tt_font_t *font, tt_glyph_t *out_glyph,
   p += 2 + ins_len;
 
   /* Flags */
-  uint8_t *flags = (uint8_t *)kalloc(point_count); // Temp alloc
+  uint8_t *flags = (uint8_t *)font_alloc(point_count); // Temp alloc
   if (!flags) {
     tt_free_glyph(out_glyph);
     return false;
@@ -422,9 +422,9 @@ static bool internal_load_simple_glyph(tt_font_t *font, tt_glyph_t *out_glyph,
   }
 
   /* Allocate Points */
-  out_glyph->points = (tt_point_t *)kalloc(point_count * sizeof(tt_point_t));
+  out_glyph->points = (tt_point_t *)font_alloc(point_count * sizeof(tt_point_t));
   if (!out_glyph->points) {
-    kfree(flags);
+    font_free(flags);
     tt_free_glyph(out_glyph);
     return false;
   }
@@ -473,7 +473,7 @@ static bool internal_load_simple_glyph(tt_font_t *font, tt_glyph_t *out_glyph,
     out_glyph->points[i].y = (float)current_y;
   }
 
-  kfree(flags);
+  font_free(flags);
   return true;
 }
 

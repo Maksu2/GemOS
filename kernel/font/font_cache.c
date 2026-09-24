@@ -1,6 +1,6 @@
 #include "font_cache.h"
 #include <string.h>
-#include "../include/heap.h"
+#include "font_mem.h"
 
 #define CACHE_SIZE 512
 
@@ -62,7 +62,7 @@ void font_cache_put(uint16_t glyph_index, uint16_t size, const uint8_t *bitmap,
     // Force eviction at hash position
     empty_slot = start_idx;
     if (cache[empty_slot].used && cache[empty_slot].bitmap) {
-      kfree(cache[empty_slot].bitmap);
+      font_free(cache[empty_slot].bitmap);
       cache[empty_slot].used = false;
     }
   }
@@ -81,7 +81,7 @@ void font_cache_put(uint16_t glyph_index, uint16_t size, const uint8_t *bitmap,
   /* Only if we have something to store */
   if (bitmap && width > 0 && height > 0) {
     int sz = width * height;
-    e->bitmap = (uint8_t *)kalloc(sz);
+    e->bitmap = (uint8_t *)font_alloc(sz);
     if (e->bitmap) {
       memcpy(e->bitmap, bitmap, sz);
     } else {

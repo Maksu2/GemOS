@@ -85,7 +85,7 @@ KERNEL_C_SOURCES := kernel/kernel.c kernel/console.c kernel/gdt.c kernel/idt.c \
                     kernel/isr.c kernel/scheduler.c kernel/process.c kernel/elf.c \
                     kernel/syscall.c kernel/heap.c \
                     kernel/event.c kernel/memory/paging.c kernel/memory/pmm.c \
-                    kernel/memory/kstack.c \
+                    kernel/memory/kstack.c kernel/memory/pool.c \
                     kernel/gfx/rect.c kernel/gfx/context.c kernel/gfx/primitives.c \
                     kernel/gfx/icons.c \
                     kernel/gfx/font/font.c \
@@ -101,7 +101,7 @@ KERNEL_C_SOURCES := kernel/kernel.c kernel/console.c kernel/gdt.c kernel/idt.c \
                     apps/explorer/explorer.c \
                     kernel/fs/gemfs.c \
                     kernel/font/aa.c kernel/font/truetype.c kernel/font/scanline.c \
-                    kernel/font/font_cache.c
+                    kernel/font/font_cache.c kernel/font/font_mem.c
 
 DRIVER_SOURCES := drivers/serial.c drivers/vbe.c drivers/pic.c drivers/pit.c \
                   drivers/keyboard.c drivers/mouse.c drivers/ata.c drivers/rtc.c

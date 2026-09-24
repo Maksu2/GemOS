@@ -20,6 +20,7 @@
 
 #include "../kernel/app/app_manager.h"
 #include "../kernel/fs/gemfs.h"
+#include "../kernel/font/font_mem.h"
 #include "../kernel/gfx/context.h"
 #include "../kernel/gfx/font/font.h" // Font Logic
 #include "../kernel/gfx/primitives.h"
@@ -249,6 +250,7 @@ void kernel_main(const boot_info_t *loader_info) {
   size_t font_size = (size_t)(_binary_font_ttf_end - _binary_font_ttf_start);
 
   serial_print("[BOOT] Loading Font System...\n");
+  font_mem_init();
   font_load_ttf(_binary_font_ttf_start, font_size);
 
   serial_print("\n[BOOT] Kernel initialization complete\n");

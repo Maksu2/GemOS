@@ -61,7 +61,7 @@ static int heap_canary_ok(heap_block_t *block) {
   return canary == HEAP_CANARY;
 }
 
-static void heap_error(const char *what, const void *ptr) {
+void heap_report_corruption(const char *what, const void *ptr) {
   heap_errors++;
   serial_print("[HEAP] ");
   serial_print(what);
@@ -117,7 +117,7 @@ void *kalloc(size_t size) {
 
   for (heap_block_t *block = heap_first; block != NULL; block = block->next) {
     if (!heap_block_valid(block)) {
-      heap_error("corrupted block header", block);
+      heap_report_corruption("corrupted block header", block);
       return NULL;
     }
     if (block->magic != HEAP_MAGIC_FREE || block->capacity < need) {
@@ -171,19 +171,19 @@ void kfree(void *ptr) {
 
   if ((uintptr_t)ptr < heap_start + sizeof(heap_block_t) ||
       (uintptr_t)ptr >= heap_end || ((uintptr_t)ptr & (HEAP_ALIGN - 1U))) {
-    heap_error("kfree of a pointer outside the heap", ptr);
+    heap_report_corruption("kfree of a pointer outside the heap", ptr);
     return;
   }
   if (block->magic == HEAP_MAGIC_FREE) {
-    heap_error("double free", ptr);
+    heap_report_corruption("double free", ptr);
     return;
   }
   if (!heap_block_valid(block)) {
-    heap_error("kfree with a corrupted block header", ptr);
+    heap_report_corruption("kfree with a corrupted block header", ptr);
     return;
   }
   if (!heap_canary_ok(block)) {
-    heap_error("write past the end of a block", ptr);
+    heap_report_corruption("write past the end of a block", ptr);
     return;
   }
 
@@ -192,7 +192,7 @@ void kfree(void *ptr) {
 
   if (block->next != NULL) {
     if (!heap_block_valid(block->next)) {
-      heap_error("corrupted block header", block->next);
+      heap_report_corruption("corrupted block header", block->next);
       return;
     }
     if (block->next->magic == HEAP_MAGIC_FREE) {
@@ -201,7 +201,7 @@ void kfree(void *ptr) {
   }
   if (block->prev != NULL) {
     if (!heap_block_valid(block->prev)) {
-      heap_error("corrupted block header", block->prev);
+      heap_report_corruption("corrupted block header", block->prev);
       return;
     }
     if (block->prev->magic == HEAP_MAGIC_FREE) {

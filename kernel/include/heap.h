@@ -24,6 +24,10 @@ typedef struct {
 
 void heap_get_stats(heap_stats_t *stats);
 
+/* Report heap corruption: stops the kernel (or counts it, see below). The
+ * small-object pool reports through here as well. */
+void heap_report_corruption(const char *what, const void *ptr);
+
 /* Self-test only: with report_only set, heap corruption is logged and
  * counted instead of stopping the kernel. Returns the number of errors
  * seen so far. */

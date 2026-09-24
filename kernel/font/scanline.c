@@ -1,6 +1,6 @@
 #include "scanline.h"
 #include <string.h>
-#include "../include/heap.h"
+#include "font_mem.h"
 
 #define V_OVERSAMPLE 4
 #define SUBPIXEL_SHIFT 0
@@ -12,7 +12,7 @@ void rasterizer_init(rasterizer_t *r, int width, int height, uint8_t *buffer) {
   r->height = height;
   r->buffer = buffer;
   r->max_edges = MAX_EDGES;
-  r->edges = (edge_t *)kalloc(r->max_edges * sizeof(edge_t));
+  r->edges = (edge_t *)font_alloc(r->max_edges * sizeof(edge_t));
   r->edge_count = 0;
 }
 
@@ -192,7 +192,7 @@ void rasterizer_draw_glyph(rasterizer_t *r, tt_glyph_t *glyph, float scale_x,
 
   /* 2. Scanline Sweep */
 
-  float *intersections = (float *)kalloc(sizeof(float) * MAX_EDGES);
+  float *intersections = (float *)font_alloc(sizeof(float) * MAX_EDGES);
   if (!intersections)
     return;
 
@@ -305,5 +305,5 @@ void rasterizer_draw_glyph(rasterizer_t *r, tt_glyph_t *glyph, float scale_x,
     }
   }
 
-  kfree(intersections);
+  font_free(intersections);
 }
