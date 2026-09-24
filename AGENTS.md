@@ -20,7 +20,7 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
     - sterta first-fit zaraz za `__kernel_end` (co najmniej backbuffer + 4 MB, najwyżej 24 MB; `kernel/heap.c`: nagłówki z magic, kanarek za blokiem, łączenie wolnych bloków w obie strony; double free, nadpisany nagłówek i zapis za koniec bloku to panika); silnik fontów bierze bloki do 4 KB z osobnej puli 1 MB (`kernel/memory/pool.c`, `kernel/font/font_mem.c`), większe ze sterty,
     - pula ramek dostaje resztę użytecznego RAM-u poniżej 32 MB,
     - RAM powyżej 32 MB nie jest używany: jądro widzi pamięć fizyczną tylko przez identity map 0–32 MB, a od 32 MB zaczyna się userland,
-    - za mało RAM kończy start komunikatem; minimum przy 1920×1080 to ok. 16 MB.
+    - za mało RAM kończy start komunikatem; minimum przy 1920×1080 to ok. 17 MB (backbuffer 8,1 MB + 4 MB zapasu sterty + 2 MB ramek + jądro z BSS, w tym stosy jądra).
   - Paging 4 KB: identity map 0–32 MB + 16 MB framebuffera, osobny katalog stron na proces.
   - Stosy jądra (`kernel/memory/kstack.c`) leżą w BSS, każdy z niezmapowaną stroną ochronną pod spodem: task 0 ma 64 KB (przełącza się na niego `entry.S`), idle i handler #DF po 8 KB, każdy proces 16 KB. #DF to bramka zadania z własnym TSS i stosem, więc przepełnienie stosu jądra kończy się paniką z rejestrami, a nie resetem.
 - **Procesy:**
@@ -33,6 +33,7 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
   - `UTERM.ELF`, `ABOUT.ELF` i `UTEXTEDIT.ELF` (plus `USRSMOKE.ELF` do debugowania) są wbudowane w obraz jądra i przy każdym starcie zapisywane do GemFS; loader woli kopię z GemFS.
   - Model „hosted app”: aplikacja wysyła siatkę komórek tekstowych (maks. 96×32), jądro rysuje okno. Działa najwyżej 8 takich okien naraz. Aplikacje śpią w `SYS_console_wait_event` (ABOUT z timeoutem do pełnej sekundy).
   - `UTEXTEDIT` nie zapisuje ani nie otwiera plików.
+  - `FAULTS.ELF` i `FPUCHECK.ELF` (`userland/selftest/`) są tylko w obrazie autotestu (`make selftest`).
 - **GUI (w jądrze):**
   - Menedżer okien, topbar, dock, menu, font TrueType (Inter) z antyaliasingiem.
   - Skala UI (całkowita, `int ui_scale`) 2 przy 1920×1080 (współrzędne logiczne 960×540), 1 w mniejszych trybach.
@@ -60,6 +61,7 @@ boot/       stage1 (MBR) + stage2 (A20, E820, jądro wg nagłówka, VBE, boot-in
 kernel/     kernel.c (kernel_main + pętla GUI), gdt/idt/isr, scheduler, process,
             elf, syscall, console (okna aplikacji hostowanych), heap, event,
             memory/ (paging, pmm, stosy jądra, pula), fs/ (GemFS), gfx/ (prymitywy, ikony, font),
+            selftest.c (autotest, tylko w `make selftest`),
             gui/ (WM, okna, topbar, pulpit), ui/ (dock, menu, kursor, fokus),
             app/ (rejestr aplikacji), font/ (TrueType, rasteryzer, cache, AA)
 drivers/    serial, VBE/BGA, PIC, PIT, klawiatura, mysz, ATA PIO, RTC
@@ -67,7 +69,7 @@ lib/        string.c (implementacja include/string.h)
 include/    freestanding stdint/stddef/stdbool/string/io + gemos/ (ABI userlandu)
 apps/       aplikacje jądra i launchery programów userlandu
 userland/   programy ring 3 (uterm2/, about/, textedit/, common/, crt0.S,
-            usrsmoke.S, user_linker.ld)
+            usrsmoke.S, user_linker.ld) + selftest/ (programy autotestu)
 assets/     font.ttf (Inter) + OFL.txt
 tools/      smoke.sh + smoke.py (test w QEMU)
 docs/       strona GitHub Pages + audyt kodu
@@ -79,7 +81,14 @@ docs/       strona GitHub Pages + audyt kodu
 - `tools/smoke.sh` buduje obraz, bootuje go w QEMU bez okna, uruchamia UTERM, ABOUT i UTEXTEDIT, sprawdza log i zrzuty ekranu. Musi skończyć się `SMOKE: PASS` przed każdym commitem. Test nie wysyła żadnego wejścia, gdy czeka na klatkę: okno ma się pojawić samo.
 - `tools/smoke.sh --stress [N]` (domyślnie 25 cykli) otwiera, obsługuje klawiaturą i myszą i zamyka wszystkie programy; każdy proces musi skończyć z `exit=0`, a log nie może mieć przeplecionych linii. Uruchom go po każdej zmianie schedulera, syscalli, konsoli albo pętli GUI.
 - `tools/smoke.sh --matrix` uruchamia smoke na 32/64/256 MB, bez dysku danych, z 4 MB VRAM (1280×800, `memcpy`) i przy starcie z dysku twardego. Uruchom go po każdej zmianie bootloadera, pamięci, VBE albo ATA.
-- CI (`.github/workflows/ci.yml`) uruchamia smoke, stress i macierz przy każdym pushu i PR.
+- `tools/smoke.sh --selftest` buduje obraz autotestu (`make selftest`, `build/selftest/gemos.img`, jądro z `-DGEMOS_SELFTEST`) i sprawdza jego raport. `kernel/selftest.c` działa jako zadanie jądra obok GUI i sprawdza:
+  - stertę i pulę: double free, nadpisany nagłówek, zapis za koniec bloku, scalanie w obie strony, brak wycieków;
+  - odrzucanie 14 zepsutych ELF-ów bez wycieku pamięci i ramek;
+  - każdy wyjątek osiągalny z Ring 3 (`FAULTS.ELF`, jeden proces na wyjątek): ginie tylko ten proces;
+  - stan x87/SSE dwóch kopii `FPUCHECK.ELF` i zadania jądra przez przełączenia.
+
+  Na końcu celowo przepełnia swój stos jądra: log musi skończyć się paniką #DF z nazwą strony ochronnej. Wyjątek, którego CPU nie zgłasza (QEMU TCG: #XM), daje linię `SKIP`, a nie PASS. Uruchom go po każdej zmianie sterty, loadera ELF, obsługi wyjątków, FPU albo stosów jądra.
+- CI (`.github/workflows/ci.yml`) uruchamia smoke, stress, macierz i autotest przy każdym pushu i PR.
 - `make run` otwiera QEMU z dyskiem danych `build/data.img`, `make run-hdd` startuje z dysku twardego, `make debug` dodatkowo czeka na GDB na porcie `:1234` (działa też bez dysku danych).
 - Makefile przerywa build, gdy `kernel.bin` nie zaczyna się nagłówkiem `GEMK` z właściwym rozmiarem albo nie mieści się na dyskietce.
 - Zmiany, które nie powinny zmieniać zachowania, sprawdzaj porównaniem binariów (`build/kernel.bin`, `build/*.elf`) przed i po.
@@ -103,7 +112,7 @@ docs/       strona GitHub Pages + audyt kodu
     - pozycja kursora.
   - **Odświeżanie ekranu:** wszystko, co zmienia zawartość ekranu, woła `kernel_request_redraw()`, co budzi task 0.
 - **32-bit, własny bootloader**, bez GRUB-a, bez libc i bez libgcc.
-- **GUI zostaje w jądrze.** Userland rozmawia z systemem wyłącznie przez ABI z `include/gemos/` (`syscall_abi.h`, `console_abi.h`, `user_api.h`) i nie includuje nagłówków jądra.
+- **GUI zostaje w jądrze.** Userland rozmawia z systemem wyłącznie przez ABI z `include/gemos/` (`syscall_abi.h`, `console_abi.h`, `user_api.h`; programy autotestu także `selftest_abi.h`) i nie includuje nagłówków jądra.
 - **Kody klawiszy** pochodzą tylko z `GEMOS_KEY_*` w `include/gemos/console_abi.h`.
 - **Jeden `string.h`**: `include/string.h`, dołączany jako `<string.h>`.
 - **Żadnych nowych funkcji przed naprawą współbieżności** (etap 3 audytu). Kolejność prac jest w §8.2 audytu.

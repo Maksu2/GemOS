@@ -51,6 +51,11 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 - round-robin scheduler with an idle task and blocking waits; only ring 3 code is preempted, kernel code runs until it gives up the CPU
 - `process_t` / `task_t` split
 - any exception raised in ring 3 kills and reaps only that process (NMI, double fault and machine check excepted); a kernel exception halts with a full register dump
+- per-task x87/SSE state (FXSAVE/FXRSTOR on every task switch); interrupt handlers do not touch the FPU
+- user code pages are read-only, also for the kernel (`CR0.WP`); data has its own segment
+- a guard page under every kernel stack; a kernel stack overflow ends in the double fault handler (a separate hardware task) with a register dump
+- heap blocks with magic values and a canary: double frees, overwritten headers and overruns are caught; small font allocations come from their own pool
+- an ELF loader whose range checks cannot wrap around
 
 ### Desktop, drivers and storage
 
@@ -135,11 +140,14 @@ make all          # build/gemos.img (floppy) and build/gemos-hdd.img
 tools/smoke.sh    # build, boot headless in QEMU, start UTERM/ABOUT/UTEXTEDIT
 tools/smoke.sh --stress   # 25 cycles of opening, typing into and closing them
 tools/smoke.sh --matrix   # smoke test on 32/64/256 MB, no data disk, 4 MB VRAM, hard disk boot
+tools/smoke.sh --selftest # kernel self-test image: heap, ELF loader, FPU, every ring 3 exception
 make run          # QEMU window with the GemFS data disk (build/data.img)
 make run-hdd      # the same, booting from the hard disk image
 ```
 
-`tools/smoke.sh` prints one PASS/FAIL line per check and keeps the serial log and screenshots in `build/smoke/` (`build/stress/`, `build/matrix/<variant>/`). CI runs `make all`, the smoke test, the stress test and the matrix on every push and pull request.
+`tools/smoke.sh` prints one PASS/FAIL line per check and keeps the serial log and screenshots in `build/smoke/` (`build/stress/`, `build/matrix/<variant>/`, `build/selftest-run/`). CI runs `make all`, the smoke test, the stress test, the matrix and the self-test on every push and pull request.
+
+`make selftest` builds `build/selftest/gemos.img`, a kernel with `kernel/selftest.c`: it checks that heap corruption is detected, that broken ELF files are rejected, that every exception a ring 3 program can raise ends only that program and that each task keeps its FPU state, then overflows its own kernel stack on purpose to show the guard page at work.
 
 Run under GDB:
 
@@ -176,7 +184,7 @@ The work follows the stages of the [September 2026 code audit](docs/AUDIT-2026-0
 0. Safety net: CI and the QEMU smoke test (done)
 1. Clean-up: dead code, duplicated headers, stale docs (done)
 2. Boot and memory: zeroed BSS, boot info with the E820 map, memory detection, a new loader, an ATA driver with timeouts (done)
-3. Concurrency and isolation: kernel code is not preempted and waits block (done); FPU state, a fault in ring 3 kills only the process, a hardened ELF loader and heap
+3. Concurrency and isolation: kernel code is not preempted and waits block; FPU state, a fault in ring 3 kills only the process, a hardened ELF loader and heap, guarded kernel stacks (done)
 4. Storage: GemFS with a superblock and allocation, files larger than 8 KB
 5. GUI and apps: clipping, window placement, `UTEXTEDIT.ELF` open/save, then retiring the kernel text editor
 
