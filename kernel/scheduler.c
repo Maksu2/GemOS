@@ -23,6 +23,7 @@
 #include "include/irq.h"
 #include "isr.h"
 #include "process.h"
+#include "memory/kstack.h"
 #include "memory/paging.h"
 #include "../drivers/pit.h"
 #include "../drivers/pic.h"
@@ -32,7 +33,6 @@
 
 /* The idle task sits after the round-robin slots and is never scanned. */
 #define IDLE_TASK        MAX_TASKS
-#define IDLE_STACK_SIZE  4096
 
 extern void isr129(void);
 
@@ -42,7 +42,6 @@ static int    current_task = 0;
 static int    task_count   = 0;
 static int    yield_requested = 0;
 static int    need_resched = 0;   /* a task was woken since the last switch */
-static uint8_t idle_stack[IDLE_STACK_SIZE] __attribute__((aligned(16)));
 
 static uint32_t scheduler_read_esp(void) {
     uint32_t esp;
@@ -120,9 +119,9 @@ static uint32_t scheduler_resume_task(int next, uint32_t fallback_esp) {
 /* Frame for a kernel task that has never run, laid out like the frame the
  * interrupt stubs save (registers_t): the first switch to it "returns" into
  * entry() in Ring 0 with interrupts enabled. */
-static uint32_t scheduler_build_kernel_frame(uint8_t *stack, size_t size,
+static uint32_t scheduler_build_kernel_frame(uintptr_t stack_top,
                                              void (*entry)(void)) {
-    uint32_t *sp = (uint32_t *)(uintptr_t)(stack + size);
+    uint32_t *sp = (uint32_t *)stack_top;
 
     *--sp = 0;                          /* return address of entry() */
     *--sp = 0x00000202U;                /* EFLAGS: IF */
@@ -174,11 +173,10 @@ void scheduler_init(void) {
     tasks[IDLE_TASK].id = IDLE_TASK;
     tasks[IDLE_TASK].kind = TASK_KIND_KERNEL;
     tasks[IDLE_TASK].state = TASK_READY;
-    tasks[IDLE_TASK].stack = idle_stack;
-    tasks[IDLE_TASK].kernel_stack_top =
-        (uint32_t)(uintptr_t)(idle_stack + sizeof(idle_stack));
+    tasks[IDLE_TASK].stack = NULL;
+    tasks[IDLE_TASK].kernel_stack_top = (uint32_t)kstack_idle_top();
     tasks[IDLE_TASK].esp = scheduler_build_kernel_frame(
-        idle_stack, sizeof(idle_stack), scheduler_idle_main);
+        kstack_idle_top(), scheduler_idle_main);
     fpu_init_state(&fpu_states[IDLE_TASK]);
 
     gdt_set_kernel_stack(tasks[0].kernel_stack_top);

@@ -1,4 +1,6 @@
 #include "isr.h"
+#include "gdt.h"
+#include "memory/kstack.h"
 #include "scheduler.h"
 #include "syscall.h"
 #include "../drivers/pic.h"
@@ -245,6 +247,46 @@ static void isr_panic(const registers_t *regs, uint32_t cr2) {
     serial_print("PID ");
     serial_print_dec((uint32_t)pid);
   }
+  serial_print("\nSystem Halted.\n");
+  for (;;) {
+    __asm__ volatile("cli; hlt");
+  }
+}
+
+/*
+ * Double fault: runs as its own hardware task (IDT vector 8 is a task gate,
+ * see kernel_main) on its own stack, so it also works when a kernel stack
+ * ran into its guard page and the CPU could not push the page fault frame.
+ * The task switch saved the state of the failing code in the kernel TSS.
+ */
+void isr_double_fault_task(void) {
+  const tss32_t *tss = gdt_kernel_tss();
+  uint32_t cr2 = isr_read_cr2();
+
+  serial_print("\n[PANIC] CPU Exception 8: Double Fault");
+  if (kstack_is_guard(cr2) || kstack_is_guard(tss->esp)) {
+    serial_print(" - kernel stack overflow (guard page)");
+  }
+  serial_print("\n ");
+  isr_print_reg("EAX", tss->eax);
+  isr_print_reg("EBX", tss->ebx);
+  isr_print_reg("ECX", tss->ecx);
+  isr_print_reg("EDX", tss->edx);
+  serial_print("\n ");
+  isr_print_reg("ESI", tss->esi);
+  isr_print_reg("EDI", tss->edi);
+  isr_print_reg("EBP", tss->ebp);
+  isr_print_reg("ESP", tss->esp);
+  serial_print("\n ");
+  isr_print_reg("EIP", tss->eip);
+  isr_print_reg("CS", tss->cs);
+  isr_print_reg("EFLAGS", tss->eflags);
+  isr_print_reg("DS", tss->ds);
+  serial_print("\n ");
+  isr_print_reg("CR0", isr_read_cr0());
+  isr_print_reg("CR2", cr2);
+  isr_print_reg("CR3", isr_read_cr3());
+  isr_print_reg("CR4", isr_read_cr4());
   serial_print("\nSystem Halted.\n");
   for (;;) {
     __asm__ volatile("cli; hlt");

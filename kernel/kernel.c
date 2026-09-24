@@ -7,6 +7,7 @@
 #include "console.h"
 #include "fpu.h"
 #include "gdt.h"
+#include "idt.h"
 #include "isr.h"
 #include "process.h"
 #include "scheduler.h"
@@ -30,6 +31,7 @@
 #include "../kernel/include/event.h"
 #include "../kernel/include/heap.h"
 #include "../kernel/include/irq.h"
+#include "../kernel/memory/kstack.h"
 #include "../kernel/memory/paging.h"
 #include "../kernel/memory/pmm.h"
 #include "../kernel/ui/cursor.h"
@@ -181,6 +183,14 @@ void kernel_main(const boot_info_t *loader_info) {
   /* Enable kernel-owned paging and a dedicated 4 KB frame pool. */
   paging_init(memory.frames_start, memory.frames_end);
   paging_self_test();
+
+  /* Guard pages below the kernel stacks; a double fault (e.g. a stack
+   * running into its guard) switches to its own task and stack. */
+  kstack_init();
+  gdt_init_double_fault((uint32_t)(uintptr_t)paging_get_directory(),
+                        (uint32_t)kstack_double_fault_top(),
+                        isr_double_fault_task);
+  idt_set_gate(8, 0, GDT_DOUBLE_FAULT_TSS_SEL, 0x85); /* task gate */
   process_init();
 
   /* Initialize Graphics Context */

@@ -8,6 +8,7 @@
 #define GDT_USER_CS   0x1BU
 #define GDT_USER_DS   0x23U
 #define GDT_TSS_SEL   0x28U
+#define GDT_DOUBLE_FAULT_TSS_SEL 0x30U
 
 typedef struct {
   uint16_t limit_low;
@@ -55,5 +56,13 @@ typedef struct {
 
 void gdt_init(void);
 void gdt_set_kernel_stack(uint32_t stack_top);
+
+/* The TSS a double fault switches to (IDT vector 8 is a task gate): its
+ * own page directory, stack and entry point. Paging must be on. */
+void gdt_init_double_fault(uint32_t cr3, uint32_t stack_top,
+                           void (*entry)(void));
+/* State of the code that was running when a double fault happened: the
+ * task switch saves it into the kernel TSS. */
+const tss32_t *gdt_kernel_tss(void);
 
 #endif /* GDT_H */

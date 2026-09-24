@@ -28,6 +28,7 @@ typedef struct process {
   uintptr_t image_end;
   uintptr_t user_stack_top;
   uintptr_t user_stack_bottom;
+  int kernel_stack_slot; /* kstack_alloc(), -1 when none */
   uint8_t *kernel_stack_base;
   uintptr_t kernel_stack_top;
   int32_t exit_code;

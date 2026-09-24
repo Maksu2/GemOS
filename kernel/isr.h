@@ -22,4 +22,7 @@ typedef void (*isr_t)(registers_t *);
 /* Register an interrupt handler */
 void register_interrupt_handler(uint8_t n, isr_t handler);
 
+/* Entry point of the double fault task (never returns) */
+void isr_double_fault_task(void);
+
 #endif /* ISR_H */

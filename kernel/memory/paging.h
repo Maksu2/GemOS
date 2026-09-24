@@ -48,6 +48,10 @@ void paging_switch_directory(page_directory_t *directory);
 int paging_is_user_range_mapped(page_directory_t *directory, uintptr_t address,
                                 size_t length, int writable);
 
+/* Remove a page from the kernel's identity map in every address space (they
+ * share the kernel page tables); used for guard pages. */
+void paging_unmap_kernel_page(uintptr_t address);
+
 uintptr_t page_frame_alloc(void);
 void page_frame_free(uintptr_t frame);
 

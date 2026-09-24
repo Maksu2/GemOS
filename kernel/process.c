@@ -7,7 +7,7 @@
 
 #include "../drivers/serial.h"
 #include "fs/gemfs.h"
-#include "include/heap.h"
+#include "memory/kstack.h"
 #include <string.h>
 
 static process_t process_table[MAX_PROCESSES];
@@ -183,9 +183,7 @@ static void process_destroy(process_t *process) {
     scheduler_release_task(process->task_id);
   }
   paging_destroy_address_space(&process->as);
-  if (process->kernel_stack_base != NULL) {
-    kfree(process->kernel_stack_base);
-  }
+  kstack_free(process->kernel_stack_slot);
   process_reset(process);
 }
 
@@ -255,6 +253,7 @@ int process_spawn_user_from_file(const char *name) {
   process->pid = next_pid++;
   process->state = PROC_LOADING;
   process->task_id = 0;
+  process->kernel_stack_slot = -1;
 
   if (!paging_create_address_space(&process->as)) {
     serial_print("[PROC] Failed to create address space\n");
@@ -262,15 +261,15 @@ int process_spawn_user_from_file(const char *name) {
     return -1;
   }
 
-  process->kernel_stack_base = (uint8_t *)kalloc(TASK_STACK_SIZE);
-  if (process->kernel_stack_base == NULL) {
+  process->kernel_stack_slot = kstack_alloc();
+  if (process->kernel_stack_slot < 0) {
     serial_print("[PROC] Failed to allocate kernel stack\n");
     paging_destroy_address_space(&process->as);
     process_reset(process);
     return -1;
   }
-  process->kernel_stack_top =
-      (uintptr_t)(process->kernel_stack_base + TASK_STACK_SIZE);
+  process->kernel_stack_base = kstack_base(process->kernel_stack_slot);
+  process->kernel_stack_top = kstack_top(process->kernel_stack_slot);
 
   if (!elf_load_into_process(process, process_file_buffer, (size_t)image_size)) {
     if (image_source == PROCESS_IMAGE_SOURCE_GEMFS &&

@@ -150,6 +150,17 @@ static void paging_build_static_kernel_tables(void) {
   }
 }
 
+void paging_unmap_kernel_page(uintptr_t address) {
+  page_table_t *table =
+      paging_get_table(&kernel_page_directory, PAGE_DIRECTORY_INDEX(address));
+
+  if (table == NULL) {
+    return;
+  }
+  table->entries[PAGE_TABLE_INDEX(address)] &= ~PAGE_PRESENT;
+  paging_flush_tlb(PAGE_ALIGN_DOWN(address));
+}
+
 uintptr_t page_frame_alloc(void) {
   uintptr_t page_count = paging_frame_pool_page_count();
 

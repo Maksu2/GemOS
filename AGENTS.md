@@ -22,6 +22,7 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
     - RAM powyżej 32 MB nie jest używany: jądro widzi pamięć fizyczną tylko przez identity map 0–32 MB, a od 32 MB zaczyna się userland,
     - za mało RAM kończy start komunikatem; minimum przy 1920×1080 to ok. 16 MB.
   - Paging 4 KB: identity map 0–32 MB + 16 MB framebuffera, osobny katalog stron na proces.
+  - Stosy jądra (`kernel/memory/kstack.c`) leżą w BSS, każdy z niezmapowaną stroną ochronną pod spodem: task 0 ma 64 KB (przełącza się na niego `entry.S`), idle i handler #DF po 8 KB, każdy proces 16 KB. #DF to bramka zadania z własnym TSS i stosem, więc przepełnienie stosu jądra kończy się paniką z rejestrami, a nie resetem.
 - **Procesy:**
   - Round-robin, kwant 10 ms, maksymalnie 16 zadań plus zadanie idle. Każde zadanie ma własny stan FPU/SSE (`kernel/fpu.c`, FXSAVE/FXRSTOR przy każdym przełączeniu); z `float` w jądrze korzysta tylko silnik fontów. Wywłaszczany jest tylko kod w Ring 3 (reguła niżej). Zadanie 0 to pętla GUI w `kernel_main`: po każdej iteracji oddaje CPU i śpi (`TASK_BLOCKED`), dopóki nie ma zdarzeń. `hlt` wykonuje tylko idle.
   - Programy użytkownika to statyczne ELF32 `ET_EXEC` linkowane pod `0x02000000` (`userland/user_linker.ld`: segment kodu R+X i segment danych R+W od osobnej strony), ze stosem 8 KB pod `0x07FFF000`. Maksymalny rozmiar programu to ok. 8 KB (bufor loadera, slot GemFS).

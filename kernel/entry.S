@@ -32,6 +32,10 @@ _start:
     xor eax, eax
     rep stosb
 
+    /* Run on the guarded task 0 stack (kernel/memory/kstack.c) instead of
+     * the loader's stack at 0x9F000, which has nothing below it. */
+    mov esp, dword ptr [kstack_boot_top]
+
     /* kernel_main(const boot_info_t *) */
     push ebx
     call kernel_main
