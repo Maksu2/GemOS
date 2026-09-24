@@ -50,7 +50,7 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 - shared supervisor-only kernel mapping as the transition model
 - round-robin scheduler with an idle task and blocking waits; only ring 3 code is preempted, kernel code runs until it gives up the CPU
 - `process_t` / `task_t` split
-- user processes that fault with #DE, #UD, #TS, #NP, #SS, #GP or #PF are killed and reaped; any other exception raised in ring 3 still halts the whole system
+- any exception raised in ring 3 kills and reaps only that process (NMI, double fault and machine check excepted); a kernel exception halts with a full register dump
 
 ### Desktop, drivers and storage
 
