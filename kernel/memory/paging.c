@@ -1,7 +1,7 @@
 #include "paging.h"
 #include "../../drivers/serial.h"
 #include "../../drivers/vbe.h"
-#include "../include/heap.h"
+#include "pmm.h"
 #include <string.h>
 
 #define PAGE_DIRECTORY_INDEX(addr) (((addr) >> 22) & 0x3FFU)
@@ -39,11 +39,10 @@ static void paging_flush_tlb(uintptr_t address) {
   __asm__ volatile("invlpg (%0)" : : "r"(address) : "memory");
 }
 
-static void paging_init_frame_pool(void) {
-  uintptr_t heap_end = heap_get_end();
-
-  frame_pool_start = PAGE_ALIGN_UP(heap_end);
-  frame_pool_end = PAGING_SHARED_KERNEL_END;
+static void paging_init_frame_pool(uintptr_t start, uintptr_t end) {
+  frame_pool_start = PAGE_ALIGN_UP(start);
+  frame_pool_end = end > PAGING_SHARED_KERNEL_END ? PAGING_SHARED_KERNEL_END
+                                                  : PAGE_ALIGN_DOWN(end);
 
   if (frame_pool_start >= frame_pool_end) {
     serial_print("[PAGING] Frame pool unavailable\n");
@@ -52,7 +51,12 @@ static void paging_init_frame_pool(void) {
     }
   }
 
-  memset(frame_pool_used, 0, sizeof(frame_pool_used));
+  /* holes in the E820 map (firmware tables, missing RAM) are never handed
+   * out */
+  for (uintptr_t i = 0; i < paging_frame_pool_page_count(); ++i) {
+    frame_pool_used[i] =
+        pmm_page_usable(frame_pool_start + i * PAGE_SIZE) ? 0 : 1;
+  }
 
   serial_print("[PAGING] Frame pool: 0x");
   serial_print_hex((uint32_t)frame_pool_start);
@@ -187,7 +191,7 @@ void paging_enable(void) {
   __asm__ volatile("jmp 1f\n1:" : : : "memory");
 }
 
-void paging_init(void) {
+void paging_init(uintptr_t frames_start, uintptr_t frames_end) {
   if (paging_initialized) {
     return;
   }
@@ -197,7 +201,7 @@ void paging_init(void) {
   serial_print("[PAGING] Initializing...\n");
 
   paging_build_static_kernel_tables();
-  paging_init_frame_pool();
+  paging_init_frame_pool(frames_start, frames_end);
 
   paging_enable();
   current_page_directory = &kernel_page_directory;

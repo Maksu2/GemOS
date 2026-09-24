@@ -32,7 +32,9 @@ typedef struct {
   uintptr_t cr3;
 } address_space_t;
 
-void paging_init(void);
+/* Build the kernel tables, enable paging and hand the usable pages in
+ * [frames_start, frames_end) to the frame allocator. */
+void paging_init(uintptr_t frames_start, uintptr_t frames_end);
 void paging_enable(void);
 int paging_self_test(void);
 

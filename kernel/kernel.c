@@ -30,13 +30,15 @@
 #include "../kernel/include/heap.h"
 #include "../kernel/include/irq.h"
 #include "../kernel/memory/paging.h"
+#include "../kernel/memory/pmm.h"
 #include "../kernel/ui/cursor.h"
 #include "../kernel/ui/dock/dock.h"
 #include "../kernel/ui/menu.h"
 
 extern uintptr_t __kernel_end;
-/* Heap budget for kernel allocations and GUI backbuffers. */
-#define HEAP_SIZE (24 * 1024 * 1024)
+/* Heap beyond the backbuffer: glyph caches, windows, kernel stacks of
+ * processes (about 0.3 MB in use with three programs open). */
+#define HEAP_RESERVE (4 * 1024 * 1024)
 #define USERLAND_DEBUG_AUTOSTART 0
 
 /* Copy of the loader's boot info block (kernel/include/boot_info.h) */
@@ -122,8 +124,17 @@ void kernel_main(const boot_info_t *loader_info) {
   /* Initialize System Timer (PIT) */
   init_pit();
 
-  /* Initialize Heap */
-  heap_init((uintptr_t)&__kernel_end, HEAP_SIZE);
+  /* Heap and page frames from the E820 map; the heap must hold the
+   * backbuffer of the video mode the loader set. */
+  const vbe_mode_info_t *mode = (const vbe_mode_info_t *)boot_info.vbe_mode_info;
+  memory_layout_t memory;
+  if (!pmm_plan((uintptr_t)&__kernel_end,
+                (size_t)mode->pitch * mode->height + HEAP_RESERVE, &memory)) {
+    serial_print("[PANIC] System halted: not enough memory\n");
+    for (;;)
+      __asm__ volatile("cli; hlt");
+  }
+  heap_init(memory.heap_start, memory.heap_size);
 
   /* Initialize Event System */
   event_init();
@@ -157,7 +168,7 @@ void kernel_main(const boot_info_t *loader_info) {
            vbe_info->pitch);
 
   /* Enable kernel-owned paging and a dedicated 4 KB frame pool. */
-  paging_init();
+  paging_init(memory.frames_start, memory.frames_end);
   paging_self_test();
   process_init();
 
