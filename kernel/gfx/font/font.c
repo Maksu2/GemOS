@@ -181,7 +181,7 @@ void font_draw_text(gfx_context_t *ctx, int x, int y, const char *text,
       pen_x += advance;
       tt_free_glyph(&glyph);
     } else {
-      pen_x += (size_px * ui_scale) / 2;
+      pen_x += (float)(size_px * ui_scale) / 2.0f;
     }
   }
 }

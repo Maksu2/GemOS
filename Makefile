@@ -106,6 +106,12 @@ DRIVER_SOURCES := drivers/serial.c drivers/vbe.c drivers/pic.c drivers/pit.c \
 
 LIB_SOURCES := lib/string.c
 
+# Code that runs in interrupt handlers must not touch the FPU: the FPU
+# state of the interrupted task is not saved on interrupt entry.
+IRQ_PATH_SOURCES := kernel/isr.c kernel/scheduler.c kernel/event.c \
+                    drivers/pit.c drivers/pic.c drivers/keyboard.c \
+                    drivers/mouse.c drivers/serial.c
+
 # Userland programs embedded into the kernel image
 USER_CRT0_SOURCE := $(USERLAND_DIR)/crt0.S
 USRSMOKE_SOURCE := $(USERLAND_DIR)/usrsmoke.S
@@ -149,6 +155,8 @@ USER_BLOBS := $(OBJ_DIR)/blobs/usrsmoke.elf.o \
 BLOB_OBJS := $(FONT_BLOB) $(USER_BLOBS)
 
 DEPS := $(KERNEL_OBJS:.o=.d) $(USER_OBJS:.o=.d)
+
+$(call obj,$(IRQ_PATH_SOURCES)): CFLAGS += -mgeneral-regs-only
 
 # =============================================================================
 # Targets

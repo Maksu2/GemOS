@@ -171,7 +171,7 @@ void kernel_main(const boot_info_t *loader_info) {
   /* The loader falls back to smaller modes (boot/stage2/loader.asm): the UI
    * is drawn 2x on Full HD and 1x below, so it keeps at least 800x540
    * logical pixels. */
-  ui_scale = (vbe_info->width >= 1920 && vbe_info->height >= 1080) ? 2.0f : 1.0f;
+  ui_scale = (vbe_info->width >= 1920 && vbe_info->height >= 1080) ? 2 : 1;
 
   /* Enable kernel-owned paging and a dedicated 4 KB frame pool. */
   paging_init(memory.frames_start, memory.frames_end);

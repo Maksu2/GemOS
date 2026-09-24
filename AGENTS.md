@@ -33,7 +33,7 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
   - `UTEXTEDIT` nie zapisuje ani nie otwiera plików.
 - **GUI (w jądrze):**
   - Menedżer okien, topbar, dock, menu, font TrueType (Inter) z antyaliasingiem.
-  - Skala UI 2 przy 1920×1080 (współrzędne logiczne 960×540), 1 w mniejszych trybach.
+  - Skala UI (całkowita, `int ui_scale`) 2 przy 1920×1080 (współrzędne logiczne 960×540), 1 w mniejszych trybach.
   - Każda klatka przerysowuje cały ekran. Page flip przez BGA tylko po wykryciu adaptera (ID `0xB0C0`–`0xB0C5`) i przy VRAM na dwie strony; inaczej `memcpy` do framebuffera.
 - **ATA:** PIO LBA28 (`drivers/ata.c`). IDENTIFY na 4 pozycjach, każde oczekiwanie z limitem, kody błędów zamiast pętli bez końca.
 - **GemFS:** tablica 64 wpisów pod LBA 1–4 i stałe sloty po 8 KB od LBA 5. Leży na pierwszym dysku ATA **bez sygnatury rozruchowej MBR**; nie ma własnego superbloku ani sygnatury. Bez takiego dysku system startuje bez FS: tablica jest pusta, programy idą z obrazu jądra.
@@ -47,7 +47,7 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
 Nie obchodzić ich po cichu; plan naprawy jest w §8.2 audytu.
 
 - **Syscalle z IF=0:** długi syscall (zapis pliku to do ~24 sektorów ATA) wstrzymuje przerwania, a PIT gubi ticki.
-- **Brak zapisu stanu FPU**, choć jądro liczy na `float` (`ui_scale`), także w przerwaniu myszy.
+- **Brak zapisu stanu FPU przy przełączaniu zadań.** Z `float` korzysta tylko silnik fontów (task 0).
 - **Render całej klatki (1080p) w task 0 nie jest przerywany:** procesy czekają na koniec iteracji.
 - **GemFS bez sygnatury** pisze po surowym dysku; chroni go tylko to, że pomija dyski z sygnaturą rozruchową (etap 4).
 - **RAM powyżej 32 MB nie jest używany** (okno identity map, patrz wyżej).
@@ -94,7 +94,7 @@ docs/       strona GitHub Pages + audyt kodu
     - zadanie jądra woła potem `scheduler_yield()`,
     - syscall blokuje się z restartem jak `SYS_console_wait_event`,
     - `hlt` wykonuje tylko idle.
-  - **Handlery IRQ przerywają także Ring 0**, więc nie drukują logu, nie alokują i nie dotykają GUI ani FS. Stan dzielony z IRQ zmienia się z zadania tylko w `irq_save()`/`irq_restore()` (`kernel/include/irq.h`). Ten stan to:
+  - **Handlery IRQ przerywają także Ring 0**, więc nie drukują logu, nie alokują, nie dotykają GUI ani FS i nie używają FPU (pliki z `IRQ_PATH_SOURCES` w Makefile kompilują się z `-mgeneral-regs-only`). Stan dzielony z IRQ zmienia się z zadania tylko w `irq_save()`/`irq_restore()` (`kernel/include/irq.h`). Ten stan to:
     - kolejka zdarzeń,
     - licznik ticków,
     - tablica zadań,
