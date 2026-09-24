@@ -13,12 +13,8 @@ static menu_t *test_menu = NULL;
 void action_test_hello(void) { serial_print("[TestApp] Hello Action!\n"); }
 
 void test_render(window_t *win) {
-  /* Draw Content in Client Rect */
-  /* Coordinates are logical, typically relative to window or screen?
-     wm_render_window sets clip to client_rect.
-     Coordinates passed to primitives are usually GLOBAL logical.
-     So we need to draw at win->client_rect.x, etc.
-  */
+  /* Primitives take global logical coordinates; wm_render_window has
+     already clipped drawing to the client rect. */
 
   int x = win->client_rect.x;
   int y = win->client_rect.y;
@@ -77,10 +73,7 @@ void test_init(void) {
   testapp.menu = test_menu;
 }
 
-/* Public entry point to register */
-/* We need a header or allow kernel to call this? */
-/* For now, kernel main will call testapp_register or we expose app struct? */
-/* Better: expose a register function */
+/* Called from kernel_main() */
 void testapp_register(void) {
   test_init();
   app_register(&testapp);

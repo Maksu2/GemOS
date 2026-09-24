@@ -35,11 +35,8 @@ void cursor_draw(void) {
   if (!cursor_ctx)
     return;
 
-  /* Clamp Logic handled by Driver usually, but safe to clamp drawing too?
-     Driver clamps to 0..W-1.
-     Drawing needs to handle clipping if cursor is near edge.
-     gfx_put_pixel handles clipping!
-  */
+  /* The mouse driver keeps the position on screen; gfx_put_pixel clips the
+   * parts of the arrow that stick out past the screen edge. */
 
   int cx = cursor.x;
   int cy = cursor.y;

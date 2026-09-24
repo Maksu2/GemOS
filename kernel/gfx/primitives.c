@@ -7,13 +7,8 @@ void gfx_put_pixel(gfx_context_t *ctx, int x, int y, uint32_t color) {
   int sx = (int)(x * ui_scale);
   int sy = (int)(y * ui_scale);
 
-  /* Draw a square of size s x s */
-  /* We can reuse fill_rect logic but optimized? No, keep it simple for now. */
-  /* Or direct pixel access inner loop. */
-  /* BEWARE: recursion if I call gfx_fill_rect (which scales again!). */
-  /* I must implement physical fill here or call an internal helpers. */
-  /* Actually, gfx_fill_rect logic is complex with clipping. */
-  /* Let's implement simple clipped block fill here. */
+  /* Draw a square of size s x s, clipped to ctx->clip_rect. It writes
+   * physical pixels directly: gfx_fill_rect would scale the input again. */
 
   for (int dy = 0; dy < s; dy++) {
     for (int dx = 0; dx < s; dx++) {
@@ -100,10 +95,8 @@ void gfx_fill_rect(gfx_context_t *ctx, int x, int y, int w, int h,
 void gfx_draw_rect(gfx_context_t *ctx, int x, int y, int w, int h,
                    uint32_t color) {
   /* Top */
-  gfx_fill_rect(ctx, x, y, w, 1, color); // Fill rect handles scaling! Wait.
-  /* If gfx_fill_rect handles scaling, then passing logical x,y,w,h here is
-     correct. However, scaling 1 to 2.0 makes 2 pixels. Correct. */
-  /* Scale only logic is inside fill_rect. */
+  /* gfx_fill_rect scales, so each edge is ui_scale physical pixels wide */
+  gfx_fill_rect(ctx, x, y, w, 1, color);
 
   /* Bottom */
   gfx_fill_rect(ctx, x, y + h - 1, w, 1, color);

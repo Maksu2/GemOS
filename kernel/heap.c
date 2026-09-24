@@ -89,10 +89,9 @@ void kfree(void *ptr) {
     header->next = header->next->next;
   }
 
-  /* Coalesce with prev block not easily possible with singly linked list
-     without traversing from start. For simplicity/speed in this phase,
-     we only coalesce forward. Full coalescence would require prev pointers.
-     This is acceptable for Phase 3.1. */
+  /* Only the next block is merged: merging with the previous one would need
+     a doubly linked list (or a walk from the start), so free space can
+     fragment over time. */
 }
 
 uintptr_t heap_get_end(void) { return heap_base + heap_total_size; }

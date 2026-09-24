@@ -31,10 +31,6 @@ void app_open(const char *name) {
     return;
 
   /* Find app by name */
-  /* Note: We need strcmp. Implementing simple loop/comparison if strcmp is not
-   * available or safe. */
-  /* Assuming strcmp is in string.h and relies on standard lib implementation or
-   * custom one. */
 
   for (int i = 0; i < app_count; i++) {
     if (registered_apps[i]) {

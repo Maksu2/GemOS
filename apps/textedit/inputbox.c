@@ -119,11 +119,7 @@ static void inputbox_open(void) {
     return;
   }
 
-  /* Center on screen (approx) - Screen is 1920x1080 usually? Or VBE?
-     Let's use fixed center for 1024x768 approx or dynamic if we knew screen
-     size here. WM centers? No. Let's assume 800x600 safe default or just keep
-     400,300.
-  */
+  /* Fixed position around logical (400, 300) */
   window_init(win, 400 - (INPUT_WIDTH / 2), 300 - (INPUT_HEIGHT / 2),
               INPUT_WIDTH, INPUT_HEIGHT);
 

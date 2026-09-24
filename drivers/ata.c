@@ -33,7 +33,6 @@ void ata_read_sector(uint32_t lba, uint8_t *buf) {
 
   /* Select Drive (Master) + LBA High 4 bits */
   outb(ATA_DRIVE_head, 0xE0 | ((lba >> 24) & 0x0F));
-  /* NULL Byte? No, wait a bit? */
   outb(ATA_SECTOR_COUNT, 1);
   outb(ATA_LBA_LO, (uint8_t)lba);
   outb(ATA_LBA_MID, (uint8_t)(lba >> 8));

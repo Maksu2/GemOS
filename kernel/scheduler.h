@@ -8,11 +8,6 @@ struct process;
 #define MAX_TASKS       16
 #define TASK_STACK_SIZE (16 * 1024)  /* 16 KB per task */
 #define TASK_QUANTUM    10           /* ticks per task, 10ms @ 1000 Hz */
-/*
- * NOTE (QEMU/Apple Silicon): x86 is software-emulated on ARM M4 — no VT-x.
- * TASK_QUANTUM is approximate; actual quantum duration depends on emulation
- * speed. At heavy load the effective quantum may be longer than 10ms.
- */
 
 typedef enum {
     TASK_UNUSED  = 0,

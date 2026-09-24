@@ -70,7 +70,7 @@ void topbar_on_focus_changed(focus_state_t *state) {
 void topbar_render(gfx_context_t *ctx) {
   int logical_width = (int)(ctx->width / ui_scale);
 
-  /* 1. Background - dark semi-transparent bar */
+  /* 1. Background - dark bar */
   gfx_fill_rect(ctx, 0, 0, logical_width, TOPBAR_HEIGHT, COLOR_TOPBAR_BG);
 
   /* Subtle bottom line */
