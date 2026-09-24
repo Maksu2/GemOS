@@ -11,11 +11,15 @@ typedef struct {
   uint32_t cursor;
   uint32_t preferred_visual_col;
   uint8_t preferred_visual_col_valid;
-  uint8_t dirty;
+  uint8_t modified; /* changed since it was opened or saved */
 } utextedit_document_t;
 
 void utextedit_document_init(utextedit_document_t *document);
 void utextedit_document_reset(utextedit_document_t *document);
+/* Replace the text with length bytes (at most UTEXTEDIT_DOC_MAX), cursor at
+ * the start, not modified. */
+void utextedit_document_load(utextedit_document_t *document, const char *text,
+                             uint32_t length);
 int utextedit_document_insert_char(utextedit_document_t *document, char ch);
 int utextedit_document_insert_newline(utextedit_document_t *document);
 int utextedit_document_backspace(utextedit_document_t *document);

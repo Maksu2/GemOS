@@ -783,6 +783,9 @@ class Smoke:
                     self.pointer.home()
                     self.pointer.move_to(CLOSE_BUTTON[name])
                     self.pointer.click()
+                if name == "UTEXTEDIT.ELF":
+                    # it asks about the text typed into it: discard
+                    self.monitor.cmd("sendkey n")
                 self.burst(["x", "y"])    # goes to the next window down
                 if not self.wait_for(
                         lambda t, p=pid: "[PROC] Reaped PID=%s " % p in t,
