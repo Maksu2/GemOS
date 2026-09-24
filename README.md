@@ -188,4 +188,6 @@ Not the current focus:
 
 ## License
 
-MIT
+GemOS is released under the MIT License, see [LICENSE](LICENSE).
+
+The bundled system font `assets/font.ttf` is [Inter](https://github.com/rsms/inter) 4.001, © The Inter Project Authors, licensed under the SIL Open Font License 1.1, see [assets/OFL.txt](assets/OFL.txt).

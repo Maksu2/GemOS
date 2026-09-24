@@ -211,10 +211,11 @@ $(BUILD_DIR)/utextedit.elf: $(USER_CRT0_OBJ) $(UTEXTEDIT_OBJS) $(USER_LDSCRIPT)
 $(BUILD_DIR)/%_image.bin: $(BUILD_DIR)/%.elf
 	cp $< $@
 
-# Blobs
-$(FONT_BLOB): font.ttf
+# Blobs. The font is converted from inside assets/ so its symbols stay
+# _binary_font_ttf_start/_end.
+$(FONT_BLOB): assets/font.ttf
 	@mkdir -p $(@D)
-	$(OBJCOPY) -I binary -O elf32-i386 -B i386 $< $@
+	cd $(<D) && $(OBJCOPY) -I binary -O elf32-i386 -B i386 $(<F) $(abspath $@)
 
 $(OBJ_DIR)/blobs/%.o: $(BUILD_DIR)/%
 	@mkdir -p $(@D)
