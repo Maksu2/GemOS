@@ -52,4 +52,29 @@
 #define GEMOS_FPUCHECK_BAD_ARGUMENT 3
 #define GEMOS_FPUCHECK_MS 3000
 
+/* FILETEST.ELF: the file syscalls from Ring 3. Its image holds a table of
+ * GEMOS_FILETEST_SIZE bytes (byte i is GEMOS_FILETEST_BYTE(i)), so it is
+ * larger than 64 KB and also tests the loader. It checks the table, writes
+ * it to GEMOS_FILETEST_BIG and reads it back, writes a small file in
+ * GEMOS_FILETEST_SUBDIR (the kernel creates the directories), then tries
+ * to change programs. Exit code: 0, or the first step that failed. */
+#define GEMOS_FILETEST_SIZE 81920
+#define GEMOS_FILETEST_BYTE(i) (((((i) >> 8) ^ (((i) * 13) + 5))) & 0xFF)
+#define GEMOS_FILETEST_BIG "/fstest/big.bin"
+#define GEMOS_FILETEST_SUBDIR "/fstest/sub/deeper"
+#define GEMOS_FILETEST_NOTE "/fstest/sub/deeper/note.txt"
+#define GEMOS_FILETEST_NOTE_TEXT "Written by FILETEST.ELF through SYS_file_write.\n"
+#define GEMOS_FILETEST_OK 0
+#define GEMOS_FILETEST_IMAGE 1        /* the table in the image is wrong */
+#define GEMOS_FILETEST_WRITE 2        /* writing GEMOS_FILETEST_BIG failed */
+#define GEMOS_FILETEST_READ 3         /* reading it back failed or differed */
+#define GEMOS_FILETEST_NOTE_FAILED 4  /* GEMOS_FILETEST_NOTE failed */
+#define GEMOS_FILETEST_READ_PROGRAM 5 /* reading UTERM.ELF failed */
+#define GEMOS_FILETEST_OVERWRITE 6    /* overwriting UTERM.ELF was allowed */
+#define GEMOS_FILETEST_OTHER_CASE 7   /* creating uterm.elf was allowed */
+#define GEMOS_FILETEST_SLASH 8        /* writing "UTERM.ELF/" was allowed */
+#define GEMOS_FILETEST_NEW_PROGRAM 9  /* creating /fstest/NEW.ELF was allowed */
+#define GEMOS_FILETEST_NO_DIR 10      /* a write into a missing directory did
+                                         not return GEMOS_ERR_NOENT */
+
 #endif /* GEMOS_SELFTEST_ABI_H */

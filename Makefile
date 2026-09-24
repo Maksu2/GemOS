@@ -153,8 +153,11 @@ USRSMOKE_OBJ := $(call obj,$(USRSMOKE_SOURCE))
 UTERM_OBJS := $(call obj,$(UTERM_SOURCES))
 ABOUT_OBJS := $(call obj,$(ABOUT_SOURCES))
 UTEXTEDIT_OBJS := $(call obj,$(UTEXTEDIT_SOURCES))
+FILETEST_OBJS := $(call obj,$(USERLAND_DIR)/selftest/filetest.c \
+                            $(USERLAND_DIR)/selftest/filetest_data.S)
 SELFTEST_USER_OBJS := $(call obj,$(USERLAND_DIR)/selftest/faults.S \
-                                 $(USERLAND_DIR)/selftest/fpucheck.S)
+                                 $(USERLAND_DIR)/selftest/fpucheck.S) \
+                      $(FILETEST_OBJS)
 USER_OBJS := $(USER_CRT0_OBJ) $(USRSMOKE_OBJ) $(UTERM_OBJS) $(ABOUT_OBJS) \
              $(UTEXTEDIT_OBJS)
 ifeq ($(SELFTEST),1)
@@ -170,7 +173,8 @@ USER_BLOBS := $(OBJ_DIR)/blobs/usrsmoke.elf.o \
               $(OBJ_DIR)/blobs/about_image.bin.o \
               $(OBJ_DIR)/blobs/utextedit_image.bin.o
 ifeq ($(SELFTEST),1)
-    USER_BLOBS += $(OBJ_DIR)/blobs/faults.elf.o $(OBJ_DIR)/blobs/fpucheck.elf.o
+    USER_BLOBS += $(OBJ_DIR)/blobs/faults.elf.o $(OBJ_DIR)/blobs/fpucheck.elf.o \
+                  $(OBJ_DIR)/blobs/filetest.elf.o
 endif
 BLOB_OBJS := $(FONT_BLOB) $(USER_BLOBS)
 
@@ -220,8 +224,8 @@ $(OBJ_DIR)/%.o: %.S Makefile
 
 # Userland programs. -n: no page padding in the file. The data segment
 # starts on its own page in memory, but in the file it follows the code
-# directly (the loader copies each segment to its address), so programs
-# stay within the 8 KB limit.
+# directly (the loader copies each segment to its address), which keeps
+# programs small.
 define link-user
 	$(LD) -m elf_i386 -n -T $(USER_LDSCRIPT) -nostdlib $(filter %.o,$^) -o $@
 	$(OBJCOPY) --strip-all $@
@@ -246,6 +250,9 @@ $(BUILD_DIR)/faults.elf: $(OBJ_DIR)/$(USERLAND_DIR)/selftest/faults.o $(USER_LDS
 	$(link-user)
 
 $(BUILD_DIR)/fpucheck.elf: $(OBJ_DIR)/$(USERLAND_DIR)/selftest/fpucheck.o $(USER_LDSCRIPT)
+	$(link-user)
+
+$(BUILD_DIR)/filetest.elf: $(USER_CRT0_OBJ) $(FILETEST_OBJS) $(USER_LDSCRIPT)
 	$(link-user)
 
 # Blobs. The font is converted from inside assets/ so its symbols stay
