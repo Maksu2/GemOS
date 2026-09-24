@@ -186,7 +186,8 @@ void paging_enable(void) {
 
   __asm__ volatile("mov %0, %%cr3" : : "r"(directory_address) : "memory");
   __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-  cr0 |= 0x80000000U;
+  /* PG, and WP: read-only pages are read-only for the kernel too */
+  cr0 |= 0x80000000U | 0x00010000U;
   __asm__ volatile("mov %0, %%cr0" : : "r"(cr0) : "memory");
   __asm__ volatile("jmp 1f\n1:" : : : "memory");
 }

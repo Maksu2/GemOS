@@ -199,9 +199,12 @@ $(OBJ_DIR)/%.o: %.S Makefile
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-# Userland programs
+# Userland programs. -n: no page padding in the file. The data segment
+# starts on its own page in memory, but in the file it follows the code
+# directly (the loader copies each segment to its address), so programs
+# stay within the 8 KB limit.
 define link-user
-	$(LD) -m elf_i386 -T $(USER_LDSCRIPT) -nostdlib $(filter %.o,$^) -o $@
+	$(LD) -m elf_i386 -n -T $(USER_LDSCRIPT) -nostdlib $(filter %.o,$^) -o $@
 	$(OBJCOPY) --strip-all $@
 endef
 
