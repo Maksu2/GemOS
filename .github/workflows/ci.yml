@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    name: make all + QEMU smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nasm and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
+
+      # No i686-elf cross compiler on the runner: the Makefile falls back
+      # to the host gcc with -m32.
+      - name: Build
+        run: |
+          make info
+          make all
+
+      - name: Smoke test
+        run: tools/smoke.sh --no-build
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-artifacts
+          path: |
+            build/smoke/*.png
+            build/smoke/*.log
+          if-no-files-found: ignore
