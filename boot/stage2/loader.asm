@@ -3,14 +3,16 @@
 ; =============================================================================
 ;
 ; Memory Layout (Real Mode):
-;   0x0000:0x1000 - Kernel Load Buffer (Temporary, 64KB)
-;   0x0000:0x7E00 - Stage 2 Code (16KB)
-;   0x0000:0x9000 - Boot Info Structure (VBE Info)
+;   0x0000:0x7E00 - Stage 2 code and data, incl. the boot info block (16KB)
 ;   0x0000:0xBE00 - End of Stage 2
+;   0x1000:0x0000 - Kernel Load Buffer (Temporary, up to 0x9C000)
 ;
 ; Memory Layout (Protected Mode):
 ;   0x00100000    - Kernel Code (1MB)
-;   0x00090000    - Kernel Stack (Top, grows down)
+;   0x0009F000    - Kernel Stack (Top, grows down)
+;
+; The kernel starts with EBX pointing to the boot info block (boot_info
+; below, boot_info_t in kernel/include/boot_info.h).
 ; =============================================================================
 
 [BITS 16]
@@ -39,6 +41,7 @@ PROTECTED_MODE_BASE equ 0x100000    ; 1MB - where kernel will be in PM
 stage2_start:
     ; Save boot drive number (passed in DL from Stage 1)
     mov [boot_drive_saved], dl
+    mov [bi_boot_drive], dl
     
     ; Print welcome message
     mov si, msg_stage2
@@ -214,25 +217,33 @@ check_a20:
 ; Memory Map (E820)
 ; =============================================================================
 get_memory_map:
-    mov di, memory_map          ; Destination buffer
+    mov di, bi_e820             ; Destination: boot info entries
     xor ebx, ebx                ; Continuation value
-    mov edx, 0x534D4150         ; 'SMAP' signature
-    
+
 .loop:
+    mov dword [di + 20], 1      ; ACPI 3.0 attributes: valid, if not returned
     mov eax, 0xE820             ; Function number
     mov ecx, 24                 ; Buffer size
+    mov edx, 0x534D4150         ; 'SMAP' signature
     int 0x15
-    
+
     jc .done                    ; Error or end
     cmp eax, 0x534D4150         ; Verify signature
     jne .done
-    
+
+    mov eax, [di + 8]           ; skip empty entries
+    or eax, [di + 12]
+    jz .next
+
     add di, 24                  ; Next entry
-    inc byte [memory_map_count]
-    
+    inc dword [bi_e820_count]
+    cmp dword [bi_e820_count], BOOT_INFO_E820_MAX
+    je .done
+
+.next:
     test ebx, ebx               ; Continue if ebx != 0
     jnz .loop
-    
+
 .done:
     ret
 
@@ -305,6 +316,7 @@ setup_vbe:
     pop es
     
     ; Set Mode (CX) | LFB (0x4000)
+    mov [bi_vbe_mode], cx
     mov bx, cx
     or bx, 0x4000
     mov ax, 0x4F02
@@ -312,7 +324,16 @@ setup_vbe:
     
     cmp ax, 0x004F
     jne .vbe_error
-    
+
+    ; hand the mode info to the kernel (ES still points at the mode list)
+    xor ax, ax
+    mov es, ax
+    cld
+    mov si, vbe_mode_info
+    mov di, bi_vbe_mode_info
+    mov cx, 256
+    rep movsb
+
     ret
     
 .next_mode:
@@ -480,15 +501,10 @@ protected_mode_entry:
     ; Set up the protected-mode stack after the copy so the temporary kernel
     ; image can use the full low-memory staging window.
     mov esp, 0x9F000
-    
-    ; Prepare boot info structure for kernel
-    ; Store VBE info at a known location
-    mov esi, vbe_mode_info
-    mov edi, 0x9000             ; Boot info location
-    mov ecx, 256 / 4
-    rep movsd
-    
-    ; Jump to kernel!
+
+    ; Jump to kernel! EBX = boot info block
+    mov dword [bi_kernel_bytes], KERNEL_SECTORS * 512
+    mov ebx, boot_info
     jmp PROTECTED_MODE_BASE
 
 ; =============================================================================
@@ -507,13 +523,27 @@ msg_vbe_fail:       db '  VBE FAILED!', 0x0D, 0x0A, 0
 msg_kernel_ok:      db '  Kernel loaded', 0x0D, 0x0A, 0
 msg_kernel_fail:    db '  Kernel FAILED!', 0x0D, 0x0A, 0
 
-memory_map_count:   db 0
-
 ; Align to 16 bytes for VBE structures
 align 16
 vbe_info:           times 512 db 0
 vbe_mode_info:      times 256 db 0
-memory_map:         times 24*32 db 0    ; Space for 32 entries
+
+; -----------------------------------------------------------------------------
+; Boot info block for the kernel (boot_info_t, kernel/include/boot_info.h)
+; -----------------------------------------------------------------------------
+BOOT_INFO_MAGIC     equ 0x424D4547  ; "GEMB"
+BOOT_INFO_E820_MAX  equ 32
+
+align 16
+boot_info:
+bi_magic:           dd BOOT_INFO_MAGIC
+bi_version:         dd 1
+bi_boot_drive:      dd 0            ; BIOS drive number
+bi_kernel_bytes:    dd 0            ; bytes copied to 1 MB
+bi_vbe_mode:        dd 0            ; VBE mode number that was set
+bi_e820_count:      dd 0
+bi_e820:            times BOOT_INFO_E820_MAX * 24 db 0
+bi_vbe_mode_info:   times 256 db 0  ; ModeInfoBlock of bi_vbe_mode
 
 ; Pad Stage 2 to fill allocated sectors
 times (STAGE2_SECTORS * 512) - ($ - $$) db 0
