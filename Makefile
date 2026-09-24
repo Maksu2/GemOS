@@ -231,22 +231,33 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 # Layout:
 #   Sector 0:     Stage 1 (512 bytes)
 #   Sectors 1-32: Stage 2 (16KB)
-#   Sectors 33+:  Kernel, at most KERNEL_SECTORS sectors (stage 2 loads
-#                 exactly that many and would silently cut a larger kernel)
+#   Sectors 33+:  Kernel; stage 2 reads its size from the header at offset 4
+#                 of kernel.bin ("GEMK" + byte count, kernel/entry.S)
 FLOPPY_SECTORS := 2880
 KERNEL_START_SECTOR := $(shell sed -n 's/^KERNEL_START_SECTOR[[:space:]]*equ[[:space:]]*\([0-9][0-9]*\).*/\1/p' $(BOOT_DIR)/stage2/loader.asm)
-KERNEL_MAX_SECTORS := $(shell sed -n 's/^KERNEL_SECTORS[[:space:]]*equ[[:space:]]*\([0-9][0-9]*\).*/\1/p' $(BOOT_DIR)/stage2/loader.asm)
-ifeq ($(KERNEL_START_SECTOR)$(KERNEL_MAX_SECTORS),)
-    $(error Cannot read KERNEL_START_SECTOR / KERNEL_SECTORS from $(BOOT_DIR)/stage2/loader.asm)
+ifeq ($(KERNEL_START_SECTOR),)
+    $(error Cannot read KERNEL_START_SECTOR from $(BOOT_DIR)/stage2/loader.asm)
 endif
 
-$(OS_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
-	@size=$$(wc -c < $(KERNEL_BIN)); max=$$(( $(KERNEL_MAX_SECTORS) * 512 )); \
+# kernel.bin must start with the header and fit on the floppy
+define check-kernel-image
+	@size=$$(wc -c < $(KERNEL_BIN)); \
+	magic=$$(od -An -c -j4 -N4 $(KERNEL_BIN) | tr -d ' '); \
+	header=$$(od -An -tu4 -j8 -N4 $(KERNEL_BIN) | tr -d ' '); \
+	if [ "$$magic" != "GEMK" ] || [ "$$header" != "$$size" ]; then \
+	  echo "error: $(KERNEL_BIN) header says '$$magic' $$header bytes, the file has $$size bytes." >&2; \
+	  echo "       kernel/entry.S must be linked first and linker.ld must end the image after .data." >&2; \
+	  exit 1; \
+	fi; \
+	max=$$(( ($(FLOPPY_SECTORS) - $(KERNEL_START_SECTOR)) * 512 )); \
 	if [ $$size -gt $$max ]; then \
-	  echo "error: $(KERNEL_BIN) is $$size bytes, but stage 2 loads only $(KERNEL_MAX_SECTORS) sectors ($$max bytes)." >&2; \
-	  echo "       Raise KERNEL_SECTORS in $(BOOT_DIR)/stage2/loader.asm (the kernel must stay below 0xA0000 in real mode)." >&2; \
+	  echo "error: $(KERNEL_BIN) is $$size bytes, the boot floppy has room for $$max." >&2; \
 	  exit 1; \
 	fi
+endef
+
+$(OS_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
+	$(check-kernel-image)
 	@echo "Creating disk image..."
 	@rm -f $@ $@.tmp
 	dd if=/dev/zero of=$@.tmp bs=512 count=$(FLOPPY_SECTORS) 2>/dev/null
@@ -257,7 +268,7 @@ $(OS_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
 	@echo "Disk image created: $@"
 	@echo "  Stage 1: $$(wc -c < $(BOOT_STAGE1) | tr -d ' ') bytes"
 	@echo "  Stage 2: $$(wc -c < $(BOOT_STAGE2) | tr -d ' ') bytes"
-	@echo "  Kernel:  $$(wc -c < $(KERNEL_BIN) | tr -d ' ') of $$(( $(KERNEL_MAX_SECTORS) * 512 )) bytes"
+	@echo "  Kernel:  $$(wc -c < $(KERNEL_BIN) | tr -d ' ') bytes"
 
 # GemFS data disk (10MB). Created once and kept between runs.
 $(DATA_IMAGE): | $(BUILD_DIR)

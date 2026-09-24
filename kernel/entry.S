@@ -3,7 +3,8 @@
  *
  * Stage 2 jumps here (0x100000) in 32-bit protected mode with a flat
  * memory model, ESP = 0x9F000 and EBX pointing to the boot info block
- * (kernel/include/boot_info.h). This must stay the first code in the image.
+ * (kernel/include/boot_info.h). This must stay the first code in the image:
+ * stage 2 also reads the kernel header below from the first sector.
  */
 
     .code32
@@ -13,6 +14,14 @@
     .extern kernel_main
 
 _start:
+    jmp 1f
+
+    /* Kernel header, read by stage 2 before loading the rest */
+    .align 4
+    .ascii "GEMK"                   /* magic (KERNEL_MAGIC in loader.asm) */
+    .long __kernel_image_size       /* bytes to copy to 0x100000 */
+
+1:
     cld
 
     /* Zero the BSS. The loader copies only the kernel file and RAM contents

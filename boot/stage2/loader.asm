@@ -5,7 +5,8 @@
 ; Memory Layout (Real Mode):
 ;   0x0000:0x7E00 - Stage 2 code and data, incl. the boot info block (16KB)
 ;   0x0000:0xBE00 - End of Stage 2
-;   0x1000:0x0000 - Kernel Load Buffer (Temporary, up to 0x9C000)
+;   0x2000:0x0000 - Disk read buffer (32KB); every chunk is copied to 1 MB
+;                   right away in unreal mode
 ;
 ; Memory Layout (Protected Mode):
 ;   0x00100000    - Kernel Code (1MB)
@@ -22,10 +23,13 @@
 ; Constants
 ; -----------------------------------------------------------------------------
 STAGE2_SECTORS      equ 32          ; Size of Stage 2 in sectors (must match Stage 1)
-KERNEL_LOAD_SEG     equ 0x1000      ; Segment to load kernel (temporary)
-KERNEL_LOAD_OFF     equ 0x0000      ; Offset within segment
-KERNEL_SECTORS      equ 1120        ; Sectors to load (~560KB, stays below VGA memory)
 KERNEL_START_SECTOR equ 33          ; Kernel starts after Stage 1 (1) + Stage 2 (32)
+KERNEL_MAGIC        equ 0x4B4D4547  ; "GEMK": header in kernel/entry.S
+KERNEL_MAX_SECTORS  equ 4096        ; sanity limit for the header (2 MB)
+BUFFER_SEG          equ 0x2000      ; read buffer at 0x20000 (64 KB aligned,
+                                    ; so no floppy DMA crosses a 64 KB line)
+CHUNK_SECTORS       equ 64          ; 32 KB per read + copy
+READ_RETRIES        equ 3
 
 VBE_MODE            equ 0x4115      ; 800x600x32bpp (safer choice)
 ; Alternative modes:
@@ -352,68 +356,200 @@ setup_vbe:
     jmp halt
 
 ; =============================================================================
-; Load Kernel
+; Disk access: INT 13h extensions (LBA) if the BIOS has them for the boot
+; drive (hard disks), CHS with the geometry from AH=08h otherwise (floppies)
+; =============================================================================
+disk_init:
+    mov byte [disk_use_lba], 0
+    mov ah, 0x41
+    mov bx, 0x55AA
+    mov dl, [boot_drive_saved]
+    int 0x13
+    jc .chs
+    cmp bx, 0xAA55
+    jne .chs
+    test cx, 1                  ; fixed disk access subset (AH=42h)
+    jz .chs
+    mov byte [disk_use_lba], 1
+    ret
+.chs:
+    push es
+    mov ah, 0x08
+    mov dl, [boot_drive_saved]
+    xor di, di                  ; ES:DI = 0 works around some BIOSes
+    mov es, di
+    int 0x13
+    pop es
+    jc disk_error
+    and cx, 0x3F                ; CL[5:0] = sectors per track
+    jz disk_error
+    mov [disk_spt], cx
+    mov dl, dh                  ; DH = last head
+    xor dh, dh
+    inc dx
+    mov [disk_heads], dx
+    ret
+
+; Read CX sectors (1..CHUNK_SECTORS) starting at LBA EAX into BUFFER_SEG:0.
+read_sectors:
+    cmp byte [disk_use_lba], 0
+    je .chs
+    mov [dap_count], cx
+    mov word [dap_offset], 0
+    mov word [dap_segment], BUFFER_SEG
+    mov [dap_lba], eax
+    mov dword [dap_lba + 4], 0
+    mov di, READ_RETRIES
+.lba_retry:
+    mov si, dap
+    mov ah, 0x42
+    mov dl, [boot_drive_saved]
+    int 0x13
+    jnc .done
+    call reset_disk
+    dec di
+    jnz .lba_retry
+    jmp disk_error
+.chs:
+    push es
+    mov bx, BUFFER_SEG
+    mov es, bx
+    xor bx, bx
+.chs_next:
+    push eax
+    push cx
+    call read_chs_sector
+    pop cx
+    pop eax
+    inc eax
+    add bx, 512
+    loop .chs_next
+    pop es
+.done:
+    ret
+
+; Read LBA AX (below 65536) into ES:BX with CHS.
+read_chs_sector:
+    xor dx, dx
+    div word [disk_spt]         ; AX = track, DX = sector - 1
+    inc dx
+    mov cl, dl                  ; CL[5:0] = sector
+    xor dx, dx
+    div word [disk_heads]       ; AX = cylinder, DX = head
+    mov ch, al                  ; CH = cylinder bits 0-7
+    shl ah, 6
+    or cl, ah                   ; CL[7:6] = cylinder bits 8-9
+    mov dh, dl                  ; DH = head
+    mov dl, [boot_drive_saved]
+    mov di, READ_RETRIES
+.retry:
+    mov ax, 0x0201              ; read 1 sector
+    int 0x13
+    jnc .ok
+    call reset_disk
+    dec di
+    jnz .retry
+    jmp disk_error
+.ok:
+    ret
+
+; Reset the disk controller before a retry (keeps all registers but AX).
+reset_disk:
+    push dx
+    xor ah, ah
+    mov dl, [boot_drive_saved]
+    int 0x13
+    pop dx
+    ret
+
+; Copy ECX dwords from linear ESI to linear EDI (above 1 MB) in unreal
+; mode: DS/ES get 4 GB limits from a short trip through protected mode.
+; Interrupts stay off until the copy is done, so no BIOS code can reload
+; the segment limits in between.
+copy_high:
+    cli
+    push ds
+    push es
+    lgdt [gdt_descriptor]
+    mov eax, cr0
+    or al, 1
+    mov cr0, eax
+    jmp .pm
+.pm:
+    mov ax, DATA_SEG
+    mov ds, ax
+    mov es, ax
+    mov eax, cr0
+    and al, 0xFE
+    mov cr0, eax
+    jmp .rm
+.rm:
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    cld
+    a32 rep movsd
+    pop es
+    pop ds
+    sti
+    ret
+
+; =============================================================================
+; Load Kernel: header first, then the image in chunks to 1 MB
 ; =============================================================================
 load_kernel:
-    mov ax, KERNEL_LOAD_SEG
-    mov es, ax
-    mov bx, KERNEL_LOAD_OFF
-    
-    mov cx, KERNEL_SECTORS
-    mov ax, KERNEL_START_SECTOR     ; Start LBA
+    call disk_init
 
-.read_loop:
-    push cx             ; Save loop counter
-    push ax             ; Save current LBA
-    
-    mov dl, [boot_drive_saved]  ; Restore correct drive number
-    call lba_to_chs     ; Converts AX (LBA) -> CHS
-    
-    mov ah, 0x02        ; Read sectors
-    mov al, 1           ; Read 1 sector
-    int 0x13
-    jc .disk_read_fail  ; Jump to error handler
-    
-    pop ax              ; Restore current LBA
-    inc ax              ; Next LBA
-    
-    mov dx, es
-    add dx, 32          ; Advance ES by 512 bytes (32 paragraphs)
-    mov es, dx
-    
-    pop cx              ; Restore loop counter
-    loop .read_loop
-    
+    ; kernel header (kernel/entry.S): magic at +4, image bytes at +8
+    mov eax, KERNEL_START_SECTOR
+    mov cx, 1
+    call read_sectors
+    push ds
+    mov ax, BUFFER_SEG
+    mov ds, ax
+    mov eax, [4]
+    mov ecx, [8]
+    pop ds
+    cmp eax, KERNEL_MAGIC
+    jne .bad_header
+    test ecx, ecx
+    jz .bad_header
+    mov [bi_kernel_bytes], ecx
+    add ecx, 511
+    shr ecx, 9
+    cmp ecx, KERNEL_MAX_SECTORS
+    ja .bad_header
+    mov [load_left], cx
+    mov dword [load_lba], KERNEL_START_SECTOR
+    mov dword [load_dest], PROTECTED_MODE_BASE
+
+.chunk:
+    mov cx, [load_left]
+    cmp cx, CHUNK_SECTORS
+    jbe .read
+    mov cx, CHUNK_SECTORS
+.read:
+    mov [load_chunk], cx
+    mov eax, [load_lba]
+    call read_sectors
+
+    movzx ecx, word [load_chunk]
+    shl ecx, 7                  ; sectors -> dwords
+    mov esi, BUFFER_SEG * 16
+    mov edi, [load_dest]
+    call copy_high
+    mov [load_dest], edi
+
+    movzx eax, word [load_chunk]
+    add [load_lba], eax
+    sub [load_left], ax
+    jnz .chunk
     ret
 
-.disk_read_fail:
-    jmp disk_error      ; Jump to global error handler
-
-; Convert LBA (AX) to CHS
-; Output: CH=Cylinder, DH=Head, CL=Sector, DL=Drive (preserved)
-lba_to_chs:
-    push bx
-    push dx             ; Save original DX (contains Drive in DL)
-    
-    xor dx, dx
-    mov bx, 18          ; 18 sectors per track
-    div bx              ; AX = LBA / 18, DX = LBA % 18
-    
-    inc dx              ; Sector = (LBA % 18) + 1
-    mov cl, dl          ; CL = Sector
-    
-    xor dx, dx
-    mov bx, 2           ; 2 heads
-    div bx              ; AX = Cyl, DX = Head
-    
-    mov ch, al          ; CH = Cylinder
-    mov dh, dl          ; DH = Head
-    
-    pop bx              ; Restore original DX into BX
-    mov dl, bl          ; Restore Drive Number only
-    
-    pop bx
-    ret
+.bad_header:
+    mov si, msg_bad_header
+    call print_string
+    jmp halt
 
 disk_error:
     mov si, msg_kernel_fail
@@ -492,18 +628,10 @@ protected_mode_entry:
     mov gs, ax
     mov ss, ax
     
-    ; Copy kernel from temporary location to 1MB
-    mov esi, KERNEL_LOAD_SEG * 16 + KERNEL_LOAD_OFF
-    mov edi, PROTECTED_MODE_BASE
-    mov ecx, KERNEL_SECTORS * 512 / 4   ; Copy dwords
-    rep movsd
-
-    ; Set up the protected-mode stack after the copy so the temporary kernel
-    ; image can use the full low-memory staging window.
+    ; The kernel is already at 1 MB (load_kernel). Stack below the EBDA.
     mov esp, 0x9F000
 
     ; Jump to kernel! EBX = boot info block
-    mov dword [bi_kernel_bytes], KERNEL_SECTORS * 512
     mov ebx, boot_info
     jmp PROTECTED_MODE_BASE
 
@@ -522,6 +650,26 @@ msg_vbe_ok:         db '  VBE mode set', 0x0D, 0x0A, 0
 msg_vbe_fail:       db '  VBE FAILED!', 0x0D, 0x0A, 0
 msg_kernel_ok:      db '  Kernel loaded', 0x0D, 0x0A, 0
 msg_kernel_fail:    db '  Kernel FAILED!', 0x0D, 0x0A, 0
+msg_bad_header:     db '  Bad kernel header!', 0x0D, 0x0A, 0
+
+; disk access state (disk_init)
+disk_use_lba:       db 0
+disk_spt:           dw 0
+disk_heads:         dw 0
+
+; kernel load progress
+load_lba:           dd 0
+load_dest:          dd 0
+load_left:          dw 0
+load_chunk:         dw 0
+
+; Disk Address Packet for AH=42h
+align 4
+dap:                db 0x10, 0
+dap_count:          dw 0
+dap_offset:         dw 0
+dap_segment:        dw 0
+dap_lba:            dq 0
 
 ; Align to 16 bytes for VBE structures
 align 16

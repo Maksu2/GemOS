@@ -34,6 +34,11 @@ SECTIONS
         *(.data)
         *(.data.*)
     }
+
+    /* End of the file image (kernel.bin): stage 2 reads this size from the
+     * header in entry.S and copies exactly that much to 0x100000. */
+    __kernel_image_end = .;
+    __kernel_image_size = __kernel_image_end - 0x100000;
     
     /* Uninitialized data (BSS) */
     .bss ALIGN(4K) :
