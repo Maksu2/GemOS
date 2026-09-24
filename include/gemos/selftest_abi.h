@@ -52,12 +52,15 @@
 #define GEMOS_FPUCHECK_BAD_ARGUMENT 3
 #define GEMOS_FPUCHECK_MS 3000
 
-/* FILETEST.ELF: the file syscalls from Ring 3. Its image holds a table of
+/* FILETEST.ELF: the file syscalls from Ring 3. The kernel starts it as
+ * GEMOS_FILETEST_PATH with GEMOS_FILETEST_BIG as its argument, which it
+ * checks in argv first. Its image holds a table of
  * GEMOS_FILETEST_SIZE bytes (byte i is GEMOS_FILETEST_BYTE(i)), so it is
  * larger than 64 KB and also tests the loader. It checks the table, writes
  * it to GEMOS_FILETEST_BIG and reads it back, writes a small file in
  * GEMOS_FILETEST_SUBDIR (the kernel creates the directories), then tries
  * to change programs. Exit code: 0, or the first step that failed. */
+#define GEMOS_FILETEST_PATH "/fstest/FILETEST.ELF"
 #define GEMOS_FILETEST_SIZE 81920
 #define GEMOS_FILETEST_BYTE(i) (((((i) >> 8) ^ (((i) * 13) + 5))) & 0xFF)
 #define GEMOS_FILETEST_BIG "/fstest/big.bin"
@@ -76,5 +79,6 @@
 #define GEMOS_FILETEST_NEW_PROGRAM 9  /* creating /fstest/NEW.ELF was allowed */
 #define GEMOS_FILETEST_NO_DIR 10      /* a write into a missing directory did
                                          not return GEMOS_ERR_NOENT */
+#define GEMOS_FILETEST_ARGS 11        /* argc or argv were not as started */
 
 #endif /* GEMOS_SELFTEST_ABI_H */

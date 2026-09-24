@@ -30,6 +30,11 @@ jobs:
       - name: Smoke test
         run: tools/smoke.sh --no-build
 
+      # UTEXTEDIT.ELF with files: unsaved-changes question, save as, reopen
+      # from the File Explorer, save, discard, a refused save over a program
+      - name: Text editor test
+        run: tools/smoke.sh --no-build --editor
+
       - name: Upload smoke artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -39,6 +44,9 @@ jobs:
             build/smoke/*.png
             build/smoke/*.log
             build/smoke/*.txt
+            build/editor/*.png
+            build/editor/*.log
+            build/editor/*.txt
           if-no-files-found: ignore
 
   stress:

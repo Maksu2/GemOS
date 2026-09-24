@@ -718,6 +718,7 @@ static const char *const filetest_steps[] = {
     "was allowed to write \"UTERM.ELF/\"",
     "was allowed to create /fstest/NEW.ELF",
     "got no GEMOS_ERR_NOENT for a missing directory",
+    "did not get its path and argument in argc and argv",
 };
 
 static void selftest_fs_filetest(void) {
@@ -732,11 +733,11 @@ static void selftest_fs_filetest(void) {
 
   selftest_check(size > 64U * 1024U &&
                      selftest_mkdirs(GEMOS_FILETEST_SUBDIR) &&
-                     gemfs_write("/fstest/FILETEST.ELF",
+                     gemfs_write(GEMOS_FILETEST_PATH,
                                  _binary_filetest_elf_start, size, 0,
                                  0) == (int)size,
                  "fs: the kernel wrote FILETEST.ELF (over 64 KB) to /fstest");
-  pid = process_spawn_user_from_file("/fstest/FILETEST.ELF");
+  pid = process_spawn_user_with_arg(GEMOS_FILETEST_PATH, GEMOS_FILETEST_BIG);
   ended = pid >= 0 && selftest_wait_exit(pid, &exit);
   selftest_begin(ended && !exit.faulted && exit.exit_code == GEMOS_FILETEST_OK,
                  "fs: FILETEST.ELF started from GemFS ");
