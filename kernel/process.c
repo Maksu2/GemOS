@@ -8,6 +8,9 @@
 #include "../drivers/serial.h"
 #include "fs/gemfs.h"
 #include "memory/kstack.h"
+#ifdef GEMOS_SELFTEST
+#include "selftest.h"
+#endif
 #include <string.h>
 
 static process_t process_table[MAX_PROCESSES];
@@ -321,6 +324,17 @@ int process_spawn_user_from_file(const char *name) {
   return process_spawn_loaded(name, image_size, image_source);
 }
 
+#ifdef GEMOS_SELFTEST
+int process_spawn_user_image(const char *name, const uint8_t *image,
+                             size_t size) {
+  if (name == NULL || image == NULL || size > sizeof(process_file_buffer)) {
+    return -1;
+  }
+  memcpy(process_file_buffer, image, size);
+  return process_spawn_loaded(name, (int)size, PROCESS_IMAGE_SOURCE_EMBEDDED);
+}
+#endif
+
 int process_kill_pid(uint32_t pid, int32_t exit_code) {
   process_t *process = process_find_by_pid(pid);
 
@@ -373,6 +387,9 @@ void process_reap_zombies(void) {
       serial_print_hex(process->fault_cr2);
       serial_print("\n");
     }
+#ifdef GEMOS_SELFTEST
+    selftest_process_exited(process);
+#endif
     process_destroy(process);
   }
 }

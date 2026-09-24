@@ -3,7 +3,12 @@
 #include "../drivers/serial.h"
 #include <string.h>
 
+#ifdef GEMOS_SELFTEST
+#include <gemos/selftest_abi.h>
+#define GDT_ENTRY_COUNT 8
+#else
 #define GDT_ENTRY_COUNT 7
+#endif
 
 static gdt_entry_t gdt_entries[GDT_ENTRY_COUNT];
 static gdt_ptr_t gdt_ptr;
@@ -67,6 +72,11 @@ void gdt_init(void) {
   gdt_set_entry(2, 0, 0xFFFFFU, 0x92U, 0xCFU);
   gdt_set_entry(3, 0, 0xFFFFFU, 0xFAU, 0xCFU);
   gdt_set_entry(4, 0, 0xFFFFFU, 0xF2U, 0xCFU);
+#ifdef GEMOS_SELFTEST
+  /* Ring 3 data segment marked not present: FAULTS.ELF loads it into DS
+   * (#NP) and SS (#SS) */
+  gdt_set_entry(GEMOS_SELFTEST_NP_SELECTOR >> 3, 0, 0xFFFFFU, 0x72U, 0xCFU);
+#endif
 
   __asm__ volatile("mov %%esp, %0" : "=r"(current_esp));
   kernel_tss.ss0 = GDT_KERNEL_DS;

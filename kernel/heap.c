@@ -37,6 +37,7 @@ static uintptr_t heap_start = 0;
 static uintptr_t heap_end = 0;
 static int heap_panic_on_error = 1;
 static uint32_t heap_errors = 0;
+static const char *heap_last_what = NULL;
 
 static uint8_t *heap_payload(heap_block_t *block) {
   return (uint8_t *)block + sizeof(heap_block_t);
@@ -63,6 +64,7 @@ static int heap_canary_ok(heap_block_t *block) {
 
 void heap_report_corruption(const char *what, const void *ptr) {
   heap_errors++;
+  heap_last_what = what;
   serial_print("[HEAP] ");
   serial_print(what);
   serial_print(" at 0x");
@@ -238,3 +240,5 @@ uint32_t heap_set_report_mode(int report_only) {
   heap_panic_on_error = !report_only;
   return heap_errors;
 }
+
+const char *heap_last_error(void) { return heap_last_what; }

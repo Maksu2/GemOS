@@ -35,6 +35,9 @@
 #include "../kernel/memory/kstack.h"
 #include "../kernel/memory/paging.h"
 #include "../kernel/memory/pmm.h"
+#ifdef GEMOS_SELFTEST
+#include "../kernel/selftest.h"
+#endif
 #include "../kernel/ui/cursor.h"
 #include "../kernel/ui/dock/dock.h"
 #include "../kernel/ui/menu.h"
@@ -292,6 +295,10 @@ void kernel_main(const boot_info_t *loader_info) {
   }
 #else
   process_seed_userland();
+#endif
+
+#ifdef GEMOS_SELFTEST
+  selftest_start();
 #endif
 
   /* Main kernel loop */

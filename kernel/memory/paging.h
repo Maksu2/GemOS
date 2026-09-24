@@ -54,6 +54,9 @@ void paging_unmap_kernel_page(uintptr_t address);
 
 uintptr_t page_frame_alloc(void);
 void page_frame_free(uintptr_t frame);
+#ifdef GEMOS_SELFTEST
+uint32_t page_frames_free(void);
+#endif
 
 page_directory_t *paging_get_directory(void);
 

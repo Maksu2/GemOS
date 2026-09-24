@@ -32,5 +32,7 @@ void heap_report_corruption(const char *what, const void *ptr);
  * counted instead of stopping the kernel. Returns the number of errors
  * seen so far. */
 uint32_t heap_set_report_mode(int report_only);
+/* Self-test only: what the last report was about, NULL before the first. */
+const char *heap_last_error(void);
 
 #endif /* HEAP_H */

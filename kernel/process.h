@@ -4,6 +4,7 @@
 #include "scheduler.h"
 #include "memory/paging.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 #define MAX_PROCESSES MAX_TASKS
@@ -44,6 +45,11 @@ typedef struct process {
 void process_init(void);
 int process_seed_userland(void);
 int process_spawn_user_from_file(const char *name);
+#ifdef GEMOS_SELFTEST
+/* Start a program from an ELF image in memory (at most 8 KB). */
+int process_spawn_user_image(const char *name, const uint8_t *image,
+                             size_t size);
+#endif
 int process_kill_pid(uint32_t pid, int32_t exit_code);
 /* Make the process runnable if it is blocked (e.g. waiting for an event). */
 void process_wake(uint32_t pid);

@@ -12,6 +12,8 @@
 #   make run    - boot the floppy image in QEMU with the GemFS data disk
 #   make run-hdd - boot the hard disk image instead (data disk second)
 #   make debug  - same as run, paused, with a GDB stub on :1234
+#   make selftest - build build/selftest/gemos.img, the kernel self-test
+#                 (kernel/selftest.c; run it with tools/smoke.sh --selftest)
 #   make clean  - remove build/
 #   make info   - show the toolchain and the object list
 #
@@ -103,6 +105,14 @@ KERNEL_C_SOURCES := kernel/kernel.c kernel/console.c kernel/gdt.c kernel/idt.c \
                     kernel/font/aa.c kernel/font/truetype.c kernel/font/scanline.c \
                     kernel/font/font_cache.c kernel/font/font_mem.c
 
+# Self-test image (make selftest): the kernel runs kernel/selftest.c, which
+# starts the programs in userland/selftest/. Built into build/selftest/.
+SELFTEST ?= 0
+ifeq ($(SELFTEST),1)
+    CFLAGS += -DGEMOS_SELFTEST
+    KERNEL_C_SOURCES += kernel/selftest.c
+endif
+
 DRIVER_SOURCES := drivers/serial.c drivers/vbe.c drivers/pic.c drivers/pit.c \
                   drivers/keyboard.c drivers/mouse.c drivers/ata.c drivers/rtc.c
 
@@ -143,17 +153,25 @@ USRSMOKE_OBJ := $(call obj,$(USRSMOKE_SOURCE))
 UTERM_OBJS := $(call obj,$(UTERM_SOURCES))
 ABOUT_OBJS := $(call obj,$(ABOUT_SOURCES))
 UTEXTEDIT_OBJS := $(call obj,$(UTEXTEDIT_SOURCES))
+SELFTEST_USER_OBJS := $(call obj,$(USERLAND_DIR)/selftest/faults.S \
+                                 $(USERLAND_DIR)/selftest/fpucheck.S)
 USER_OBJS := $(USER_CRT0_OBJ) $(USRSMOKE_OBJ) $(UTERM_OBJS) $(ABOUT_OBJS) \
              $(UTEXTEDIT_OBJS)
+ifeq ($(SELFTEST),1)
+    USER_OBJS += $(SELFTEST_USER_OBJS)
+endif
 
 # Binary blobs linked into the kernel. objcopy derives the symbol names from
-# the file name (e.g. _binary_uterm_image_bin_start), and kernel/kernel.c
-# and kernel/process.c refer to those names.
+# the file name (e.g. _binary_uterm_image_bin_start), and kernel/kernel.c,
+# kernel/process.c and kernel/selftest.c refer to those names.
 FONT_BLOB := $(OBJ_DIR)/blobs/font.ttf.o
 USER_BLOBS := $(OBJ_DIR)/blobs/usrsmoke.elf.o \
               $(OBJ_DIR)/blobs/uterm_image.bin.o \
               $(OBJ_DIR)/blobs/about_image.bin.o \
               $(OBJ_DIR)/blobs/utextedit_image.bin.o
+ifeq ($(SELFTEST),1)
+    USER_BLOBS += $(OBJ_DIR)/blobs/faults.elf.o $(OBJ_DIR)/blobs/fpucheck.elf.o
+endif
 BLOB_OBJS := $(FONT_BLOB) $(USER_BLOBS)
 
 DEPS := $(KERNEL_OBJS:.o=.d) $(USER_OBJS:.o=.d)
@@ -164,7 +182,7 @@ $(call obj,$(IRQ_PATH_SOURCES)): CFLAGS += -mgeneral-regs-only
 # Targets
 # =============================================================================
 
-.PHONY: all clean run run-hdd debug info
+.PHONY: all clean run run-hdd debug info selftest
 
 # Keep intermediate files (e.g. build/uterm_image.bin) instead of deleting them
 .SECONDARY:
@@ -223,6 +241,12 @@ $(BUILD_DIR)/utextedit.elf: $(USER_CRT0_OBJ) $(UTEXTEDIT_OBJS) $(USER_LDSCRIPT)
 
 $(BUILD_DIR)/%_image.bin: $(BUILD_DIR)/%.elf
 	cp $< $@
+
+$(BUILD_DIR)/faults.elf: $(OBJ_DIR)/$(USERLAND_DIR)/selftest/faults.o $(USER_LDSCRIPT)
+	$(link-user)
+
+$(BUILD_DIR)/fpucheck.elf: $(OBJ_DIR)/$(USERLAND_DIR)/selftest/fpucheck.o $(USER_LDSCRIPT)
+	$(link-user)
 
 # Blobs. The font is converted from inside assets/ so its symbols stay
 # _binary_font_ttf_start/_end.
@@ -319,6 +343,11 @@ run-hdd: $(HDD_IMAGE) $(DATA_IMAGE)
 # starts too, just without a file system.
 debug: $(OS_IMAGE) $(DATA_IMAGE)
 	$(QEMU) -fda $(OS_IMAGE) -hda $(DATA_IMAGE) -serial stdio -m 128M -S -s
+
+# Self-test image: the same build with SELFTEST=1 in build/selftest/
+selftest:
+	$(MAKE) --no-print-directory SELFTEST=1 BUILD_DIR=$(BUILD_DIR)/selftest \
+	  $(BUILD_DIR)/selftest/gemos.img
 
 # Clean build artifacts
 clean:

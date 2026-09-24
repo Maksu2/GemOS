@@ -177,6 +177,19 @@ uintptr_t page_frame_alloc(void) {
   return 0;
 }
 
+#ifdef GEMOS_SELFTEST
+uint32_t page_frames_free(void) {
+  uint32_t count = 0;
+
+  for (uintptr_t i = 0; i < paging_frame_pool_page_count(); ++i) {
+    if (frame_pool_used[i] == 0) {
+      count++;
+    }
+  }
+  return count;
+}
+#endif
+
 void page_frame_free(uintptr_t frame) {
   uintptr_t index;
 

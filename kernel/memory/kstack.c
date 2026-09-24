@@ -81,12 +81,39 @@ int kstack_is_guard(uintptr_t addr) {
   return 0;
 }
 
-uint32_t kstack_boot_high_water(void) {
-  const uint8_t *bottom = kstack_boot + PAGE_SIZE;
+#ifdef GEMOS_SELFTEST
+/* Stacks start zeroed (BSS) and are never cleared again, so the lowest
+ * non-zero byte marks the deepest use so far. */
+static uint32_t kstack_used_bytes(const uint8_t *bottom, uint32_t size) {
   uint32_t untouched = 0;
 
-  while (untouched < KSTACK_BOOT_SIZE && bottom[untouched] == 0) {
+  while (untouched < size && bottom[untouched] == 0) {
     untouched++;
   }
-  return KSTACK_BOOT_SIZE - untouched;
+  return size - untouched;
 }
+
+void kstack_log_high_water(void) {
+  serial_print("[KSTACK] Deepest use in bytes: task 0 ");
+  serial_print_dec(kstack_used_bytes(kstack_boot + PAGE_SIZE, KSTACK_BOOT_SIZE));
+  serial_print("/");
+  serial_print_dec(KSTACK_BOOT_SIZE);
+  serial_print(", idle ");
+  serial_print_dec(kstack_used_bytes(kstack_idle + PAGE_SIZE, KSTACK_SMALL_SIZE));
+  serial_print("/");
+  serial_print_dec(KSTACK_SMALL_SIZE);
+  for (int i = 0; i < MAX_PROCESSES; ++i) {
+    uint32_t used = kstack_used_bytes(kstack_base(i), TASK_STACK_SIZE);
+
+    if (used != 0) {
+      serial_print(", slot ");
+      serial_print_dec((uint32_t)i);
+      serial_print(" ");
+      serial_print_dec(used);
+      serial_print("/");
+      serial_print_dec(TASK_STACK_SIZE);
+    }
+  }
+  serial_print("\n");
+}
+#endif

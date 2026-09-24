@@ -230,6 +230,37 @@ int task_create_user(struct process *process, uint32_t initial_esp) {
     return slot;
 }
 
+#ifdef GEMOS_SELFTEST
+int task_create_kernel(void (*entry)(void), uintptr_t stack_top) {
+    int slot;
+    uint32_t flags;
+
+    if (entry == NULL || stack_top == 0) {
+        return -1;
+    }
+
+    flags = irq_save();
+    slot = task_count < MAX_TASKS ? scheduler_find_free_slot() : -1;
+    if (slot < 0) {
+        irq_restore(flags);
+        return -1;
+    }
+
+    memset(&tasks[slot], 0, sizeof(tasks[slot]));
+    tasks[slot].id = (uint32_t)slot;
+    tasks[slot].kind = TASK_KIND_KERNEL;
+    tasks[slot].state = TASK_READY;
+    tasks[slot].kernel_stack_top = (uint32_t)stack_top;
+    tasks[slot].esp = scheduler_build_kernel_frame(stack_top, entry);
+    tasks[slot].ticks_remaining = TASK_QUANTUM;
+    fpu_init_state(&fpu_states[slot]);
+    task_count++;
+    irq_restore(flags);
+
+    return slot;
+}
+#endif
+
 /* Pick the next task after the current one has been saved: round-robin over
  * the runnable tasks, the idle task if there are none. */
 static uint32_t scheduler_choose_next(uint32_t fallback_esp) {

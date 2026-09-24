@@ -29,7 +29,9 @@ uintptr_t kstack_top(int slot);
 /* Non-zero if addr lies in one of the guard pages. */
 int kstack_is_guard(uintptr_t addr);
 
-/* Bytes of the task 0 stack ever touched (stacks start zeroed). */
-uint32_t kstack_boot_high_water(void);
+#ifdef GEMOS_SELFTEST
+/* Log how deep each kernel stack has been used so far. */
+void kstack_log_high_water(void);
+#endif
 
 #endif /* KSTACK_H */
