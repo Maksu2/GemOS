@@ -6,8 +6,9 @@
 
 static app_t utextedit_launcher_app;
 
-static void utextedit_launcher_open(void) {
-  int pid = process_spawn_user_from_file("UTEXTEDIT.ELF");
+/* The editor gets the file to open as argv[1] (NULL: a new document). */
+static void utextedit_launcher_spawn(const char *path) {
+  int pid = process_spawn_user_with_arg("UTEXTEDIT.ELF", path);
 
   if (pid < 0) {
     serial_print("[UTEXTEDIT] Failed to spawn UTEXTEDIT.ELF\n");
@@ -16,13 +17,17 @@ static void utextedit_launcher_open(void) {
 
   serial_print("[UTEXTEDIT] Spawned PID=");
   serial_print_dec((uint32_t)pid);
+  if (path != NULL) {
+    serial_print(" for ");
+    serial_print(path);
+  }
   serial_print("\n");
 }
 
+static void utextedit_launcher_open(void) { utextedit_launcher_spawn(NULL); }
+
 static void utextedit_launcher_open_file(const char *path) {
-  (void)path;
-  serial_print("[UTEXTEDIT] open_file not wired yet, opening empty editor\n");
-  utextedit_launcher_open();
+  utextedit_launcher_spawn(path);
 }
 
 static void utextedit_launcher_init(void) {

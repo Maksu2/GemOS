@@ -6,7 +6,8 @@
  * writes a process may not do (programs and system files are read-only).
  * kernel/selftest.c writes this program to GemFS and starts it from there;
  * its image is larger than 64 KB (filetest_data.S), so the loader is tested
- * too. The exit code is 0 or the first step that failed
+ * too, and its arguments show the start of a program (crt0.S). The exit
+ * code is 0 or the first step that failed
  * (include/gemos/selftest_abi.h); the kernel then checks the disk.
  */
 #include <gemos/selftest_abi.h>
@@ -15,6 +16,15 @@
 extern const uint8_t filetest_table[GEMOS_FILETEST_SIZE];
 
 static char readback[GEMOS_FILETEST_SIZE + 1];
+
+static int text_is(const char *text, const char *expected) {
+  uint32_t i = 0;
+
+  while (text[i] != '\0' && text[i] == expected[i]) {
+    i++;
+  }
+  return text[i] == expected[i];
+}
 
 static int same(const char *a, const char *b, uint32_t length) {
   for (uint32_t i = 0; i < length; ++i) {
@@ -31,9 +41,14 @@ static int refused(const char *path) {
   return gemos_file_write(path, text, sizeof(text) - 1U) == GEMOS_ERR_DENIED;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
   static const char note[] = GEMOS_FILETEST_NOTE_TEXT;
   const uint32_t note_length = sizeof(note) - 1U;
+
+  if (argc != 2 || !text_is(argv[0], GEMOS_FILETEST_PATH) ||
+      !text_is(argv[1], GEMOS_FILETEST_BIG) || argv[2] != 0) {
+    return GEMOS_FILETEST_ARGS;
+  }
 
   for (uint32_t i = 0; i < GEMOS_FILETEST_SIZE; ++i) {
     if (filetest_table[i] != (uint8_t)GEMOS_FILETEST_BYTE(i)) {

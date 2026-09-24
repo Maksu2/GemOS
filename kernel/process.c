@@ -9,6 +9,7 @@
 #include "fs/crc32.h"
 #include "fs/gemfs.h"
 #include "include/heap.h"
+#include "include/irq.h"
 #include "memory/kstack.h"
 #ifdef GEMOS_SELFTEST
 #include "selftest.h"
@@ -140,7 +141,7 @@ static uint32_t process_build_initial_frame(process_t *process) {
 
   /* Must stay byte-for-byte aligned with scheduler_irq0_stub/registers_t. */
   *--sp = GDT_USER_DS;
-  *--sp = (uint32_t)process->user_stack_top;
+  *--sp = (uint32_t)process->entry_esp;
   *--sp = 0x00000202U;
   *--sp = GDT_USER_CS;
   *--sp = (uint32_t)process->entry_eip;
@@ -271,10 +272,52 @@ int process_seed_userland(void) {
   return seeded + current == EMBEDDED_PROGRAM_COUNT;
 }
 
+/*
+ * The stack a program starts with (userland/crt0.S): argc, then argc
+ * pointers (argv) and a NULL pointer, with the strings above them. argv[0]
+ * is the name the program was started by, argv[1] the optional argument.
+ */
+static int process_push_arguments(process_t *process, const char *name,
+                                  const char *arg) {
+  uint32_t block[4U + (2U * GEMFS_PATH_MAX) / 4U];
+  const char *strings[2] = {name, arg};
+  uint32_t argc = arg != NULL ? 2U : 1U;
+  uint32_t size = 4U * (argc + 2U); /* argc, argv[], NULL */
+  uint32_t offsets[2];
+  uintptr_t base;
+  uint32_t interrupt_state;
+
+  for (uint32_t i = 0; i < argc; ++i) {
+    size_t length = strlen(strings[i]) + 1U;
+
+    if (length > GEMFS_PATH_MAX) {
+      return 0;
+    }
+    offsets[i] = size;
+    memcpy((uint8_t *)block + size, strings[i], length);
+    size += (uint32_t)length;
+  }
+  size = (size + 3U) & ~3U;
+  base = process->user_stack_top - size;
+  block[0] = argc;
+  for (uint32_t i = 0; i < argc; ++i) {
+    block[1U + i] = (uint32_t)(base + offsets[i]);
+  }
+  block[1U + argc] = 0;
+
+  interrupt_state = irq_save();
+  paging_switch_directory(process->as.page_directory);
+  memcpy((void *)base, block, size);
+  paging_switch_directory(paging_get_directory());
+  irq_restore(interrupt_state);
+  process->entry_esp = base;
+  return 1;
+}
+
 /* Start a program from its ELF image. A GemFS copy that the loader rejects
  * is replaced by the one in the kernel image, if there is one. */
-static int process_spawn_loaded(const char *name, const uint8_t *image,
-                                size_t image_size,
+static int process_spawn_loaded(const char *name, const char *arg,
+                                const uint8_t *image, size_t image_size,
                                 process_image_source_t image_source) {
   process_t *process;
   int task_id;
@@ -323,6 +366,12 @@ static int process_spawn_loaded(const char *name, const uint8_t *image,
     }
   }
 
+  if (!process_push_arguments(process, name, arg)) {
+    serial_print("[PROC] Arguments too long\n");
+    process_destroy(process);
+    return -1;
+  }
+
   initial_esp = process_build_initial_frame(process);
   if (initial_esp == 0) {
     serial_print("[PROC] Failed to build initial frame\n");
@@ -350,6 +399,10 @@ static int process_spawn_loaded(const char *name, const uint8_t *image,
 }
 
 int process_spawn_user_from_file(const char *name) {
+  return process_spawn_user_with_arg(name, NULL);
+}
+
+int process_spawn_user_with_arg(const char *name, const char *arg) {
   const uint8_t *image;
   uint8_t *file;
   size_t image_size;
@@ -361,7 +414,7 @@ int process_spawn_user_from_file(const char *name) {
 
   file = process_read_file(name, &image_size);
   if (file != NULL) {
-    pid = process_spawn_loaded(name, file, image_size,
+    pid = process_spawn_loaded(name, arg, file, image_size,
                                PROCESS_IMAGE_SOURCE_GEMFS);
     kfree(file); /* the loader copied the segments */
     return pid;
@@ -372,7 +425,7 @@ int process_spawn_user_from_file(const char *name) {
     serial_print("\n");
     return -1;
   }
-  return process_spawn_loaded(name, image, image_size,
+  return process_spawn_loaded(name, arg, image, image_size,
                               PROCESS_IMAGE_SOURCE_EMBEDDED);
 }
 
@@ -382,7 +435,8 @@ int process_spawn_user_image(const char *name, const uint8_t *image,
   if (name == NULL || image == NULL) {
     return -1;
   }
-  return process_spawn_loaded(name, image, size, PROCESS_IMAGE_SOURCE_EMBEDDED);
+  return process_spawn_loaded(name, NULL, image, size,
+                              PROCESS_IMAGE_SOURCE_EMBEDDED);
 }
 #endif
 
