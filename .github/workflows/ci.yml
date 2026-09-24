@@ -86,7 +86,10 @@ jobs:
       - name: Build
         run: make all
 
-      # 32/64/256 MB, no data disk, 4 MB VRAM, boot from the hard disk image
+      # 32/64/256 MB, no data disk, 4 MB VRAM, boot from the hard disk image,
+      # a data disk without GemFS or with a damaged superblock (must stay
+      # byte for byte unchanged), a second boot that must write nothing,
+      # a disk that writes slowly
       - name: Smoke test on every machine variant
         run: tools/smoke.sh --no-build --matrix
 
@@ -113,9 +116,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
 
-      # Heap, pool, ELF loader, FPU state, every exception a program can
-      # raise from Ring 3, and a kernel stack overflow that must end in the
-      # double fault handler (kernel/selftest.c)
+      # Heap, pool, ELF loader, GemFS and the file syscalls, FPU state,
+      # every exception a program can raise from Ring 3, and a kernel
+      # stack overflow that must end in the double fault handler
+      # (kernel/selftest.c); two boots on the same disks, so files
+      # written on the first must be there on the second
       - name: Self-test
         run: tools/smoke.sh --selftest
 

@@ -11,18 +11,34 @@ the monitor:
     open their console window, close on Esc and are reaped with exit=0,
   * every frame checked must appear on screen by itself: no input is sent
     while waiting for it,
-  * the serial log has no PANIC, user fault or allocation failure, and no
-    line was printed into the middle of another one.
+  * the serial log has no PANIC, user fault, allocation failure or refused
+    disk write, and no line was printed into the middle of another one,
+  * after QEMU has stopped, tools/mkgemfs check finds the GemFS data disk
+    consistent.
+
+The data disk is a fresh GemFS disk (tools/mkgemfs format), or with
+--data-disk "unsigned" (random bytes) or "damaged" (a GemFS superblock with
+a wrong checksum). --preboot boots once on the new disks and shuts down
+before the test, which then runs on a second boot. --slow-writes N lets
+QEMU write only N requests per second to the data disk. --expect-unchanged
+data|boot compares the SHA-256 of that disk image before and after the
+test: the kernel must not have written a single byte.
 
 With --matrix it runs the smoke test once per machine variant (32/64/256 MB
-of RAM, no data disk, 4 MB of VRAM, boot from the hard disk image); each
+of RAM, no data disk, 4 MB of VRAM, boot from the hard disk image, a data
+disk without GemFS or with a damaged superblock, a second boot, a slow
+disk); each
 variant also checks log lines that show which path the kernel took.
 
-With --selftest it boots the self-test image (make selftest) instead:
-kernel/selftest.c checks the heap, the pool, the ELF loader, the FPU state
-and every exception a Ring 3 program can raise, logs "[SELFTEST] RESULT",
-then overflows its kernel stack on purpose; the log must end in the double
-fault panic that names the overflow.
+With --selftest it boots the self-test image (make selftest) instead, with
+a second disk without GemFS: kernel/selftest.c checks the heap, the pool,
+the ELF loader, GemFS and the file syscalls, the FPU state and every
+exception a Ring 3 program can raise, logs "[SELFTEST] RESULT", then
+overflows its kernel stack on purpose; the log must end in the double
+fault panic that names the overflow. The self-test boots twice on the same
+disks: between the boots the harness checks the GemFS disk and the files
+the first boot wrote, and the second boot checks those files again. The
+second disk must come out of both boots unchanged.
 
 With --stress N it runs a load test instead: N cycles of opening all
 three programs from the menus, typing into them and moving the mouse while
@@ -37,7 +53,9 @@ Exit status: 0 = PASS, 1 = FAIL, 2 = setup error.
 """
 
 import argparse
+import hashlib
 import os
+import random
 import re
 import shutil
 import signal
@@ -65,17 +83,35 @@ def set_resolution(width, height):
 # must appear (regular expressions).
 MATRIX = [
     ("floppy-128M", [], [r"\[GFX\] BGA page flipping enabled",
-                         r"\[GemFS\] v2 Mounted"]),
+                         r"\[GemFS\] Mounted GemFS v3",
+                         r"\[PROC\] Programs on GemFS: 4 seeded, 0 up to "
+                         r"date"]),
     ("32M", ["--memory", "32"], [r"\[MEM\] Heap 0x"]),
     ("64M", ["--memory", "64"], [r"\[MEM\] Heap 0x"]),
     ("256M", ["--memory", "256"], [r"not used above 32 MB"]),
     ("no-data-disk", ["--no-data-disk"],
-     [r"\[GemFS\] No data disk", r"No file system: programs run"]),
+     [r"\[GemFS\] No GemFS disk", r"No file system: programs run"]),
     ("vga-4M", ["--vga-mem", "4", "--resolution", "1280x800"],
      [r"Resolution: 1280x800x32", r"page flip unavailable, using memcpy"]),
-    ("hdd-boot", ["--boot", "hdd"],
-     [r"\[BOOT\] Boot drive 0x00000080", r"\[GemFS\] Skipping bootable disk",
-      r"\[GemFS\] v2 Mounted"]),
+    ("hdd-boot", ["--boot", "hdd", "--expect-unchanged", "boot"],
+     [r"\[BOOT\] Boot drive 0x00000080",
+      r"\[GemFS\] [^\n]*: no GemFS signature, not mounted",
+      r"\[GemFS\] Mounted GemFS v3"]),
+    ("unsigned-disk", ["--data-disk", "unsigned", "--expect-unchanged", "data"],
+     [r"\[GemFS\] [^\n]*: no GemFS signature, not mounted",
+      r"\[GemFS\] No GemFS disk"]),
+    ("damaged-superblock",
+     ["--data-disk", "damaged", "--expect-unchanged", "data"],
+     [r"\[GemFS\] [^\n]*: superblock checksum mismatch, not mounted",
+      r"\[GemFS\] No GemFS disk"]),
+    ("second-boot", ["--preboot", "--expect-unchanged", "data"],
+     [r"\[GemFS\] Mounted GemFS v3",
+      r"\[PROC\] Programs on GemFS: 0 seeded, 4 up to date"]),
+    # every write takes about 80 ms, as on a busy host (CI once took longer
+    # than the old ATA timeout to flush a new disk image)
+    ("slow-disk", ["--slow-writes", "12"],
+     [r"\[GemFS\] Mounted GemFS v3",
+      r"\[PROC\] Programs on GemFS: 4 seeded, 0 up to date"]),
 ]
 
 # Topbar menus (kernel/gui/topbar/topbar.c): "GemOS" at x 10..80, "Apps" at
@@ -149,6 +185,7 @@ FAILURE_PATTERNS = [
     r"Alloc failed",
     r"Failed to",
     r"\[ELF\]",
+    r"\[ATA\] (Refused|[a-z ]+ failed)",
 ]
 
 # Kernel log lines start with a "[Tag] " prefix; indented lines continue the
@@ -159,6 +196,58 @@ LOG_TAG = re.compile(r"\[[A-Za-z][A-Za-z0-9_]*\] ")
 
 class SmokeError(Exception):
     pass
+
+
+MKGEMFS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mkgemfs")
+DATA_DISK_SIZE = 10 * 1024 * 1024
+SPARE_DISK_SIZE = 1024 * 1024
+
+# Files the self-test writes on its first boot and checks on the second:
+# PERSIST_TEXT in kernel/selftest.c, the FILETEST table in
+# include/gemos/selftest_abi.h.
+PERSIST_NOTE = "/persist/a/b/note.txt"
+PERSIST_TEXT = b"Written by the GemOS self-test; the next boot reads it.\n"
+FILETEST_BIG = "/fstest/big.bin"
+FILETEST_TABLE = bytes((((i >> 8) ^ (i * 13 + 5)) & 0xFF)
+                       for i in range(81920))
+
+
+def mkgemfs(*args):
+    return subprocess.run([sys.executable, MKGEMFS] + list(args),
+                          capture_output=True)
+
+
+def random_bytes(size, seed):
+    """The same bytes on every run, so a failure can be repeated."""
+    return random.Random(seed).randbytes(size)
+
+
+def make_data_disk(path, kind):
+    """A 10 MB data disk: a fresh GemFS disk (tools/mkgemfs format), random
+    bytes without any signature, or a GemFS disk whose superblock checksum
+    no longer matches (one byte of the label changed)."""
+    if kind == "unsigned":
+        with open(path, "wb") as f:
+            f.write(random_bytes(DATA_DISK_SIZE, 0x6E05))
+        return
+    result = mkgemfs("format", path, "--size", "10M")
+    if result.returncode != 0:
+        raise SmokeError("mkgemfs format: %s"
+                         % result.stderr.decode(errors="replace").strip())
+    if kind == "damaged":
+        with open(path, "r+b") as f:
+            f.seek(48)  # first byte of the label, covered by the checksum
+            byte = f.read(1)
+            f.seek(48)
+            f.write(bytes([byte[0] ^ 0x20]))
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def title_bar_problem(image):
@@ -337,6 +426,8 @@ class Smoke:
         self.sockdir = None
         self.serial_log = os.path.join(self.out, "serial.log")
         self.deadline = time.monotonic() + args.timeout
+        self.disks = {}   # name -> image file: boot, data, spare
+        self.hashes = {}  # name -> SHA-256 before the test
 
     # -- reporting ---------------------------------------------------------
     def check(self, ok, name, detail=""):
@@ -347,39 +438,101 @@ class Smoke:
         print(line, flush=True)
         return ok
 
-    # -- QEMU ----------------------------------------------------------------
-    def start_qemu(self):
-        qemu = shutil.which(os.environ.get("QEMU", "qemu-system-i386"))
-        if not qemu:
-            raise SmokeError("qemu-system-i386 not found (set QEMU=...)")
+    # -- disks ---------------------------------------------------------------
+    def prepare_disks(self):
         if not os.path.isfile(self.args.image):
             raise SmokeError("disk image %s not found, run make all"
                              % self.args.image)
-
         if os.path.isdir(self.out):
             shutil.rmtree(self.out)
         os.makedirs(self.out)
-        boot = os.path.join(self.out, os.path.basename(self.args.image))
-        data = os.path.join(self.out, "data.img")
-        shutil.copyfile(self.args.image, boot)
-        with open(data, "wb") as f:
-            f.truncate(10 * 1024 * 1024)
+        self.disks["boot"] = os.path.join(self.out,
+                                          os.path.basename(self.args.image))
+        shutil.copyfile(self.args.image, self.disks["boot"])
+        if not self.args.no_data_disk:
+            self.disks["data"] = os.path.join(self.out, "data.img")
+            make_data_disk(self.disks["data"], self.args.data_disk)
+        if self.args.selftest:
+            # a disk without GemFS: the ATA driver must refuse to write it
+            self.disks["spare"] = os.path.join(self.out, "spare.img")
+            with open(self.disks["spare"], "wb") as f:
+                f.write(random_bytes(SPARE_DISK_SIZE, 0x5A5E))
 
+    def snapshot_disks(self):
+        self.hashes = {name: sha256(path) for name, path in self.disks.items()}
+
+    def check_gemfs(self, when):
+        if self.args.no_data_disk or self.args.data_disk != "gemfs":
+            return True
+        result = mkgemfs("check", self.disks["data"])
+        output = result.stdout.decode(errors="replace").strip()
+        errors = result.stderr.decode(errors="replace").strip()
+        return self.check(result.returncode == 0,
+                          "disk: tools/mkgemfs check %s" % when,
+                          (output or errors).splitlines()[-1]
+                          if (output or errors) else "")
+
+    def check_disks(self):
+        """After the last QEMU run: the GemFS disk is consistent, and the
+        disks that had to stay untouched are byte for byte the same."""
+        self.check_gemfs("after the test")
+        unchanged = list(self.args.expect_unchanged)
+        if self.args.selftest:
+            unchanged.append("spare")
+        for name in unchanged:
+            if name not in self.disks:
+                self.check(False, "disk: %s image unchanged" % name,
+                           "no %s disk in this run" % name)
+                continue
+            after = sha256(self.disks[name])
+            self.check(after == self.hashes[name],
+                       "disk: %s image unchanged" % name,
+                       "sha256 %s" % after[:16] if after == self.hashes[name]
+                       else "sha256 %s before, %s after"
+                       % (self.hashes[name][:16], after[:16]))
+
+    def preboot(self):
+        """Boot once on the new disks until the kernel has put its programs
+        on GemFS, then shut down: the test runs on the second boot."""
+        self.start_qemu("preboot-serial.log")
+        try:
+            done = self.wait_for(lambda t: "[PROC] Programs on GemFS" in t or
+                                 "[PROC] No file system" in t,
+                                 self.args.boot_timeout)
+            self.check(bool(done), "preboot: the first boot seeded the "
+                       "programs and was shut down")
+        finally:
+            self.stop_qemu()
+        self.check_gemfs("after the first boot")
+
+    # -- QEMU ----------------------------------------------------------------
+    def start_qemu(self, serial="serial.log"):
+        qemu = shutil.which(os.environ.get("QEMU", "qemu-system-i386"))
+        if not qemu:
+            raise SmokeError("qemu-system-i386 not found (set QEMU=...)")
+
+        self.serial_log = os.path.join(self.out, serial)
         # unix socket paths are limited to ~108 bytes; keep it short
         self.sockdir = tempfile.mkdtemp(prefix="gemos-smoke-")
         sock = os.path.join(self.sockdir, "hmp.sock")
         cmd = [qemu]
+        disk = "file=%s,if=ide,index=%d,format=raw"
         if self.args.boot == "hdd":
-            # boot disk first; GemFS skips it (MBR signature) and uses the
-            # data disk behind it
-            cmd += ["-drive", "file=%s,if=ide,index=0,format=raw" % boot,
-                    "-boot", "c"]
-            data_drive = "file=%s,if=ide,index=1,format=raw" % data
+            # boot disk first; GemFS finds no superblock there and mounts
+            # the data disk behind it
+            cmd += ["-drive", disk % (self.disks["boot"], 0), "-boot", "c"]
+            index = 1
         else:
-            cmd += ["-drive", "file=%s,if=floppy,format=raw" % boot]
-            data_drive = "file=%s,if=ide,format=raw" % data
-        if not self.args.no_data_disk:
-            cmd += ["-drive", data_drive]
+            cmd += ["-drive", "file=%s,if=floppy,format=raw"
+                    % self.disks["boot"]]
+            index = 0
+        for name in ("data", "spare"):
+            if name in self.disks:
+                drive = disk % (self.disks[name], index)
+                if name == "data" and self.args.slow_writes:
+                    drive += ",throttling.iops-write=%d" % self.args.slow_writes
+                cmd += ["-drive", drive]
+                index += 1
         if self.args.vga_mem:
             # (-global VGA.vgamem_mb leaves the machine without a VGA)
             cmd += ["-vga", "none",
@@ -392,7 +545,8 @@ class Smoke:
             "-no-reboot",
         ]
         print("qemu: %s" % " ".join(cmd), flush=True)
-        self.qemu_log = open(os.path.join(self.out, "qemu.log"), "wb")
+        self.qemu_log = open(os.path.join(
+            self.out, serial.replace("serial", "qemu")), "wb")
         self.qemu = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                                      stdout=self.qemu_log,
                                      stderr=subprocess.STDOUT)
@@ -414,6 +568,8 @@ class Smoke:
                 self.qemu.wait()
         if self.sockdir:
             shutil.rmtree(self.sockdir, ignore_errors=True)
+        self.monitor = None
+        self.sockdir = None
 
     def log_text(self):
         try:
@@ -668,7 +824,10 @@ class Smoke:
                    "%.0f s" % (time.monotonic() - start))
 
     # -- self-test -------------------------------------------------------------
-    def selftest(self):
+    def selftest(self, boot):
+        """One boot of the self-test image. Check names of the second boot
+        say so; the first boot writes files that the second one checks."""
+        label = "selftest" if boot == 1 else "selftest (second boot)"
         start = time.monotonic()
         result_re = re.compile(r"^\[SELFTEST\] RESULT: (PASS|FAIL) \("
                                r"(?:\d+ of )?(\d+) checks(?:, (\d+) skipped)?"
@@ -682,10 +841,10 @@ class Smoke:
 
         result = self.wait_for(finished, SELFTEST_TIMEOUT)
         if result and result.re is panic_re:
-            self.check(False, "selftest: finished",
+            self.check(False, label + ": finished",
                        "kernel panic before the result: %s" % result.group(0))
             return
-        if not self.check(bool(result), "selftest: finished",
+        if not self.check(bool(result), label + ": finished",
                           "%.1f s" % (time.monotonic() - start)):
             return
         text = self.log_text().replace("\r", "")
@@ -695,32 +854,45 @@ class Smoke:
         total = int(result.group(2))
         self.check(result.group(1) == "PASS" and not failed and
                    len(passed) == total,
-                   "selftest: all %d checks passed" % total,
+                   "%s: all %d checks passed" % (label, total),
                    "; ".join(failed[:3]) if failed else
                    "%d PASS lines" % len(passed))
+        if boot == 1:
+            self.check(any(line.startswith("fs: wrote " + PERSIST_NOTE)
+                           for line in passed),
+                       label + ": wrote a file for the second boot")
+        else:
+            survived = [line for line in passed
+                        if line.startswith("fs: after a reboot")]
+            self.check(len(survived) == 2,
+                       label + ": the files of the first boot survived",
+                       "; ".join(survived) or "no 'after a reboot' checks")
+            self.check(re.search(r"^\[PROC\] Programs on GemFS: 0 seeded",
+                                 text, re.M) is not None,
+                       label + ": the programs were not written again")
         for line in skipped:
-            print("SKIP  selftest: %s" % line, flush=True)
+            print("SKIP  %s: %s" % (label, line), flush=True)
 
         # every fault test ended its program, and nothing else faulted
         faults = [line for line in passed if line.startswith("fault ")]
         user_faults = re.findall(r"^\[USERFAULT\] ", text, re.M)
         self.check(len(faults) > 0 and len(user_faults) == len(faults),
-                   "selftest: one [USERFAULT] per fault test",
+                   label + ": one [USERFAULT] per fault test",
                    "%d fault tests, %d [USERFAULT] lines"
                    % (len(faults), len(user_faults)))
-        self.screendump("selftest")
+        self.screendump("selftest" if boot == 1 else "selftest-boot2")
 
         overflow = self.wait_for(lambda t: SELFTEST_OVERFLOW in t,
                                  SELFTEST_PANIC_TIMEOUT)
         if not self.check(bool(overflow),
-                          "selftest: kernel stack overflow test started"):
+                          label + ": kernel stack overflow test started"):
             return
         text = self.log_text().replace("\r", "")
         before = text[:text.index(SELFTEST_OVERFLOW)]
         self.check("PANIC" not in before,
-                   "selftest: no panic before the overflow test")
+                   label + ": no panic before the overflow test")
         bad = interleaved_lines(before)
-        self.check(not bad, "selftest: no interleaved lines",
+        self.check(not bad, label + ": no interleaved lines",
                    "; ".join(repr(line) for line in bad[:3]))
 
         panic = self.wait_for(
@@ -728,10 +900,23 @@ class Smoke:
             SELFTEST_PANIC_TIMEOUT)
         text = self.log_text()
         self.check(bool(panic) and text.count("[PANIC]") == 1,
-                   "selftest: the overflow ends in the double fault handler",
+                   label + ": the overflow ends in the double fault handler",
                    "guard page named, registers dumped" if panic else
                    "no double fault panic naming the guard page")
         self.check(self.qemu.poll() is None, "QEMU still running at the end")
+
+    def check_between_boots(self):
+        """What the first self-test boot left on the GemFS disk, read on the
+        host with tools/mkgemfs."""
+        self.check_gemfs("after the first boot")
+        for path, expected, what in (
+                (PERSIST_NOTE, PERSIST_TEXT, "from the kernel"),
+                (FILETEST_BIG, FILETEST_TABLE, "from FILETEST.ELF")):
+            result = mkgemfs("cat", self.disks["data"], path)
+            self.check(result.returncode == 0 and result.stdout == expected,
+                       "disk: %s (%s) reads back on the host" % (path, what),
+                       "%d bytes" % len(result.stdout) if result.returncode == 0
+                       else result.stderr.decode(errors="replace").strip())
 
     def scan_log(self):
         text = self.log_text()
@@ -763,14 +948,28 @@ class Smoke:
             pass
 
     def run(self):
-        self.start_qemu()
+        self.prepare_disks()
+        if self.args.preboot:
+            self.preboot()
+        self.snapshot_disks()
+        boots = 2 if self.args.selftest else 1
+        for boot in range(1, boots + 1):
+            if boot == 2:
+                self.check_between_boots()
+            if not self.run_once(boot):
+                return
+        self.check_disks()
+
+    def run_once(self, boot):
+        """One QEMU run of the test; False if it could not finish."""
+        self.start_qemu("serial.log" if boot == 1 else "serial-boot2.log")
         try:
             if not self.boot():
                 self.save_diagnostics()
-                return
+                return False
             self.desktop()
             if self.args.selftest:
-                self.selftest()
+                self.selftest(boot)
             elif self.args.stress:
                 self.stress()
             else:
@@ -786,6 +985,7 @@ class Smoke:
             raise
         finally:
             self.stop_qemu()
+        return True
 
 
 def main():
@@ -809,6 +1009,18 @@ def main():
                         "hard disk image)")
     parser.add_argument("--memory", type=int, default=128, metavar="MB")
     parser.add_argument("--no-data-disk", action="store_true")
+    parser.add_argument("--data-disk", choices=("gemfs", "unsigned", "damaged"),
+                        default="gemfs",
+                        help="a fresh GemFS disk, random bytes, or a GemFS "
+                        "disk with a wrong superblock checksum")
+    parser.add_argument("--slow-writes", type=int, default=0, metavar="N",
+                        help="let QEMU write at most N requests per second "
+                        "to the data disk")
+    parser.add_argument("--preboot", action="store_true",
+                        help="boot once on the new disks before the test")
+    parser.add_argument("--expect-unchanged", action="append", default=[],
+                        choices=("data", "boot"),
+                        help="that disk image must be the same afterwards")
     parser.add_argument("--vga-mem", type=int, default=0, metavar="MB",
                         help="VRAM of the QEMU VGA (default: QEMU's 16)")
     parser.add_argument("--resolution", default="1920x1080",

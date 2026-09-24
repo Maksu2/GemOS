@@ -7,11 +7,15 @@
 #              rounds of opening, typing into and closing all programs
 #   --matrix   the smoke test on every machine variant: 32/64/256 MB,
 #              no data disk, 4 MB VRAM (smaller mode, no page flip),
-#              boot from the hard disk image
+#              boot from the hard disk image, a data disk without GemFS
+#              or with a damaged superblock (must stay unchanged), a
+#              second boot of the same disk (must write nothing), and a
+#              disk that writes slowly
 #   --selftest build and boot the self-test image (make selftest):
-#              heap, pool, ELF loader, FPU state, every exception from
-#              Ring 3, and a kernel stack overflow that must end in the
-#              double fault handler
+#              heap, pool, ELF loader, GemFS and the file syscalls, FPU
+#              state, every exception from Ring 3, and a kernel stack
+#              overflow that must end in the double fault handler; boots
+#              twice so the second boot checks the files of the first
 #
 # Environment:
 #   QEMU           emulator binary (default: qemu-system-i386)
@@ -40,7 +44,8 @@ while [ $# -gt 0 ]; do
       ;;
     --matrix) matrix=1 ;;
     --selftest) selftest=1 ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help) awk 'NR == 1 { next } /^#/ { print; next } { exit }' "$0"
+               exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift

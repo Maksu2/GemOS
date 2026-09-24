@@ -14,6 +14,8 @@
 #include "../../kernel/app/app.h"
 #include "../../kernel/app/app_manager.h"
 #include "../../kernel/fs/gemfs.h"
+
+#define TEXTEDIT_FILE_MAX 8192
 #include "../../kernel/gfx/font/font.h"
 #include "../../kernel/gfx/icons.h"
 #include "../../kernel/gfx/primitives.h"
@@ -138,7 +140,7 @@ static void load_gemtext(const char *data, int size) {
 }
 
 static void save_gemtext(const char *filename) {
-  char file_buf[GEMFS_MAX_FILESIZE];
+  char file_buf[TEXTEDIT_FILE_MAX];
   int ptr = 0;
 
   /* Write Header */
@@ -158,7 +160,7 @@ static void save_gemtext(const char *filename) {
 
   /* Write Content */
   for (int j = 0; j < cursor_pos; j++) {
-    if (ptr < GEMFS_MAX_FILESIZE - 1) {
+    if (ptr < TEXTEDIT_FILE_MAX - 1) {
       file_buf[ptr++] = text_buffer[j];
     } else {
       break;
@@ -166,7 +168,7 @@ static void save_gemtext(const char *filename) {
   }
   file_buf[ptr] = '\0';
 
-  gemfs_write(filename, file_buf, ptr);
+  gemfs_write(filename, file_buf, (uint32_t)ptr, 0, 0);
   serial_print("[TextEdit] Saved to ");
   serial_print(filename);
   serial_print("\n");
@@ -198,9 +200,16 @@ static void on_file_selected(const char *name) {
   current_filename[i] = '\0';
 
   /* Read file */
-  char buf[GEMFS_MAX_FILESIZE];
-  int size = gemfs_read(name, buf, GEMFS_MAX_FILESIZE);
+  char buf[TEXTEDIT_FILE_MAX];
+  gemfs_stat_t stat;
+  int size = -1;
+  if (gemfs_stat(name, &stat) == GEMFS_OK && stat.type == GEMFS_TYPE_FILE) {
+    uint32_t want = stat.size < TEXTEDIT_FILE_MAX - 1 ? stat.size
+                                                      : TEXTEDIT_FILE_MAX - 1;
+    size = gemfs_read(stat.inode, 0, buf, want);
+  }
   if (size >= 0) {
+    buf[size] = '\0';
     load_gemtext(buf, size);
   }
 }

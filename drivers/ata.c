@@ -1,5 +1,6 @@
 #include "ata.h"
 #include "../include/io.h"
+#include "pit.h"
 #include "serial.h"
 
 #include <stddef.h>
@@ -21,6 +22,9 @@
 #define ATA_SR_DF 0x20
 #define ATA_SR_BSY 0x80
 
+/* Device control register (written at ctrl_base) */
+#define ATA_CTRL_SRST 0x04 /* software reset of both drives on the channel */
+
 #define ATA_CMD_READ_PIO 0x20
 #define ATA_CMD_WRITE_PIO 0x30
 #define ATA_CMD_CACHE_FLUSH 0xE7
@@ -28,12 +32,17 @@
 
 #define ATA_LBA28_LIMIT 0x10000000U
 
-/* Upper bound for every wait: status reads, each about 1 us on a real ISA
- * bus, so roughly a second. Interrupts may be off (syscalls), so the bound
- * is a count and not the tick counter. */
-#define ATA_TIMEOUT_POLLS 1000000U
+/* How long to wait for a drive, measured with the PIT stopwatch because
+ * interrupts may be off. IDENTIFY gets 5 s, so an odd position does not
+ * hold up the boot for long. Reads, writes and FLUSH CACHE get 30 s: the
+ * standard lets a drive take that long to spin up or to empty its cache,
+ * and in QEMU a flush is an fsync of the image file on the host. (A count
+ * of a million status reads, used before, was 30-60 ms in QEMU.) */
+#define ATA_PROBE_TIMEOUT_MS 5000U
+#define ATA_IO_TIMEOUT_MS 30000U
 
 static ata_device_t ata_devices[ATA_MAX_DEVICES];
+static uint8_t ata_writable[ATA_MAX_DEVICES]; /* set by ata_allow_writes */
 
 static uint8_t ata_alt_status(const ata_device_t *dev) {
   /* the alternate status register does not acknowledge an interrupt */
@@ -47,8 +56,11 @@ static void ata_delay_400ns(const ata_device_t *dev) {
   }
 }
 
-static int ata_wait_not_busy(const ata_device_t *dev) {
-  for (uint32_t i = 0; i < ATA_TIMEOUT_POLLS; ++i) {
+static int ata_wait_not_busy(const ata_device_t *dev, uint32_t timeout_ms) {
+  pit_stopwatch_t watch;
+
+  pit_stopwatch_start(&watch);
+  do {
     uint8_t status = ata_alt_status(dev);
 
     if (status == 0xFF) {
@@ -57,28 +69,30 @@ static int ata_wait_not_busy(const ata_device_t *dev) {
     if ((status & ATA_SR_BSY) == 0) {
       return (status & (ATA_SR_ERR | ATA_SR_DF)) ? ATA_ERR_DEVICE : ATA_OK;
     }
-  }
+  } while (pit_stopwatch_ms(&watch) < timeout_ms);
   return ATA_ERR_TIMEOUT;
 }
 
 /* Wait until the drive has a sector ready (DRQ) or reports an error. */
-static int ata_wait_data(const ata_device_t *dev) {
-  for (uint32_t i = 0; i < ATA_TIMEOUT_POLLS; ++i) {
+static int ata_wait_data(const ata_device_t *dev, uint32_t timeout_ms) {
+  pit_stopwatch_t watch;
+
+  pit_stopwatch_start(&watch);
+  do {
     uint8_t status = ata_alt_status(dev);
 
     if (status == 0xFF) {
       return ATA_ERR_NO_DEVICE;
     }
-    if (status & ATA_SR_BSY) {
-      continue;
+    if ((status & ATA_SR_BSY) == 0) {
+      if (status & (ATA_SR_ERR | ATA_SR_DF)) {
+        return ATA_ERR_DEVICE;
+      }
+      if (status & ATA_SR_DRQ) {
+        return ATA_OK;
+      }
     }
-    if (status & (ATA_SR_ERR | ATA_SR_DF)) {
-      return ATA_ERR_DEVICE;
-    }
-    if (status & ATA_SR_DRQ) {
-      return ATA_OK;
-    }
-  }
+  } while (pit_stopwatch_ms(&watch) < timeout_ms);
   return ATA_ERR_TIMEOUT;
 }
 
@@ -121,7 +135,7 @@ static int ata_identify(ata_device_t *dev) {
   if (status == 0 || status == 0xFF) {
     return 0; /* no drive at this position */
   }
-  switch (ata_wait_not_busy(dev)) {
+  switch (ata_wait_not_busy(dev, ATA_PROBE_TIMEOUT_MS)) {
   case ATA_ERR_NO_DEVICE:
   case ATA_ERR_TIMEOUT:
     return 0;
@@ -133,7 +147,7 @@ static int ata_identify(ata_device_t *dev) {
       inb(dev->io_base + ATA_REG_LBA_HI) != 0) {
     return 0;
   }
-  if (ata_wait_data(dev) != ATA_OK) {
+  if (ata_wait_data(dev, ATA_PROBE_TIMEOUT_MS) != ATA_OK) {
     return 0;
   }
 
@@ -162,6 +176,7 @@ void ata_init(void) {
     ata_device_t *dev = &ata_devices[i];
 
     dev->present = 0;
+    ata_writable[i] = 0;
     dev->io_base = io_bases[i / 2];
     dev->ctrl_base = ctrl_bases[i / 2];
     dev->slave = (uint8_t)(i % 2);
@@ -198,7 +213,7 @@ static int ata_start(const ata_device_t *dev, uint32_t lba, uint32_t count,
   int result;
 
   ata_select(dev, (uint8_t)(lba >> 24));
-  result = ata_wait_not_busy(dev);
+  result = ata_wait_not_busy(dev, ATA_IO_TIMEOUT_MS);
   if (result != ATA_OK) {
     return result;
   }
@@ -224,6 +239,19 @@ static int ata_check(int index, uint32_t lba, uint32_t count,
   return ATA_OK;
 }
 
+/* After a command that timed out the drive may still expect or hold data,
+ * and the next command would move the wrong bytes. A software reset of the
+ * channel ends whatever it was doing. */
+static void ata_reset_channel(const ata_device_t *dev) {
+  outb(dev->ctrl_base, ATA_CTRL_SRST);
+  for (int i = 0; i < 50; ++i) {
+    (void)ata_alt_status(dev); /* SRST must stay set for at least 5 us */
+  }
+  outb(dev->ctrl_base, 0x00);
+  ata_delay_400ns(dev);
+  (void)ata_wait_not_busy(dev, ATA_IO_TIMEOUT_MS);
+}
+
 static int ata_fail(const ata_device_t *dev, const char *what, uint32_t lba,
                     int result) {
   serial_print("[ATA] ");
@@ -234,6 +262,8 @@ static int ata_fail(const ata_device_t *dev, const char *what, uint32_t lba,
   if (result != ATA_ERR_TIMEOUT) {
     serial_print_hex(inb(dev->io_base + ATA_REG_ERROR));
     serial_print("\n");
+  } else {
+    ata_reset_channel(dev);
   }
   return result;
 }
@@ -251,7 +281,7 @@ int ata_read(int index, uint32_t lba, uint32_t count, void *buf) {
     return ata_fail(dev, "read", lba, result);
   }
   for (uint32_t s = 0; s < count; ++s) {
-    result = ata_wait_data(dev);
+    result = ata_wait_data(dev, ATA_IO_TIMEOUT_MS);
     if (result != ATA_OK) {
       return ata_fail(dev, "read", lba + s, result);
     }
@@ -262,6 +292,12 @@ int ata_read(int index, uint32_t lba, uint32_t count, void *buf) {
   return ATA_OK;
 }
 
+void ata_allow_writes(int index) {
+  if (ata_get_device(index) != NULL) {
+    ata_writable[index] = 1;
+  }
+}
+
 int ata_write(int index, uint32_t lba, uint32_t count, const void *buf) {
   const ata_device_t *dev;
   const uint16_t *words = (const uint16_t *)buf;
@@ -270,12 +306,20 @@ int ata_write(int index, uint32_t lba, uint32_t count, const void *buf) {
   if (result != ATA_OK) {
     return result;
   }
+  if (!ata_writable[index]) {
+    serial_print("[ATA] Refused a write to read-only disk ");
+    serial_print(dev->model);
+    serial_print(" at LBA ");
+    serial_print_dec(lba);
+    serial_print("\n");
+    return ATA_ERR_READ_ONLY;
+  }
   result = ata_start(dev, lba, count, ATA_CMD_WRITE_PIO);
   if (result != ATA_OK) {
     return ata_fail(dev, "write", lba, result);
   }
   for (uint32_t s = 0; s < count; ++s) {
-    result = ata_wait_data(dev);
+    result = ata_wait_data(dev, ATA_IO_TIMEOUT_MS);
     if (result != ATA_OK) {
       return ata_fail(dev, "write", lba + s, result);
     }
@@ -285,14 +329,15 @@ int ata_write(int index, uint32_t lba, uint32_t count, const void *buf) {
   }
 
   /* the data must be on the disk before the next command */
-  result = ata_wait_not_busy(dev);
-  if (result == ATA_OK) {
-    outb(dev->io_base + ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
-    ata_delay_400ns(dev);
-    result = ata_wait_not_busy(dev);
-  }
+  result = ata_wait_not_busy(dev, ATA_IO_TIMEOUT_MS);
   if (result != ATA_OK) {
     return ata_fail(dev, "write", lba, result);
+  }
+  outb(dev->io_base + ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
+  ata_delay_400ns(dev);
+  result = ata_wait_not_busy(dev, ATA_IO_TIMEOUT_MS);
+  if (result != ATA_OK) {
+    return ata_fail(dev, "cache flush", lba, result);
   }
   return ATA_OK;
 }

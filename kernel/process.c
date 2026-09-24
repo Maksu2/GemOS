@@ -6,7 +6,9 @@
 #include "scheduler.h"
 
 #include "../drivers/serial.h"
+#include "fs/crc32.h"
 #include "fs/gemfs.h"
+#include "include/heap.h"
 #include "memory/kstack.h"
 #ifdef GEMOS_SELFTEST
 #include "selftest.h"
@@ -15,10 +17,8 @@
 
 static process_t process_table[MAX_PROCESSES];
 static uint32_t next_pid = 1;
-static uint8_t process_file_buffer[GEMFS_MAX_FILESIZE];
 
 typedef enum {
-  PROCESS_IMAGE_SOURCE_NONE = 0,
   PROCESS_IMAGE_SOURCE_GEMFS,
   PROCESS_IMAGE_SOURCE_EMBEDDED,
 } process_image_source_t;
@@ -49,12 +49,10 @@ static embedded_user_program_t embedded_user_programs[] = {
      _binary_utextedit_image_bin_end},
 };
 
-#define PROCESS_INITIAL_FRAME_WORDS 16U
+#define EMBEDDED_PROGRAM_COUNT                                                 \
+  (sizeof(embedded_user_programs) / sizeof(embedded_user_programs[0]))
 
-static int process_has_elf_magic(const uint8_t *image, size_t image_size) {
-  return image != NULL && image_size >= 4 && image[0] == 0x7FU &&
-         image[1] == 'E' && image[2] == 'L' && image[3] == 'F';
-}
+#define PROCESS_INITIAL_FRAME_WORDS 16U
 
 static process_t *process_find_by_pid(uint32_t pid) {
   for (int i = 0; i < MAX_PROCESSES; ++i) {
@@ -71,8 +69,7 @@ static const embedded_user_program_t *process_find_embedded_program(
     return NULL;
   }
 
-  for (size_t i = 0; i < sizeof(embedded_user_programs) / sizeof(embedded_user_programs[0]);
-       ++i) {
+  for (size_t i = 0; i < EMBEDDED_PROGRAM_COUNT; ++i) {
     if (strcmp(name, embedded_user_programs[i].name) == 0) {
       return &embedded_user_programs[i];
     }
@@ -81,49 +78,39 @@ static const embedded_user_program_t *process_find_embedded_program(
   return NULL;
 }
 
-static int process_copy_embedded_image(const char *name, int *image_size) {
+/* The program of that name in the kernel image, used where it is. */
+static int process_embedded_image(const char *name, const uint8_t **image,
+                                  size_t *image_size) {
   const embedded_user_program_t *embedded = process_find_embedded_program(name);
-  size_t blob_size;
 
-  if (embedded == NULL || image_size == NULL) {
+  if (embedded == NULL || embedded->end <= embedded->start) {
     return 0;
   }
-
-  blob_size = (size_t)(embedded->end - embedded->start);
-  if (blob_size == 0 || blob_size > sizeof(process_file_buffer)) {
-    return 0;
-  }
-
-  memcpy(process_file_buffer, embedded->start, blob_size);
-  *image_size = (int)blob_size;
+  *image = embedded->start;
+  *image_size = (size_t)(embedded->end - embedded->start);
   return 1;
 }
 
-static int process_load_image(const char *name, int *image_size,
-                              process_image_source_t *source) {
-  int file_size;
+/* The file read into a heap block that the caller frees, or NULL. Only
+ * GemFS and the free heap limit the size of a program. */
+static uint8_t *process_read_file(const char *name, size_t *image_size) {
+  gemfs_stat_t stat;
+  uint8_t *image;
 
-  if (name == NULL || image_size == NULL || source == NULL) {
-    return 0;
+  if (gemfs_stat(name, &stat) != GEMFS_OK || stat.type != GEMFS_TYPE_FILE ||
+      stat.size == 0) {
+    return NULL;
   }
-
-  *source = PROCESS_IMAGE_SOURCE_NONE;
-
-  file_size =
-      gemfs_read(name, (char *)process_file_buffer, sizeof(process_file_buffer));
-  if (file_size > 0 &&
-      process_has_elf_magic(process_file_buffer, (size_t)file_size)) {
-    *image_size = file_size;
-    *source = PROCESS_IMAGE_SOURCE_GEMFS;
-    return 1;
+  image = (uint8_t *)kalloc(stat.size);
+  if (image == NULL) {
+    return NULL;
   }
-
-  if (!process_copy_embedded_image(name, image_size)) {
-    return 0;
+  if (gemfs_read(stat.inode, 0, image, stat.size) != (int)stat.size) {
+    kfree(image);
+    return NULL;
   }
-
-  *source = PROCESS_IMAGE_SOURCE_EMBEDDED;
-  return 1;
+  *image_size = stat.size;
+  return image;
 }
 
 static process_t *process_allocate(void) {
@@ -195,41 +182,99 @@ void process_init(void) {
   next_pid = 1;
 }
 
+/* The file holds exactly these bytes. */
+static int process_file_matches(uint32_t inode, const uint8_t *image,
+                                uint32_t size) {
+  static uint8_t chunk[GEMFS_BLOCK_SIZE];
+
+  for (uint32_t offset = 0; offset < size; offset += GEMFS_BLOCK_SIZE) {
+    uint32_t length = size - offset;
+
+    if (length > GEMFS_BLOCK_SIZE) {
+      length = GEMFS_BLOCK_SIZE;
+    }
+    if (gemfs_read(inode, offset, chunk, length) != (int)length ||
+        memcmp(chunk, image + offset, length) != 0) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+/* Why the program has to be written to GemFS, or NULL if it is there. */
+static const char *process_seed_reason(const embedded_user_program_t *program,
+                                       uint32_t size, uint32_t version) {
+  gemfs_stat_t stat;
+
+  if (gemfs_stat(program->name, &stat) != GEMFS_OK) {
+    return "missing";
+  }
+  if (stat.type != GEMFS_TYPE_FILE || !(stat.flags & GEMFS_FLAG_SYSTEM) ||
+      stat.version != version || stat.size != size) {
+    return "changed";
+  }
+  if (!process_file_matches(stat.inode, program->start, size)) {
+    return "damaged";
+  }
+  return NULL;
+}
+
+/*
+ * The programs in the kernel image become system files on GemFS: processes
+ * cannot change them, and the version is the CRC-32 of the image. A program
+ * is written only when it is missing, has another version or does not
+ * match the image, so booting the same kernel again writes nothing.
+ */
 int process_seed_userland(void) {
-  int seeded = 0;
+  uint32_t seeded = 0;
+  uint32_t current = 0;
 
   if (!gemfs_available()) {
     serial_print("[PROC] No file system: programs run from the kernel image\n");
     return 0;
   }
 
-  for (size_t i = 0; i < sizeof(embedded_user_programs) / sizeof(embedded_user_programs[0]);
-       ++i) {
+  for (size_t i = 0; i < EMBEDDED_PROGRAM_COUNT; ++i) {
     const embedded_user_program_t *program = &embedded_user_programs[i];
-    size_t blob_size = (size_t)(program->end - program->start);
+    uint32_t size = (uint32_t)(program->end - program->start);
+    uint32_t version = crc32(program->start, size);
+    const char *reason = process_seed_reason(program, size, version);
+    int result;
 
-    if (blob_size == 0 || blob_size > GEMFS_MAX_FILESIZE) {
-      serial_print("[PROC] Invalid embedded user image: ");
+    if (reason == NULL) {
+      current++;
+      continue;
+    }
+    result = gemfs_write(program->name, program->start, size,
+                         GEMFS_FLAG_SYSTEM, version);
+    if (result < 0) {
+      serial_print("[PROC] Failed to seed ");
       serial_print(program->name);
+      serial_print(": ");
+      serial_print(gemfs_error(result));
       serial_print("\n");
       continue;
     }
-    if (gemfs_write(program->name, (const char *)program->start,
-                    (uint32_t)blob_size) < 0) {
-      serial_print("[PROC] Failed to seed user image: ");
-      serial_print(program->name);
-      serial_print("\n");
-      continue;
-    }
-
-    seeded = 1;
+    serial_print("[PROC] Seeded ");
+    serial_print(program->name);
+    serial_print(" (");
+    serial_print(reason);
+    serial_print(")\n");
+    seeded++;
   }
 
-  return seeded;
+  serial_print("[PROC] Programs on GemFS: ");
+  serial_print_dec(seeded);
+  serial_print(" seeded, ");
+  serial_print_dec(current);
+  serial_print(" up to date\n");
+  return seeded + current == EMBEDDED_PROGRAM_COUNT;
 }
 
-/* Start the program whose image is in process_file_buffer. */
-static int process_spawn_loaded(const char *name, int image_size,
+/* Start a program from its ELF image. A GemFS copy that the loader rejects
+ * is replaced by the one in the kernel image, if there is one. */
+static int process_spawn_loaded(const char *name, const uint8_t *image,
+                                size_t image_size,
                                 process_image_source_t image_source) {
   process_t *process;
   int task_id;
@@ -263,18 +308,16 @@ static int process_spawn_loaded(const char *name, int image_size,
   process->kernel_stack_base = kstack_base(process->kernel_stack_slot);
   process->kernel_stack_top = kstack_top(process->kernel_stack_slot);
 
-  if (!elf_load_into_process(process, process_file_buffer, (size_t)image_size)) {
-    if (image_source == PROCESS_IMAGE_SOURCE_GEMFS &&
-        process_copy_embedded_image(name, &image_size)) {
-      serial_print("[PROC] GemFS image rejected, retrying embedded: ");
-      serial_print(name);
-      serial_print("\n");
-      if (!elf_load_into_process(process, process_file_buffer,
-                                 (size_t)image_size)) {
-        process_destroy(process);
-        return -1;
-      }
-    } else {
+  if (!elf_load_into_process(process, image, image_size)) {
+    if (image_source != PROCESS_IMAGE_SOURCE_GEMFS ||
+        !process_embedded_image(name, &image, &image_size)) {
+      process_destroy(process);
+      return -1;
+    }
+    serial_print("[PROC] GemFS image rejected, retrying embedded: ");
+    serial_print(name);
+    serial_print("\n");
+    if (!elf_load_into_process(process, image, image_size)) {
       process_destroy(process);
       return -1;
     }
@@ -307,31 +350,39 @@ static int process_spawn_loaded(const char *name, int image_size,
 }
 
 int process_spawn_user_from_file(const char *name) {
-  int image_size;
-  process_image_source_t image_source;
+  const uint8_t *image;
+  uint8_t *file;
+  size_t image_size;
+  int pid;
 
   if (name == NULL) {
     return -1;
   }
 
-  if (!process_load_image(name, &image_size, &image_source)) {
+  file = process_read_file(name, &image_size);
+  if (file != NULL) {
+    pid = process_spawn_loaded(name, file, image_size,
+                               PROCESS_IMAGE_SOURCE_GEMFS);
+    kfree(file); /* the loader copied the segments */
+    return pid;
+  }
+  if (!process_embedded_image(name, &image, &image_size)) {
     serial_print("[PROC] Failed to read user image: ");
     serial_print(name);
     serial_print("\n");
     return -1;
   }
-
-  return process_spawn_loaded(name, image_size, image_source);
+  return process_spawn_loaded(name, image, image_size,
+                              PROCESS_IMAGE_SOURCE_EMBEDDED);
 }
 
 #ifdef GEMOS_SELFTEST
 int process_spawn_user_image(const char *name, const uint8_t *image,
                              size_t size) {
-  if (name == NULL || image == NULL || size > sizeof(process_file_buffer)) {
+  if (name == NULL || image == NULL) {
     return -1;
   }
-  memcpy(process_file_buffer, image, size);
-  return process_spawn_loaded(name, (int)size, PROCESS_IMAGE_SOURCE_EMBEDDED);
+  return process_spawn_loaded(name, image, size, PROCESS_IMAGE_SOURCE_EMBEDDED);
 }
 #endif
 

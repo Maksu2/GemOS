@@ -22,6 +22,33 @@ void pit_tick(void) {
   }
 }
 
+/* The count of channel 0, latched so that both bytes belong together.
+ * Interrupt handlers do not touch the PIT, so the sequence needs no lock. */
+static uint16_t pit_read_count(void) {
+  uint8_t low;
+  uint8_t high;
+
+  outb(PIT_CMD, 0x00); /* latch channel 0 */
+  low = inb(PIT_CH0);
+  high = inb(PIT_CH0);
+  return (uint16_t)(low | (high << 8));
+}
+
+void pit_stopwatch_start(pit_stopwatch_t *watch) {
+  watch->last = pit_read_count();
+  watch->reloads = 0;
+}
+
+uint32_t pit_stopwatch_ms(pit_stopwatch_t *watch) {
+  uint16_t now = pit_read_count();
+
+  if (now > watch->last) {
+    watch->reloads++; /* it counts down, so it went up: a reload */
+  }
+  watch->last = now;
+  return watch->reloads / 2U;
+}
+
 /* IRQ0 Handler - System Timer (used before scheduler_init overrides IDT gate) */
 void timer_callback(registers_t *regs) {
   (void)regs;

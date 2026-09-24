@@ -25,21 +25,26 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
   - Stosy jądra (`kernel/memory/kstack.c`) leżą w BSS, każdy z niezmapowaną stroną ochronną pod spodem: task 0 ma 64 KB (przełącza się na niego `entry.S`), idle i handler #DF po 8 KB, każdy proces 16 KB. #DF to bramka zadania z własnym TSS i stosem, więc przepełnienie stosu jądra kończy się paniką z rejestrami, a nie resetem.
 - **Procesy:**
   - Round-robin, kwant 10 ms, maksymalnie 16 zadań plus zadanie idle. Każde zadanie ma własny stan FPU/SSE (`kernel/fpu.c`, FXSAVE/FXRSTOR przy każdym przełączeniu); z `float` w jądrze korzysta tylko silnik fontów. Wywłaszczany jest tylko kod w Ring 3 (reguła niżej). Zadanie 0 to pętla GUI w `kernel_main`: po każdej iteracji oddaje CPU i śpi (`TASK_BLOCKED`), dopóki nie ma zdarzeń. `hlt` wykonuje tylko idle.
-  - Programy użytkownika to statyczne ELF32 `ET_EXEC` linkowane pod `0x02000000` (`userland/user_linker.ld`: segment kodu R+X i segment danych R+W od osobnej strony), ze stosem 8 KB pod `0x07FFF000`. Maksymalny rozmiar programu to ok. 8 KB (bufor loadera, slot GemFS).
+  - Programy użytkownika to statyczne ELF32 `ET_EXEC` linkowane pod `0x02000000` (`userland/user_linker.ld`: segment kodu R+X i segment danych R+W od osobnej strony), ze stosem 8 KB pod `0x07FFF000`. Rozmiar programu ogranicza tylko GemFS (plik do ok. 4 MB) i wolna sterta: loader czyta plik z GemFS do bloku sterty o jego rozmiarze, a program z obrazu jądra ładuje prosto z obrazu.
   - Strony kodu są tylko do odczytu także dla jądra (`CR0.WP=1`). Bez PAE nie ma bitu NX, więc dane pozostają wykonywalne.
   - Każdy wyjątek wywołany w Ring 3 (wektory 0–31 poza NMI, #DF i #MC) kończy tylko ten proces (`[USERFAULT]`, potem `Faulted PID=…`). Wyjątek w jądrze to panika z pełnym zrzutem rejestrów (także CR0–CR4) i zatrzymanie.
 - **Syscalle:** `int 0x80`, 13 wywołań (`include/gemos/syscall_abi.h`), każde od wejścia do `iret` z IF=0. Wskaźniki użytkownika przechodzą przez `copy_from_user`/`copy_to_user` (sprawdzanie tablic stron). `SYS_console_wait_event` blokuje proces do zdarzenia albo timeoutu: przy blokadzie EIP cofa się na `int $0x80` i syscall wykonuje się ponownie po obudzeniu.
 - **Userland:**
-  - `UTERM.ELF`, `ABOUT.ELF` i `UTEXTEDIT.ELF` (plus `USRSMOKE.ELF` do debugowania) są wbudowane w obraz jądra i przy każdym starcie zapisywane do GemFS; loader woli kopię z GemFS.
+  - `UTERM.ELF`, `ABOUT.ELF` i `UTEXTEDIT.ELF` (plus `USRSMOKE.ELF` do debugowania) są wbudowane w obraz jądra. Przy starcie jądro zapisuje do GemFS, jako pliki systemowe, tylko te, których brakuje, które mają inną wersję (CRC-32 obrazu) albo nie zgadzają się z obrazem; kolejny start z tym samym jądrem nic nie zapisuje (`[PROC] Programs on GemFS: N seeded, M up to date`). Loader woli kopię z GemFS, a gdy jej nie przyjmie, bierze wbudowaną.
+  - Procesy nie zmieniają programów: `SYS_file_write` zwraca `GEMOS_ERR_DENIED` dla nazw `*.ELF` (dowolna wielkość liter) i plików z flagą systemową. Sprawdza to `gemfs_write_user()` na sparsowanej nazwie i na inode, który zapis by zastąpił. Jądro (seeding, File Explorer) pisze bez tych ograniczeń.
   - Model „hosted app”: aplikacja wysyła siatkę komórek tekstowych (maks. 96×32), jądro rysuje okno. Działa najwyżej 8 takich okien naraz. Aplikacje śpią w `SYS_console_wait_event` (ABOUT z timeoutem do pełnej sekundy).
   - `UTEXTEDIT` nie zapisuje ani nie otwiera plików.
-  - `FAULTS.ELF` i `FPUCHECK.ELF` (`userland/selftest/`) są tylko w obrazie autotestu (`make selftest`).
+  - `FAULTS.ELF`, `FPUCHECK.ELF` i `FILETEST.ELF` (`userland/selftest/`) są tylko w obrazie autotestu (`make selftest`).
 - **GUI (w jądrze):**
   - Menedżer okien, topbar, dock, menu, font TrueType (Inter) z antyaliasingiem.
   - Skala UI (całkowita, `int ui_scale`) 2 przy 1920×1080 (współrzędne logiczne 960×540), 1 w mniejszych trybach.
   - Każda klatka przerysowuje cały ekran. Page flip przez BGA tylko po wykryciu adaptera (ID `0xB0C0`–`0xB0C5`) i przy VRAM na dwie strony; inaczej `memcpy` do framebuffera.
-- **ATA:** PIO LBA28 (`drivers/ata.c`). IDENTIFY na 4 pozycjach, każde oczekiwanie z limitem, kody błędów zamiast pętli bez końca.
-- **GemFS:** tablica 64 wpisów pod LBA 1–4 i stałe sloty po 8 KB od LBA 5. Leży na pierwszym dysku ATA **bez sygnatury rozruchowej MBR**; nie ma własnego superbloku ani sygnatury. Bez takiego dysku system startuje bez FS: tablica jest pusta, programy idą z obrazu jądra.
+- **ATA:** PIO LBA28 (`drivers/ata.c`). IDENTIFY na 4 pozycjach, każde oczekiwanie z limitem, kody błędów zamiast pętli bez końca. Limity są czasowe, mierzone stoperem na liczniku PIT (`pit_stopwatch_*`, działa też z IF=0): 5 s na IDENTIFY, 30 s na odczyt, zapis i FLUSH CACHE. Po timeoutcie sterownik resetuje kanał (SRST), żeby następne polecenie nie przesłało złych bajtów. Każdy dysk jest tylko do odczytu, dopóki GemFS go nie zamontuje (`ata_allow_writes()`); zapis na inny dysk kończy się `ATA_ERR_READ_ONLY` i linią `[ATA] Refused …` w logu.
+- **GemFS v3** (`kernel/fs/`, format w `docs/GEMFS.md`):
+  - cały dysk ATA w blokach 4 KB: superblok z magic `GEMOS-FS`, wersją, rozmiarem i CRC-32, bitmapa bloków, tablica inode'ów (128 B: 12 bloków bezpośrednich i 1 pośredni, plik do ok. 4 MB), katalogi (wpisy 64 B, nazwy do 55 bajtów, ścieżki do 127);
+  - jądro montuje pierwszy dysk z poprawnym superblokiem, bitmapą i katalogiem głównym. Bez takiego dysku startuje bez FS (programy idą z obrazu jądra) i nie zapisuje na żaden dysk ani jednego sektora;
+  - jądro nigdy nie formatuje: dysk tworzy narzędzie hosta `tools/mkgemfs` (`make` robi `build/data.img`, 10 MB);
+  - zapis pliku to copy-on-write: nowe bloki w bitmapie, dane, inode jako zatwierdzenie, na końcu zwolnienie starych bloków, więc stara treść zostaje, dopóki nowa nie jest na dysku. `gemfs_stat`/`write`/`mkdir`/`list`/`delete` przyjmują ścieżki z podkatalogami, a `gemfs_delete` usuwa katalog z całą zawartością.
 - **Aplikacje jądra (`apps/`):**
   - File Explorer i Log Viewer oraz launchery trzech programów userlandu.
   - Test App jest zarejestrowana, ale niedostępna z menu.
@@ -49,9 +54,9 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
 
 Nie obchodzić ich po cichu; plan naprawy jest w §8.2 audytu.
 
-- **Syscalle z IF=0:** długi syscall (zapis pliku to do ~24 sektorów ATA) wstrzymuje przerwania, a PIT gubi ticki.
+- **Syscalle z IF=0:** długi syscall wstrzymuje przerwania, a PIT gubi ticki. Zapis pliku to do 1 MB, a odczyt do 4 MB, czyli do kilku tysięcy sektorów ATA PIO.
 - **Render całej klatki (1080p) w task 0 nie jest przerywany:** procesy czekają na koniec iteracji.
-- **GemFS bez sygnatury** pisze po surowym dysku; chroni go tylko to, że pomija dyski z sygnaturą rozruchową (etap 4).
+- **GemFS bez księgowania:** awaria w trakcie zapisu albo usuwania nie psuje istniejących plików, ale może zostawić zajęte bloki i inode'y bez właściciela. Jądro ich nie odzyskuje; `tools/mkgemfs check` je pokazuje.
 - **RAM powyżej 32 MB nie jest używany** (okno identity map, patrz wyżej).
 
 ## Mapa repo
@@ -71,25 +76,31 @@ apps/       aplikacje jądra i launchery programów userlandu
 userland/   programy ring 3 (uterm2/, about/, textedit/, common/, crt0.S,
             usrsmoke.S, user_linker.ld) + selftest/ (programy autotestu)
 assets/     font.ttf (Inter) + OFL.txt
-tools/      smoke.sh + smoke.py (test w QEMU)
-docs/       strona GitHub Pages + audyt kodu
+tools/      smoke.sh + smoke.py (test w QEMU), mkgemfs (dyski GemFS na hoście)
+docs/       strona GitHub Pages, audyt kodu, GEMFS.md (format dysku)
 ```
 
 ## Budowanie i testy
 
 - `make all` tworzy `build/gemos.img` (dyskietka) i `build/gemos-hdd.img` (dysk twardy). Wymaga `nasm` oraz `i686-elf-gcc` albo `x86_64-elf-gcc`; bez nich Makefile używa hostowego `gcc -m32`, tak jak CI.
-- `tools/smoke.sh` buduje obraz, bootuje go w QEMU bez okna, uruchamia UTERM, ABOUT i UTEXTEDIT, sprawdza log i zrzuty ekranu. Musi skończyć się `SMOKE: PASS` przed każdym commitem. Test nie wysyła żadnego wejścia, gdy czeka na klatkę: okno ma się pojawić samo.
+- `tools/smoke.sh` buduje obraz, bootuje go w QEMU bez okna, uruchamia UTERM, ABOUT i UTEXTEDIT, sprawdza log i zrzuty ekranu, a po zamknięciu QEMU sprawdza dysk danych przez `tools/mkgemfs check`. Musi skończyć się `SMOKE: PASS` przed każdym commitem. Test nie wysyła żadnego wejścia, gdy czeka na klatkę: okno ma się pojawić samo.
 - `tools/smoke.sh --stress [N]` (domyślnie 25 cykli) otwiera, obsługuje klawiaturą i myszą i zamyka wszystkie programy; każdy proces musi skończyć z `exit=0`, a log nie może mieć przeplecionych linii. Uruchom go po każdej zmianie schedulera, syscalli, konsoli albo pętli GUI.
-- `tools/smoke.sh --matrix` uruchamia smoke na 32/64/256 MB, bez dysku danych, z 4 MB VRAM (1280×800, `memcpy`) i przy starcie z dysku twardego. Uruchom go po każdej zmianie bootloadera, pamięci, VBE albo ATA.
+- `tools/smoke.sh --matrix` uruchamia smoke na 32/64/256 MB, bez dysku danych, z 4 MB VRAM (1280×800, `memcpy`), przy starcie z dysku twardego (dysk rozruchowy musi zostać bez zmian), z dyskiem danych bez GemFS i z uszkodzonym superblokiem (SHA-256 obrazu przed i po musi być ten sam) przy drugim starcie tego samego dysku (nic nie może się zapisać) oraz z dyskiem, który zapisuje wolno (QEMU przepuszcza 12 zapisów na sekundę). Uruchom go po każdej zmianie bootloadera, pamięci, VBE, ATA albo GemFS.
 - `tools/smoke.sh --selftest` buduje obraz autotestu (`make selftest`, `build/selftest/gemos.img`, jądro z `-DGEMOS_SELFTEST`) i sprawdza jego raport. `kernel/selftest.c` działa jako zadanie jądra obok GUI i sprawdza:
   - stertę i pulę: double free, nadpisany nagłówek, zapis za koniec bloku, scalanie w obie strony, brak wycieków;
   - odrzucanie 14 zepsutych ELF-ów bez wycieku pamięci i ramek;
   - każdy wyjątek osiągalny z Ring 3 (`FAULTS.ELF`, jeden proces na wyjątek): ginie tylko ten proces;
-  - stan x87/SSE dwóch kopii `FPUCHECK.ELF` i zadania jądra przez przełączenia.
+  - stan x87/SSE dwóch kopii `FPUCHECK.ELF` i zadania jądra przez przełączenia;
+  - GemFS przez API jądra: katalogi, plik 100 KB z blokiem pośrednim, zastępowanie, zapis przerwany w połowie, błędy, 70 wpisów w jednym katalogu z usuwaniem, rekurencyjne usuwanie bez wycieku bloków i inode'ów;
+  - odmowę zapisu ATA na drugi dysk bez GemFS (harness sprawdza potem, że się nie zmienił);
+  - `FILETEST.ELF` (83 KB, uruchamiany z GemFS): plik 80 KB i plik w podkatalogu przez syscalle, odczyt `UTERM.ELF`, odmowa nadpisania programów.
 
-  Na końcu celowo przepełnia swój stos jądra: log musi skończyć się paniką #DF z nazwą strony ochronnej. Wyjątek, którego CPU nie zgłasza (QEMU TCG: #XM), daje linię `SKIP`, a nie PASS. Uruchom go po każdej zmianie sterty, loadera ELF, obsługi wyjątków, FPU albo stosów jądra.
+  Harness uruchamia autotest dwa razy na tych samych dyskach: pliki z pierwszego startu sprawdzają `tools/mkgemfs` na hoście i drugi start.
+
+  Na końcu celowo przepełnia swój stos jądra: log musi skończyć się paniką #DF z nazwą strony ochronnej. Wyjątek, którego CPU nie zgłasza (QEMU TCG: #XM), daje linię `SKIP`, a nie PASS. Uruchom go po każdej zmianie sterty, loadera ELF, obsługi wyjątków, FPU, stosów jądra, GemFS albo syscalli plikowych.
 - CI (`.github/workflows/ci.yml`) uruchamia smoke, stress, macierz i autotest przy każdym pushu i PR.
-- `make run` otwiera QEMU z dyskiem danych `build/data.img`, `make run-hdd` startuje z dysku twardego, `make debug` dodatkowo czeka na GDB na porcie `:1234` (działa też bez dysku danych).
+- `make run` otwiera QEMU z dyskiem danych `build/data.img` (robi go `tools/mkgemfs format`, jeśli go nie ma; stary `data.img` sprzed GemFS v3 jądro pomija, trzeba go usunąć), `make run-hdd` startuje z dysku twardego, `make debug` dodatkowo czeka na GDB na porcie `:1234` (działa też bez dysku danych).
+- `tools/mkgemfs` (Python, sama biblioteka standardowa) obsługuje obraz dysku GemFS na hoście: `format`, `info`, `ls`, `cat`, `put` (`--system`, `--version`), `mkdir`, `rm`, `check`.
 - Makefile przerywa build, gdy `kernel.bin` nie zaczyna się nagłówkiem `GEMK` z właściwym rozmiarem albo nie mieści się na dyskietce.
 - Zmiany, które nie powinny zmieniać zachowania, sprawdzaj porównaniem binariów (`build/kernel.bin`, `build/*.elf`) przed i po.
 
