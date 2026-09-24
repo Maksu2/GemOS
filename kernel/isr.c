@@ -1,4 +1,6 @@
 #include "isr.h"
+#include "gdt.h"
+#include "memory/kstack.h"
 #include "scheduler.h"
 #include "syscall.h"
 #include "../drivers/pic.h"
@@ -82,9 +84,9 @@ char *exception_messages[] = {"Division By Zero",
                               "Coprocessor Fault",
                               "Alignment Check",
                               "Machine Check",
-                              "Reserved",
-                              "Reserved",
-                              "Reserved",
+                              "SIMD Floating-Point Exception",
+                              "Virtualization Exception",
+                              "Control Protection Exception",
                               "Reserved",
                               "Reserved",
                               "Reserved",
@@ -107,8 +109,10 @@ void init_isr(void) {
   idt_set_gate(0, (uint32_t)(uintptr_t)isr0, 0x08, 0x8E);
   idt_set_gate(1, (uint32_t)(uintptr_t)isr1, 0x08, 0x8E);
   idt_set_gate(2, (uint32_t)(uintptr_t)isr2, 0x08, 0x8E);
-  idt_set_gate(3, (uint32_t)(uintptr_t)isr3, 0x08, 0x8E);
-  idt_set_gate(4, (uint32_t)(uintptr_t)isr4, 0x08, 0x8E);
+  /* int3 and into are user instructions (DPL 3 gates): from Ring 3 they
+   * raise #BP and #OF, which end the process like any other exception. */
+  idt_set_gate(3, (uint32_t)(uintptr_t)isr3, 0x08, 0xEE);
+  idt_set_gate(4, (uint32_t)(uintptr_t)isr4, 0x08, 0xEE);
   idt_set_gate(5, (uint32_t)(uintptr_t)isr5, 0x08, 0x8E);
   idt_set_gate(6, (uint32_t)(uintptr_t)isr6, 0x08, 0x8E);
   idt_set_gate(7, (uint32_t)(uintptr_t)isr7, 0x08, 0x8E);
@@ -162,60 +166,148 @@ void register_interrupt_handler(uint8_t n, isr_t handler) {
   interrupt_handlers[n] = handler;
 }
 
-static uint32_t isr_read_cr2(void) {
-  uint32_t cr2;
-  __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
-  return cr2;
+static uint32_t isr_read_cr0(void) {
+  uint32_t value;
+  __asm__ volatile("mov %%cr0, %0" : "=r"(value));
+  return value;
 }
 
-static int isr_can_kill_user_task(uint32_t int_no) {
-  switch (int_no) {
-  case 0:
-  case 6:
-  case 10:
-  case 11:
-  case 12:
-  case 13:
-  case 14:
-    return 1;
-  default:
-    return 0;
+static uint32_t isr_read_cr2(void) {
+  uint32_t value;
+  __asm__ volatile("mov %%cr2, %0" : "=r"(value));
+  return value;
+}
+
+static uint32_t isr_read_cr3(void) {
+  uint32_t value;
+  __asm__ volatile("mov %%cr3, %0" : "=r"(value));
+  return value;
+}
+
+static uint32_t isr_read_cr4(void) {
+  uint32_t value;
+  __asm__ volatile("mov %%cr4, %0" : "=r"(value));
+  return value;
+}
+
+/* Exceptions a Ring 3 program can cause. NMI (2), double fault (8) and
+ * machine check (18) report hardware or kernel trouble, whatever ran. */
+static int isr_is_process_fault(uint32_t int_no) {
+  return int_no < 32 && int_no != 2 && int_no != 8 && int_no != 18;
+}
+
+static void isr_print_reg(const char *name, uint32_t value) {
+  serial_print(" ");
+  serial_print(name);
+  serial_print("=");
+  serial_print_hex(value);
+}
+
+/* Kernel panic: everything the CPU saved, then halt. */
+static void isr_panic(const registers_t *regs, uint32_t cr2) {
+  int from_user = (regs->cs & 0x3U) == 0x3U;
+  /* a Ring 0 frame ends at EFLAGS: the old ESP is right after it */
+  uint32_t esp = from_user ? regs->useresp
+                           : (uint32_t)(uintptr_t)&regs->useresp;
+  int pid = scheduler_get_current_pid();
+
+  serial_print("\n[PANIC] CPU Exception ");
+  serial_print_dec(regs->int_no);
+  serial_print(": ");
+  serial_print(exception_messages[regs->int_no]);
+  serial_print(from_user ? " (in Ring 3)\n" : " (in the kernel)\n");
+  serial_print(" ");
+  isr_print_reg("EAX", regs->eax);
+  isr_print_reg("EBX", regs->ebx);
+  isr_print_reg("ECX", regs->ecx);
+  isr_print_reg("EDX", regs->edx);
+  serial_print("\n ");
+  isr_print_reg("ESI", regs->esi);
+  isr_print_reg("EDI", regs->edi);
+  isr_print_reg("EBP", regs->ebp);
+  isr_print_reg("ESP", esp);
+  serial_print("\n ");
+  isr_print_reg("EIP", regs->eip);
+  isr_print_reg("CS", regs->cs);
+  isr_print_reg("EFLAGS", regs->eflags);
+  isr_print_reg("DS", regs->ds);
+  isr_print_reg("ERR", regs->err_code);
+  if (from_user) {
+    isr_print_reg("SS", regs->ss);
+  }
+  serial_print("\n ");
+  isr_print_reg("CR0", isr_read_cr0());
+  isr_print_reg("CR2", cr2);
+  isr_print_reg("CR3", isr_read_cr3());
+  isr_print_reg("CR4", isr_read_cr4());
+  serial_print("\n  running: ");
+  if (pid < 0) {
+    serial_print("kernel task");
+  } else {
+    serial_print("PID ");
+    serial_print_dec((uint32_t)pid);
+  }
+  serial_print("\nSystem Halted.\n");
+  for (;;) {
+    __asm__ volatile("cli; hlt");
+  }
+}
+
+/*
+ * Double fault: runs as its own hardware task (IDT vector 8 is a task gate,
+ * see kernel_main) on its own stack, so it also works when a kernel stack
+ * ran into its guard page and the CPU could not push the page fault frame.
+ * The task switch saved the state of the failing code in the kernel TSS.
+ */
+void isr_double_fault_task(void) {
+  const tss32_t *tss = gdt_kernel_tss();
+  uint32_t cr2 = isr_read_cr2();
+
+  serial_print("\n[PANIC] CPU Exception 8: Double Fault");
+  if (kstack_is_guard(cr2) || kstack_is_guard(tss->esp)) {
+    serial_print(" - kernel stack overflow (guard page)");
+  }
+  serial_print("\n ");
+  isr_print_reg("EAX", tss->eax);
+  isr_print_reg("EBX", tss->ebx);
+  isr_print_reg("ECX", tss->ecx);
+  isr_print_reg("EDX", tss->edx);
+  serial_print("\n ");
+  isr_print_reg("ESI", tss->esi);
+  isr_print_reg("EDI", tss->edi);
+  isr_print_reg("EBP", tss->ebp);
+  isr_print_reg("ESP", tss->esp);
+  serial_print("\n ");
+  isr_print_reg("EIP", tss->eip);
+  isr_print_reg("CS", tss->cs);
+  isr_print_reg("EFLAGS", tss->eflags);
+  isr_print_reg("DS", tss->ds);
+  serial_print("\n ");
+  isr_print_reg("CR0", isr_read_cr0());
+  isr_print_reg("CR2", cr2);
+  isr_print_reg("CR3", isr_read_cr3());
+  isr_print_reg("CR4", isr_read_cr4());
+  serial_print("\nSystem Halted.\n");
+  for (;;) {
+    __asm__ volatile("cli; hlt");
   }
 }
 
 uint32_t isr_handler(registers_t *regs) {
-  uint32_t fault_cr2 = 0;
   int from_user = ((regs->cs & 0x3U) == 0x3U);
 
-  /* Log output */
-  if (regs->int_no >= PIC1_OFFSET && regs->int_no <= PIC2_OFFSET + 7) {
-    /* Silent normal hardware IRQs for clean serial output. */
-  } else if (regs->int_no == SYSCALL_VECTOR ||
-             regs->int_no == KERNEL_YIELD_VECTOR) {
-    /* Silent normal syscall traffic; user-visible output comes from handlers. */
-  } else {
-    serial_print("[ISR] Interrupt: ");
-    serial_print_dec(regs->int_no);
-    serial_print("\n");
-  }
+  if (regs->int_no < 32) {
+    /* read CR2 first: a later page fault would overwrite it */
+    uint32_t fault_cr2 = regs->int_no == 14 ? isr_read_cr2() : 0;
 
-  if (regs->int_no < PIC1_OFFSET) {
-    /* Special Case for Breakpoint (INT 3) - Continue */
-    if (regs->int_no == 3) {
-      serial_print("  [INFO] Breakpoint hit (continuing)\n");
-      return 0;
-    }
-
-    if (regs->int_no == 14) {
-      fault_cr2 = isr_read_cr2();
-    }
-
-    if (from_user && isr_can_kill_user_task(regs->int_no)) {
+    if (from_user && isr_is_process_fault(regs->int_no)) {
       serial_print("[USERFAULT] pid=");
       serial_print_dec((uint32_t)scheduler_get_current_pid());
       serial_print(" vec=");
       serial_print_dec(regs->int_no);
-      serial_print(" eip=0x");
+      serial_print(" (");
+      serial_print(exception_messages[regs->int_no]);
+      serial_print(") eip=0x");
       serial_print_hex(regs->eip);
       serial_print(" err=0x");
       serial_print_hex(regs->err_code);
@@ -229,28 +321,15 @@ uint32_t isr_handler(registers_t *regs) {
       return scheduler_interrupt_exit((uint32_t)(uintptr_t)regs);
     }
 
-    /* CPU Exception */
-    serial_print("\n[PANIC] CPU Exception: ");
-    serial_print(exception_messages[regs->int_no]);
-    serial_print("\n");
-    serial_print("  EIP: 0x");
-    serial_print_hex(regs->eip);
-    serial_print(" Error Code: ");
-    serial_print_dec(regs->err_code);
-    serial_print("\n  CS: 0x");
-    serial_print_hex(regs->cs);
-    serial_print(" EFLAGS: 0x");
-    serial_print_hex(regs->eflags);
-    if (regs->int_no == 14) {
-      serial_print("\n  CR2: 0x");
-      serial_print_hex(fault_cr2);
+    /* int3 in the kernel is a debugging aid: note it and go on */
+    if (regs->int_no == 3 && !from_user) {
+      serial_print("[ISR] Breakpoint in the kernel at 0x");
+      serial_print_hex(regs->eip);
+      serial_print(" (continuing)\n");
+      return 0;
     }
-    serial_print("\n");
 
-    serial_print("System Halted.\n");
-    for (;;) {
-      __asm__ volatile("hlt");
-    }
+    isr_panic(regs, fault_cr2);
   }
 
   /* Handle IRQ EOI */
@@ -261,6 +340,10 @@ uint32_t isr_handler(registers_t *regs) {
   if (interrupt_handlers[regs->int_no] != 0) {
     isr_t handler = interrupt_handlers[regs->int_no];
     handler(regs);
+  } else if (regs->int_no < PIC1_OFFSET || regs->int_no > PIC2_OFFSET + 7) {
+    serial_print("[ISR] Unhandled vector ");
+    serial_print_dec(regs->int_no);
+    serial_print("\n");
   }
 
   return scheduler_interrupt_exit((uint32_t)(uintptr_t)regs);

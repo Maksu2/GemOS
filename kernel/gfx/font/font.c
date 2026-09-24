@@ -3,7 +3,7 @@
 #include "../../font/font_cache.h"
 #include "../../font/scanline.h"
 #include "../../font/truetype.h"
-#include "../../include/heap.h"
+#include "../../font/font_mem.h"
 #include "../../ui/ui_scale.h"
 #include "../primitives.h"
 #include <stddef.h>
@@ -23,7 +23,7 @@ void font_load_ttf(uint8_t *data, size_t size) {
 
     // Initialize rasterizer buffer (256x256 max glyph size for now)
     if (!g_raster_buf) {
-      g_raster_buf = kalloc(256 * 256);
+      g_raster_buf = font_alloc(256 * 256);
       if (g_raster_buf) {
         rasterizer_init(&g_raster, 256, 256, g_raster_buf);
         font_cache_init();
@@ -143,7 +143,7 @@ void font_draw_text(gfx_context_t *ctx, int x, int y, const char *text,
           int off_y = min_y - (int)buf_off_y;
 
           /* Extract Bitmap */
-          uint8_t *bmp = kalloc(w * h);
+          uint8_t *bmp = font_alloc(w * h);
           if (bmp) {
             for (int r = 0; r < h; r++) {
               // memcpy row
@@ -164,7 +164,7 @@ void font_draw_text(gfx_context_t *ctx, int x, int y, const char *text,
                 }
               }
             }
-            kfree(bmp); // font_cache_put() keeps its own copy
+            font_free(bmp); // font_cache_put() keeps its own copy
           }
         } else {
           // Empty glyph (space?)
@@ -181,7 +181,7 @@ void font_draw_text(gfx_context_t *ctx, int x, int y, const char *text,
       pen_x += advance;
       tt_free_glyph(&glyph);
     } else {
-      pen_x += (size_px * ui_scale) / 2;
+      pen_x += (float)(size_px * ui_scale) / 2.0f;
     }
   }
 }

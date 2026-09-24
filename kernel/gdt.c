@@ -3,11 +3,17 @@
 #include "../drivers/serial.h"
 #include <string.h>
 
-#define GDT_ENTRY_COUNT 6
+#ifdef GEMOS_SELFTEST
+#include <gemos/selftest_abi.h>
+#define GDT_ENTRY_COUNT 8
+#else
+#define GDT_ENTRY_COUNT 7
+#endif
 
 static gdt_entry_t gdt_entries[GDT_ENTRY_COUNT];
 static gdt_ptr_t gdt_ptr;
 static tss32_t kernel_tss;
+static tss32_t double_fault_tss;
 
 extern void gdt_flush(const gdt_ptr_t *ptr);
 extern void tss_flush(uint16_t selector);
@@ -30,6 +36,28 @@ static void gdt_write_tss(int index, uint32_t base, uint32_t limit) {
 
 void gdt_set_kernel_stack(uint32_t stack_top) { kernel_tss.esp0 = stack_top; }
 
+void gdt_init_double_fault(uint32_t cr3, uint32_t stack_top,
+                           void (*entry)(void)) {
+  memset(&double_fault_tss, 0, sizeof(double_fault_tss));
+  double_fault_tss.cr3 = cr3;
+  double_fault_tss.eip = (uint32_t)(uintptr_t)entry;
+  double_fault_tss.eflags = 0x00000002U; /* interrupts off */
+  double_fault_tss.esp = stack_top;
+  double_fault_tss.esp0 = stack_top;
+  double_fault_tss.ss = GDT_KERNEL_DS;
+  double_fault_tss.ss0 = GDT_KERNEL_DS;
+  double_fault_tss.cs = GDT_KERNEL_CS;
+  double_fault_tss.ds = GDT_KERNEL_DS;
+  double_fault_tss.es = GDT_KERNEL_DS;
+  double_fault_tss.fs = GDT_KERNEL_DS;
+  double_fault_tss.gs = GDT_KERNEL_DS;
+  double_fault_tss.iomap_base = sizeof(double_fault_tss);
+  gdt_write_tss(6, (uint32_t)(uintptr_t)&double_fault_tss,
+                (uint32_t)(sizeof(double_fault_tss) - 1U));
+}
+
+const tss32_t *gdt_kernel_tss(void) { return &kernel_tss; }
+
 void gdt_init(void) {
   uint32_t current_esp;
 
@@ -44,6 +72,11 @@ void gdt_init(void) {
   gdt_set_entry(2, 0, 0xFFFFFU, 0x92U, 0xCFU);
   gdt_set_entry(3, 0, 0xFFFFFU, 0xFAU, 0xCFU);
   gdt_set_entry(4, 0, 0xFFFFFU, 0xF2U, 0xCFU);
+#ifdef GEMOS_SELFTEST
+  /* Ring 3 data segment marked not present: FAULTS.ELF loads it into DS
+   * (#NP) and SS (#SS) */
+  gdt_set_entry(GEMOS_SELFTEST_NP_SELECTOR >> 3, 0, 0xFFFFFU, 0x72U, 0xCFU);
+#endif
 
   __asm__ volatile("mov %%esp, %0" : "=r"(current_esp));
   kernel_tss.ss0 = GDT_KERNEL_DS;

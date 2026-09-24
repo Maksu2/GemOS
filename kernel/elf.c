@@ -54,6 +54,14 @@ typedef struct {
   uintptr_t end;
 } elf_load_region_t;
 
+/* [offset, offset + length) lies inside the image. Written without adding
+ * offset and length: the file is untrusted (GemFS copies can be rewritten
+ * by any process) and a 32-bit sum wraps around. */
+static int elf_range_in_image(uint32_t offset, uint32_t length,
+                              size_t image_size) {
+  return offset <= image_size && length <= image_size - offset;
+}
+
 static int elf_validate_header(const elf32_ehdr_t *header, size_t image_size) {
   if (header == NULL || image_size < sizeof(*header)) {
     return 0;
@@ -74,8 +82,9 @@ static int elf_validate_header(const elf32_ehdr_t *header, size_t image_size) {
       header->e_phnum > ELF_MAX_LOAD_SEGMENTS) {
     return 0;
   }
-  if ((size_t)header->e_phoff + ((size_t)header->e_phnum * sizeof(elf32_phdr_t)) >
-      image_size) {
+  if (!elf_range_in_image(header->e_phoff,
+                          (uint32_t)header->e_phnum * sizeof(elf32_phdr_t),
+                          image_size)) {
     return 0;
   }
 
@@ -96,22 +105,18 @@ static int elf_validate_segment(const elf32_phdr_t *segment, size_t image_size,
   if (segment->p_memsz < segment->p_filesz) {
     return 0;
   }
-  if ((size_t)segment->p_offset + segment->p_filesz > image_size) {
+  if (!elf_range_in_image(segment->p_offset, segment->p_filesz, image_size)) {
     return 0;
   }
-  if (segment->p_vaddr < PAGING_USER_BASE) {
-    return 0;
-  }
-  if ((uintptr_t)segment->p_vaddr + (uintptr_t)segment->p_memsz <
-      (uintptr_t)segment->p_vaddr) {
+  /* inside user space below the stack, compared without an end that could
+   * wrap around */
+  if (segment->p_vaddr < PAGING_USER_BASE || segment->p_vaddr >= stack_bottom ||
+      segment->p_memsz > stack_bottom - segment->p_vaddr) {
     return 0;
   }
 
   segment_start = segment->p_vaddr;
   segment_end = segment->p_vaddr + segment->p_memsz;
-  if (segment_end > stack_bottom || segment_end > PAGING_USER_LIMIT) {
-    return 0;
-  }
 
   if (*lowest_base == 0 || segment_start < *lowest_base) {
     *lowest_base = segment_start;
@@ -123,8 +128,14 @@ static int elf_validate_segment(const elf32_phdr_t *segment, size_t image_size,
   return 1;
 }
 
+/* Segments get their own page protection, so they must not share pages. */
 static int elf_regions_overlap(elf_load_region_t a, elf_load_region_t b) {
-  return a.start < b.end && b.start < a.end;
+  uintptr_t a_start = a.start & ~(PAGE_SIZE - 1U);
+  uintptr_t b_start = b.start & ~(PAGE_SIZE - 1U);
+  uintptr_t a_end = (a.end + PAGE_SIZE - 1U) & ~(PAGE_SIZE - 1U);
+  uintptr_t b_end = (b.end + PAGE_SIZE - 1U) & ~(PAGE_SIZE - 1U);
+
+  return a_start < b_end && b_start < a_end;
 }
 
 static int elf_entry_in_regions(uintptr_t entry, const elf_load_region_t *regions,
@@ -138,15 +149,13 @@ static int elf_entry_in_regions(uintptr_t entry, const elf_load_region_t *region
   return 0;
 }
 
+/* Map the segment writable for loading; elf_protect_segment() sets the
+ * final protection once the contents are in place. */
 static int elf_map_segment_pages(process_t *process, const elf32_phdr_t *segment) {
   uintptr_t segment_base = segment->p_vaddr & ~(PAGE_SIZE - 1U);
   uintptr_t segment_end =
       (segment->p_vaddr + segment->p_memsz + PAGE_SIZE - 1U) & ~(PAGE_SIZE - 1U);
-  uint32_t flags = PAGE_PRESENT | PAGE_USER;
-
-  if (segment->p_flags & ELF_PHDR_FLAG_WRITE) {
-    flags |= PAGE_WRITABLE;
-  }
+  uint32_t flags = PAGE_PRESENT | PAGE_USER | PAGE_WRITABLE;
 
   for (uintptr_t address = segment_base; address < segment_end;
        address += PAGE_SIZE) {
@@ -167,6 +176,24 @@ static int elf_map_segment_pages(process_t *process, const elf32_phdr_t *segment
   }
 
   return 1;
+}
+
+/* Segments without PF_W (code, read-only data) become read-only; with
+ * CR0.WP the kernel cannot write to them either. */
+static void elf_protect_segment(process_t *process,
+                                const elf32_phdr_t *segment) {
+  uintptr_t segment_base = segment->p_vaddr & ~(PAGE_SIZE - 1U);
+  uintptr_t segment_end =
+      (segment->p_vaddr + segment->p_memsz + PAGE_SIZE - 1U) & ~(PAGE_SIZE - 1U);
+
+  if (segment->p_flags & ELF_PHDR_FLAG_WRITE) {
+    return;
+  }
+  for (uintptr_t address = segment_base; address < segment_end;
+       address += PAGE_SIZE) {
+    paging_update_page_flags(process->as.page_directory, address,
+                             PAGE_PRESENT | PAGE_USER);
+  }
 }
 
 int elf_load_into_process(process_t *process, const uint8_t *image,
@@ -259,6 +286,12 @@ int elf_load_into_process(process_t *process, const uint8_t *image,
   }
   paging_switch_directory(paging_get_directory());
   irq_restore(interrupt_state);
+
+  for (uint16_t i = 0; i < header->e_phnum; ++i) {
+    if (segments[i].p_type == ELF_PHDR_TYPE_LOAD) {
+      elf_protect_segment(process, &segments[i]);
+    }
+  }
 
   process->entry_eip = header->e_entry;
   process->image_base = lowest_base;

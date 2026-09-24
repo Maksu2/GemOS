@@ -12,6 +12,8 @@
 #   make run    - boot the floppy image in QEMU with the GemFS data disk
 #   make run-hdd - boot the hard disk image instead (data disk second)
 #   make debug  - same as run, paused, with a GDB stub on :1234
+#   make selftest - build build/selftest/gemos.img, the kernel self-test
+#                 (kernel/selftest.c; run it with tools/smoke.sh --selftest)
 #   make clean  - remove build/
 #   make info   - show the toolchain and the object list
 #
@@ -81,9 +83,11 @@ KERNEL_ASM_SOURCES := kernel/entry.S kernel/interrupts.S \
                       kernel/context_switch.S kernel/gdt_flush.S
 
 KERNEL_C_SOURCES := kernel/kernel.c kernel/console.c kernel/gdt.c kernel/idt.c \
+                    kernel/fpu.c \
                     kernel/isr.c kernel/scheduler.c kernel/process.c kernel/elf.c \
                     kernel/syscall.c kernel/heap.c \
                     kernel/event.c kernel/memory/paging.c kernel/memory/pmm.c \
+                    kernel/memory/kstack.c kernel/memory/pool.c \
                     kernel/gfx/rect.c kernel/gfx/context.c kernel/gfx/primitives.c \
                     kernel/gfx/icons.c \
                     kernel/gfx/font/font.c \
@@ -99,12 +103,26 @@ KERNEL_C_SOURCES := kernel/kernel.c kernel/console.c kernel/gdt.c kernel/idt.c \
                     apps/explorer/explorer.c \
                     kernel/fs/gemfs.c \
                     kernel/font/aa.c kernel/font/truetype.c kernel/font/scanline.c \
-                    kernel/font/font_cache.c
+                    kernel/font/font_cache.c kernel/font/font_mem.c
+
+# Self-test image (make selftest): the kernel runs kernel/selftest.c, which
+# starts the programs in userland/selftest/. Built into build/selftest/.
+SELFTEST ?= 0
+ifeq ($(SELFTEST),1)
+    CFLAGS += -DGEMOS_SELFTEST
+    KERNEL_C_SOURCES += kernel/selftest.c
+endif
 
 DRIVER_SOURCES := drivers/serial.c drivers/vbe.c drivers/pic.c drivers/pit.c \
                   drivers/keyboard.c drivers/mouse.c drivers/ata.c drivers/rtc.c
 
 LIB_SOURCES := lib/string.c
+
+# Code that runs in interrupt handlers must not touch the FPU: the FPU
+# state of the interrupted task is not saved on interrupt entry.
+IRQ_PATH_SOURCES := kernel/isr.c kernel/scheduler.c kernel/event.c \
+                    drivers/pit.c drivers/pic.c drivers/keyboard.c \
+                    drivers/mouse.c drivers/serial.c
 
 # Userland programs embedded into the kernel image
 USER_CRT0_SOURCE := $(USERLAND_DIR)/crt0.S
@@ -135,26 +153,36 @@ USRSMOKE_OBJ := $(call obj,$(USRSMOKE_SOURCE))
 UTERM_OBJS := $(call obj,$(UTERM_SOURCES))
 ABOUT_OBJS := $(call obj,$(ABOUT_SOURCES))
 UTEXTEDIT_OBJS := $(call obj,$(UTEXTEDIT_SOURCES))
+SELFTEST_USER_OBJS := $(call obj,$(USERLAND_DIR)/selftest/faults.S \
+                                 $(USERLAND_DIR)/selftest/fpucheck.S)
 USER_OBJS := $(USER_CRT0_OBJ) $(USRSMOKE_OBJ) $(UTERM_OBJS) $(ABOUT_OBJS) \
              $(UTEXTEDIT_OBJS)
+ifeq ($(SELFTEST),1)
+    USER_OBJS += $(SELFTEST_USER_OBJS)
+endif
 
 # Binary blobs linked into the kernel. objcopy derives the symbol names from
-# the input path (e.g. _binary_build_uterm_image_bin_start), and
-# kernel/kernel.c and kernel/process.c refer to those names.
+# the file name (e.g. _binary_uterm_image_bin_start), and kernel/kernel.c,
+# kernel/process.c and kernel/selftest.c refer to those names.
 FONT_BLOB := $(OBJ_DIR)/blobs/font.ttf.o
 USER_BLOBS := $(OBJ_DIR)/blobs/usrsmoke.elf.o \
               $(OBJ_DIR)/blobs/uterm_image.bin.o \
               $(OBJ_DIR)/blobs/about_image.bin.o \
               $(OBJ_DIR)/blobs/utextedit_image.bin.o
+ifeq ($(SELFTEST),1)
+    USER_BLOBS += $(OBJ_DIR)/blobs/faults.elf.o $(OBJ_DIR)/blobs/fpucheck.elf.o
+endif
 BLOB_OBJS := $(FONT_BLOB) $(USER_BLOBS)
 
 DEPS := $(KERNEL_OBJS:.o=.d) $(USER_OBJS:.o=.d)
+
+$(call obj,$(IRQ_PATH_SOURCES)): CFLAGS += -mgeneral-regs-only
 
 # =============================================================================
 # Targets
 # =============================================================================
 
-.PHONY: all clean run run-hdd debug info
+.PHONY: all clean run run-hdd debug info selftest
 
 # Keep intermediate files (e.g. build/uterm_image.bin) instead of deleting them
 .SECONDARY:
@@ -190,9 +218,12 @@ $(OBJ_DIR)/%.o: %.S Makefile
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-# Userland programs
+# Userland programs. -n: no page padding in the file. The data segment
+# starts on its own page in memory, but in the file it follows the code
+# directly (the loader copies each segment to its address), so programs
+# stay within the 8 KB limit.
 define link-user
-	$(LD) -m elf_i386 -T $(USER_LDSCRIPT) -nostdlib $(filter %.o,$^) -o $@
+	$(LD) -m elf_i386 -n -T $(USER_LDSCRIPT) -nostdlib $(filter %.o,$^) -o $@
 	$(OBJCOPY) --strip-all $@
 endef
 
@@ -211,15 +242,21 @@ $(BUILD_DIR)/utextedit.elf: $(USER_CRT0_OBJ) $(UTEXTEDIT_OBJS) $(USER_LDSCRIPT)
 $(BUILD_DIR)/%_image.bin: $(BUILD_DIR)/%.elf
 	cp $< $@
 
+$(BUILD_DIR)/faults.elf: $(OBJ_DIR)/$(USERLAND_DIR)/selftest/faults.o $(USER_LDSCRIPT)
+	$(link-user)
+
+$(BUILD_DIR)/fpucheck.elf: $(OBJ_DIR)/$(USERLAND_DIR)/selftest/fpucheck.o $(USER_LDSCRIPT)
+	$(link-user)
+
 # Blobs. The font is converted from inside assets/ so its symbols stay
 # _binary_font_ttf_start/_end.
 $(FONT_BLOB): assets/font.ttf
 	@mkdir -p $(@D)
 	cd $(<D) && $(OBJCOPY) -I binary -O elf32-i386 -B i386 $(<F) $(abspath $@)
 
-$(OBJ_DIR)/blobs/%.o: $(BUILD_DIR)/%
+$(OBJ_DIR)/blobs/%.o: $(BUILD_DIR)/% Makefile
 	@mkdir -p $(@D)
-	$(OBJCOPY) -I binary -O elf32-i386 -B i386 $< $@
+	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf32-i386 -B i386 $* $(abspath $@)
 
 # Kernel
 $(KERNEL_ELF): $(KERNEL_OBJS) $(BLOB_OBJS) linker.ld
@@ -306,6 +343,11 @@ run-hdd: $(HDD_IMAGE) $(DATA_IMAGE)
 # starts too, just without a file system.
 debug: $(OS_IMAGE) $(DATA_IMAGE)
 	$(QEMU) -fda $(OS_IMAGE) -hda $(DATA_IMAGE) -serial stdio -m 128M -S -s
+
+# Self-test image: the same build with SELFTEST=1 in build/selftest/
+selftest:
+	$(MAKE) --no-print-directory SELFTEST=1 BUILD_DIR=$(BUILD_DIR)/selftest \
+	  $(BUILD_DIR)/selftest/gemos.img
 
 # Clean build artifacts
 clean:

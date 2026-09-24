@@ -5,7 +5,9 @@
 #include "../drivers/serial.h"
 #include "../drivers/vbe.h"
 #include "console.h"
+#include "fpu.h"
 #include "gdt.h"
+#include "idt.h"
 #include "isr.h"
 #include "process.h"
 #include "scheduler.h"
@@ -18,6 +20,7 @@
 
 #include "../kernel/app/app_manager.h"
 #include "../kernel/fs/gemfs.h"
+#include "../kernel/font/font_mem.h"
 #include "../kernel/gfx/context.h"
 #include "../kernel/gfx/font/font.h" // Font Logic
 #include "../kernel/gfx/primitives.h"
@@ -29,8 +32,12 @@
 #include "../kernel/include/event.h"
 #include "../kernel/include/heap.h"
 #include "../kernel/include/irq.h"
+#include "../kernel/memory/kstack.h"
 #include "../kernel/memory/paging.h"
 #include "../kernel/memory/pmm.h"
+#ifdef GEMOS_SELFTEST
+#include "../kernel/selftest.h"
+#endif
 #include "../kernel/ui/cursor.h"
 #include "../kernel/ui/dock/dock.h"
 #include "../kernel/ui/menu.h"
@@ -116,6 +123,10 @@ void kernel_main(const boot_info_t *loader_info) {
 
   /* Initialize Interrupt Service Routines */
   init_isr();
+
+  /* FPU before any floating point code and before the scheduler, which
+   * gives every task its own FPU state */
+  fpu_init();
   serial_print("[BOOT] ISR initialized\n");
 
   /* Initialize PIC */
@@ -171,11 +182,19 @@ void kernel_main(const boot_info_t *loader_info) {
   /* The loader falls back to smaller modes (boot/stage2/loader.asm): the UI
    * is drawn 2x on Full HD and 1x below, so it keeps at least 800x540
    * logical pixels. */
-  ui_scale = (vbe_info->width >= 1920 && vbe_info->height >= 1080) ? 2.0f : 1.0f;
+  ui_scale = (vbe_info->width >= 1920 && vbe_info->height >= 1080) ? 2 : 1;
 
   /* Enable kernel-owned paging and a dedicated 4 KB frame pool. */
   paging_init(memory.frames_start, memory.frames_end);
   paging_self_test();
+
+  /* Guard pages below the kernel stacks; a double fault (e.g. a stack
+   * running into its guard) switches to its own task and stack. */
+  kstack_init();
+  gdt_init_double_fault((uint32_t)(uintptr_t)paging_get_directory(),
+                        (uint32_t)kstack_double_fault_top(),
+                        isr_double_fault_task);
+  idt_set_gate(8, 0, GDT_DOUBLE_FAULT_TSS_SEL, 0x85); /* task gate */
   process_init();
 
   /* Initialize Graphics Context */
@@ -228,20 +247,13 @@ void kernel_main(const boot_info_t *loader_info) {
   serial_print("[BOOT] Enabling Interrupts (STI)...\n");
   __asm__ volatile("sti");
 
-  /* Enable FPU */
-  uint32_t cr0;
-  __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-  cr0 &= ~(1 << 2); // Clear EM
-  cr0 |= (1 << 1);  // Set MP
-  __asm__ volatile("mov %0, %%cr0" ::"r"(cr0));
-  __asm__ volatile("fninit");
-
   /* Load Font */
   extern uint8_t _binary_font_ttf_start[];
   extern uint8_t _binary_font_ttf_end[];
   size_t font_size = (size_t)(_binary_font_ttf_end - _binary_font_ttf_start);
 
   serial_print("[BOOT] Loading Font System...\n");
+  font_mem_init();
   font_load_ttf(_binary_font_ttf_start, font_size);
 
   serial_print("\n[BOOT] Kernel initialization complete\n");
@@ -283,6 +295,10 @@ void kernel_main(const boot_info_t *loader_info) {
   }
 #else
   process_seed_userland();
+#endif
+
+#ifdef GEMOS_SELFTEST
+  selftest_start();
 #endif
 
   /* Main kernel loop */

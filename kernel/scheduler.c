@@ -17,11 +17,13 @@
  */
 #include "scheduler.h"
 
+#include "fpu.h"
 #include "gdt.h"
 #include "idt.h"
 #include "include/irq.h"
 #include "isr.h"
 #include "process.h"
+#include "memory/kstack.h"
 #include "memory/paging.h"
 #include "../drivers/pit.h"
 #include "../drivers/pic.h"
@@ -31,16 +33,15 @@
 
 /* The idle task sits after the round-robin slots and is never scanned. */
 #define IDLE_TASK        MAX_TASKS
-#define IDLE_STACK_SIZE  4096
 
 extern void isr129(void);
 
 static task_t tasks[MAX_TASKS + 1];
+static fpu_state_t fpu_states[MAX_TASKS + 1];
 static int    current_task = 0;
 static int    task_count   = 0;
 static int    yield_requested = 0;
 static int    need_resched = 0;   /* a task was woken since the last switch */
-static uint8_t idle_stack[IDLE_STACK_SIZE] __attribute__((aligned(16)));
 
 static uint32_t scheduler_read_esp(void) {
     uint32_t esp;
@@ -99,6 +100,10 @@ static uint32_t scheduler_resume_task(int next, uint32_t fallback_esp) {
         return fallback_esp;
     }
 
+    /* the FPU holds the state of the task being left */
+    fpu_save(&fpu_states[current_task]);
+    fpu_restore(&fpu_states[next]);
+
     current_task = next;
     tasks[current_task].state = TASK_RUNNING;
     tasks[current_task].ticks_remaining = TASK_QUANTUM;
@@ -114,9 +119,9 @@ static uint32_t scheduler_resume_task(int next, uint32_t fallback_esp) {
 /* Frame for a kernel task that has never run, laid out like the frame the
  * interrupt stubs save (registers_t): the first switch to it "returns" into
  * entry() in Ring 0 with interrupts enabled. */
-static uint32_t scheduler_build_kernel_frame(uint8_t *stack, size_t size,
+static uint32_t scheduler_build_kernel_frame(uintptr_t stack_top,
                                              void (*entry)(void)) {
-    uint32_t *sp = (uint32_t *)(uintptr_t)(stack + size);
+    uint32_t *sp = (uint32_t *)stack_top;
 
     *--sp = 0;                          /* return address of entry() */
     *--sp = 0x00000202U;                /* EFLAGS: IF */
@@ -168,11 +173,11 @@ void scheduler_init(void) {
     tasks[IDLE_TASK].id = IDLE_TASK;
     tasks[IDLE_TASK].kind = TASK_KIND_KERNEL;
     tasks[IDLE_TASK].state = TASK_READY;
-    tasks[IDLE_TASK].stack = idle_stack;
-    tasks[IDLE_TASK].kernel_stack_top =
-        (uint32_t)(uintptr_t)(idle_stack + sizeof(idle_stack));
+    tasks[IDLE_TASK].stack = NULL;
+    tasks[IDLE_TASK].kernel_stack_top = (uint32_t)kstack_idle_top();
     tasks[IDLE_TASK].esp = scheduler_build_kernel_frame(
-        idle_stack, sizeof(idle_stack), scheduler_idle_main);
+        kstack_idle_top(), scheduler_idle_main);
+    fpu_init_state(&fpu_states[IDLE_TASK]);
 
     gdt_set_kernel_stack(tasks[0].kernel_stack_top);
 
@@ -218,11 +223,43 @@ int task_create_user(struct process *process, uint32_t initial_esp) {
     tasks[slot].esp = initial_esp;
     tasks[slot].ticks_remaining = TASK_QUANTUM;
     tasks[slot].process = process;
+    fpu_init_state(&fpu_states[slot]);
     task_count++;
     irq_restore(flags);
 
     return slot;
 }
+
+#ifdef GEMOS_SELFTEST
+int task_create_kernel(void (*entry)(void), uintptr_t stack_top) {
+    int slot;
+    uint32_t flags;
+
+    if (entry == NULL || stack_top == 0) {
+        return -1;
+    }
+
+    flags = irq_save();
+    slot = task_count < MAX_TASKS ? scheduler_find_free_slot() : -1;
+    if (slot < 0) {
+        irq_restore(flags);
+        return -1;
+    }
+
+    memset(&tasks[slot], 0, sizeof(tasks[slot]));
+    tasks[slot].id = (uint32_t)slot;
+    tasks[slot].kind = TASK_KIND_KERNEL;
+    tasks[slot].state = TASK_READY;
+    tasks[slot].kernel_stack_top = (uint32_t)stack_top;
+    tasks[slot].esp = scheduler_build_kernel_frame(stack_top, entry);
+    tasks[slot].ticks_remaining = TASK_QUANTUM;
+    fpu_init_state(&fpu_states[slot]);
+    task_count++;
+    irq_restore(flags);
+
+    return slot;
+}
+#endif
 
 /* Pick the next task after the current one has been saved: round-robin over
  * the runnable tasks, the idle task if there are none. */

@@ -150,6 +150,17 @@ static void paging_build_static_kernel_tables(void) {
   }
 }
 
+void paging_unmap_kernel_page(uintptr_t address) {
+  page_table_t *table =
+      paging_get_table(&kernel_page_directory, PAGE_DIRECTORY_INDEX(address));
+
+  if (table == NULL) {
+    return;
+  }
+  table->entries[PAGE_TABLE_INDEX(address)] &= ~PAGE_PRESENT;
+  paging_flush_tlb(PAGE_ALIGN_DOWN(address));
+}
+
 uintptr_t page_frame_alloc(void) {
   uintptr_t page_count = paging_frame_pool_page_count();
 
@@ -165,6 +176,19 @@ uintptr_t page_frame_alloc(void) {
   serial_print("[PAGING] Frame allocation failed\n");
   return 0;
 }
+
+#ifdef GEMOS_SELFTEST
+uint32_t page_frames_free(void) {
+  uint32_t count = 0;
+
+  for (uintptr_t i = 0; i < paging_frame_pool_page_count(); ++i) {
+    if (frame_pool_used[i] == 0) {
+      count++;
+    }
+  }
+  return count;
+}
+#endif
 
 void page_frame_free(uintptr_t frame) {
   uintptr_t index;
@@ -186,7 +210,8 @@ void paging_enable(void) {
 
   __asm__ volatile("mov %0, %%cr3" : : "r"(directory_address) : "memory");
   __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-  cr0 |= 0x80000000U;
+  /* PG, and WP: read-only pages are read-only for the kernel too */
+  cr0 |= 0x80000000U | 0x00010000U;
   __asm__ volatile("mov %0, %%cr0" : : "r"(cr0) : "memory");
   __asm__ volatile("jmp 1f\n1:" : : : "memory");
 }
