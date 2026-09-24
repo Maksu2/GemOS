@@ -1,6 +1,5 @@
 #include "keyboard.h"
 #include "../include/io.h"
-#include "../include/gemos/console_abi.h"
 #include "../kernel/include/event.h"
 #include "../kernel/isr.h"
 #include "pic.h"
@@ -27,31 +26,31 @@ static int caps_lock = 0;
 
 /* Lowercase scancode map (Scancode Set 1) */
 static char scancode_lower[128] = {
-    0,         KEY_ESC, '1',  '2', '3',       '4', '5',           '6',
-    '7',       '8',     '9',  '0', '-',       '=', KEY_BACKSPACE, '\t',
-    'q',       'w',     'e',  'r', 't',       'y', 'u',           'i',
-    'o',       'p',     '[',  ']', KEY_ENTER, 0, /* Ctrl */
-    'a',       's',     'd',  'f', 'g',       'h', 'j',           'k',
-    'l',       ';',     '\'', '`', 0, /* Left Shift */
-    '\\',      'z',     'x',  'c', 'v',       'b', 'n',           'm',
-    ',',       '.',     '/',  0, /* Right Shift */
-    '*',       0,                /* Alt */
-    KEY_SPACE, 0,                /* Caps Lock */
-                                 /* F1-F10, etc. ignored */
+    0,   GEMOS_KEY_ESC, '1', '2', '3', '4', '5', '6',
+    '7', '8', '9', '0', '-', '=', GEMOS_KEY_BACKSPACE, '\t',
+    'q', 'w', 'e', 'r', 't', 'y', 'u', 'i',
+    'o', 'p', '[', ']', GEMOS_KEY_ENTER, 0, /* Ctrl */
+    'a', 's', 'd', 'f', 'g', 'h', 'j', 'k',
+    'l', ';', '\'', '`', 0, /* Left Shift */
+    '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm',
+    ',', '.', '/', 0, /* Right Shift */
+    '*', 0, /* Alt */
+    GEMOS_KEY_SPACE, 0, /* Caps Lock */
+    /* F1-F10, etc. ignored */
 };
 
 /* Uppercase/shifted scancode map */
 static char scancode_upper[128] = {
-    0,         KEY_ESC, '!', '@', '#',       '$', '%',           '^',
-    '&',       '*',     '(', ')', '_',       '+', KEY_BACKSPACE, '\t',
-    'Q',       'W',     'E', 'R', 'T',       'Y', 'U',           'I',
-    'O',       'P',     '{', '}', KEY_ENTER, 0, /* Ctrl */
-    'A',       'S',     'D', 'F', 'G',       'H', 'J',           'K',
-    'L',       ':',     '"', '~', 0, /* Left Shift */
-    '|',       'Z',     'X', 'C', 'V',       'B', 'N',           'M',
-    '<',       '>',     '?', 0, /* Right Shift */
-    '*',       0,               /* Alt */
-    KEY_SPACE, 0,               /* Caps Lock */
+    0,   GEMOS_KEY_ESC, '!', '@', '#', '$', '%', '^',
+    '&', '*', '(', ')', '_', '+', GEMOS_KEY_BACKSPACE, '\t',
+    'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I',
+    'O', 'P', '{', '}', GEMOS_KEY_ENTER, 0, /* Ctrl */
+    'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K',
+    'L', ':', '"', '~', 0, /* Left Shift */
+    '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M',
+    '<', '>', '?', 0, /* Right Shift */
+    '*', 0, /* Alt */
+    GEMOS_KEY_SPACE, 0, /* Caps Lock */
 };
 
 static uint32_t keyboard_modifiers(void) {
@@ -133,13 +132,13 @@ void keyboard_callback(registers_t *regs) {
       e0_prefix = 0;
       char key = 0;
       if (scancode == 0x48)
-        key = KEY_UP;
+        key = GEMOS_KEY_UP;
       else if (scancode == 0x50)
-        key = KEY_DOWN;
+        key = GEMOS_KEY_DOWN;
       else if (scancode == 0x4B)
-        key = KEY_LEFT;
+        key = GEMOS_KEY_LEFT;
       else if (scancode == 0x4D)
-        key = KEY_RIGHT;
+        key = GEMOS_KEY_RIGHT;
       else if (scancode == 0x47)
         key = GEMOS_KEY_HOME;
       else if (scancode == 0x4F)

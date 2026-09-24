@@ -2,6 +2,7 @@
 #include "../../drivers/serial.h"
 #include "../gfx/font/font.h"
 #include "../gfx/primitives.h"
+#include <gemos/console_abi.h>
 #include <string.h>
 #include "ui_scale.h"
 #include <stddef.h>
@@ -142,21 +143,21 @@ bool menu_handle_event(event_t *event) {
   if (event->type == EVENT_KEY_PRESS) {
     uint8_t key = (uint8_t)event->data.key.character;
     /* Navigation */
-    if (key == 0x80) { /* up arrow */
+    if (key == GEMOS_KEY_UP) {
       if (active_menu->hover_index > 0) {
         active_menu->hover_index--;
       } else {
         active_menu->hover_index = active_menu->item_count - 1; /* Wrap */
       }
       return true;
-    } else if (key == 0x81) { /* KEY_DOWN */
+    } else if (key == GEMOS_KEY_DOWN) {
       if (active_menu->hover_index < active_menu->item_count - 1) {
         active_menu->hover_index++;
       } else {
         active_menu->hover_index = 0; /* Wrap */
       }
       return true;
-    } else if (key == 0x0A) { /* KEY_ENTER */
+    } else if (key == GEMOS_KEY_ENTER) {
       int index = active_menu->hover_index;
       if (index >= 0 && index < active_menu->item_count) {
         menu_action_t action = active_menu->items[index].action;
@@ -171,7 +172,8 @@ bool menu_handle_event(event_t *event) {
         }
       }
       return true;
-    } else if (event->data.key.key_code == 0x01 || key == 0x1B) { /* ESC */
+    } else if (event->data.key.key_code == 0x01 /* Esc scancode */ ||
+               key == GEMOS_KEY_ESC) {
       menu_hide();
       return true; /* Consumed */
     }

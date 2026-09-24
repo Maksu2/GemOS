@@ -88,16 +88,16 @@ static void inputbox_handle_event(window_t *win, event_t *ev) {
     serial_print(buf);
     serial_print("\n");
 
-    if (c == KEY_ENTER) {
+    if (c == GEMOS_KEY_ENTER) {
       /* Confirm */
       if (active_callback) {
         active_callback(input_buffer);
       }
       wm_remove_window(win);
-    } else if (c == KEY_ESC) {
+    } else if (c == GEMOS_KEY_ESC) {
       /* Cancel */
       wm_remove_window(win);
-    } else if (c == KEY_BACKSPACE) {
+    } else if (c == GEMOS_KEY_BACKSPACE) {
       if (input_len > 0) {
         input_buffer[--input_len] = '\0';
         // Force redraw

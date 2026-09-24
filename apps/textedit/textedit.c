@@ -406,12 +406,12 @@ static void textedit_handle_event(window_t *win, event_t *ev) {
     caret_visible = 1;
     blink_counter = 0;
 
-    if (c == KEY_BACKSPACE) {
+    if (c == GEMOS_KEY_BACKSPACE) {
       if (cursor_pos > 0) {
         cursor_pos--;
         text_buffer[cursor_pos] = '\0';
       }
-    } else if (c == KEY_ENTER) {
+    } else if (c == GEMOS_KEY_ENTER) {
       if (cursor_pos < TEXT_BUFFER_SIZE - 1) {
         text_buffer[cursor_pos++] = '\n';
         text_buffer[cursor_pos] = '\0';
