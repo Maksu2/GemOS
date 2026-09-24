@@ -5,15 +5,23 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
 ## Stan systemu
 
 - **Platforma:** x86, 32-bit protected mode, jedno jądro monolityczne. Działa w QEMU (VBE/BGA, dyskietka + dysk ATA); na prawdziwym sprzęcie nie było testowane.
-- **Boot:** własny loader z dyskietki 1,44 MB.
-  - Stage 1 czyta stage 2 przez INT 13h w trybie CHS.
-  - Stage 2 włącza A20, zbiera mapę E820 (jądro jej nie używa), ustawia VBE **tylko 1920×1080×32** (inny tryb = halt), czyta dokładnie 1120 sektorów jądra, kopiuje je pod `0x100000` i skacze na początek obrazu (`_start` z `kernel/entry.S` musi być pierwszy w linkowaniu).
-  - BSS nie jest zerowany.
+- **Boot:** własny loader z dyskietki 1,44 MB (`build/gemos.img`) albo z dysku twardego (`build/gemos-hdd.img`, ten sam układ sektorów).
+  - Stage 1 czyta stage 2 przez INT 13h ext (LBA), jeśli BIOS je daje (dysk twardy), inaczej przez CHS z geometrią z AH=08h (dyskietka). Każdy odczyt ma 3 próby.
+  - Stage 2:
+    - włącza A20 i zbiera mapę E820,
+    - czyta nagłówek jądra (`GEMK` + rozmiar, na początku `kernel/entry.S`; `_start` musi być pierwszy w linkowaniu),
+    - czyta jądro kawałkami po 32 KB i kopiuje każdy pod `0x100000` w trybie unreal,
+    - ustawia najlepszy tryb VBE z listy preferencji (1920×1080 … 800×600, 32 bpp, LFB),
+    - skacze do jądra z EBX = blok boot-info (`kernel/include/boot_info.h`: napęd, E820, tryb VBE).
+  - `entry.S` zeruje BSS, a `kernel_main` najpierw kopiuje boot-info.
 - **Jądro:**
   - GDT z segmentami ring 0/3 i TSS (`esp0` per zadanie); IDT, PIC pod `0x20/0x28`, PIT 1000 Hz.
-  - Sterta first-fit 24 MB za `__kernel_end`.
-  - Paging 4 KB: identity map 0–32 MB + 16 MB framebuffera, pula ramek użytkownika do `0x02000000`, osobny katalog stron na proces.
-  - Rozmiar RAM nie jest wykrywany; minimum to 32 MB.
+  - Pamięć z mapy E820 (`kernel/memory/pmm.c`):
+    - sterta first-fit zaraz za `__kernel_end` (co najmniej backbuffer + 4 MB, najwyżej 24 MB),
+    - pula ramek dostaje resztę użytecznego RAM-u poniżej 32 MB,
+    - RAM powyżej 32 MB nie jest używany: jądro widzi pamięć fizyczną tylko przez identity map 0–32 MB, a od 32 MB zaczyna się userland,
+    - za mało RAM kończy start komunikatem; minimum przy 1920×1080 to ok. 16 MB.
+  - Paging 4 KB: identity map 0–32 MB + 16 MB framebuffera, osobny katalog stron na proces.
 - **Procesy:**
   - Round-robin, kwant 10 ms, maksymalnie 16 zadań plus zadanie idle. Wywłaszczany jest tylko kod w Ring 3 (reguła niżej). Zadanie 0 to pętla GUI w `kernel_main`: po każdej iteracji oddaje CPU i śpi (`TASK_BLOCKED`), dopóki nie ma zdarzeń. `hlt` wykonuje tylko idle.
   - Programy użytkownika to statyczne ELF32 `ET_EXEC` linkowane pod `0x02000000`, ze stosem 8 KB pod `0x07FFF000`. Maksymalny rozmiar programu to ok. 8 KB (bufor loadera, slot GemFS).
@@ -25,9 +33,10 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
   - `UTEXTEDIT` nie zapisuje ani nie otwiera plików.
 - **GUI (w jądrze):**
   - Menedżer okien, topbar, dock, menu, font TrueType (Inter) z antyaliasingiem.
-  - Skala UI 2.0, czyli współrzędne logiczne 960×540.
-  - Każda klatka przerysowuje cały ekran.
-- **GemFS:** tablica 64 wpisów pod LBA 1–4 pierwszego dysku ATA i stałe sloty po 8 KB od LBA 5. Nie ma superbloku ani sygnatury. Bez podpiętego dysku jądro wisi w sterowniku ATA.
+  - Skala UI 2 przy 1920×1080 (współrzędne logiczne 960×540), 1 w mniejszych trybach.
+  - Każda klatka przerysowuje cały ekran. Page flip przez BGA tylko po wykryciu adaptera (ID `0xB0C0`–`0xB0C5`) i przy VRAM na dwie strony; inaczej `memcpy` do framebuffera.
+- **ATA:** PIO LBA28 (`drivers/ata.c`). IDENTIFY na 4 pozycjach, każde oczekiwanie z limitem, kody błędów zamiast pętli bez końca.
+- **GemFS:** tablica 64 wpisów pod LBA 1–4 i stałe sloty po 8 KB od LBA 5. Leży na pierwszym dysku ATA **bez sygnatury rozruchowej MBR**; nie ma własnego superbloku ani sygnatury. Bez takiego dysku system startuje bez FS: tablica jest pusta, programy idą z obrazu jądra.
 - **Aplikacje jądra (`apps/`):**
   - File Explorer i Log Viewer oraz launchery trzech programów userlandu.
   - Test App jest zarejestrowana, ale niedostępna z menu.
@@ -37,18 +46,19 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
 
 Nie obchodzić ich po cichu; plan naprawy jest w §8.2 audytu.
 
-- **Syscalle z IF=0:** długi syscall (zapis pliku to do ~24 sektorów ATA bez timeoutów) wstrzymuje przerwania, a PIT gubi ticki.
+- **Syscalle z IF=0:** długi syscall (zapis pliku to do ~24 sektorów ATA) wstrzymuje przerwania, a PIT gubi ticki.
 - **Brak zapisu stanu FPU**, choć jądro liczy na `float` (`ui_scale`), także w przerwaniu myszy.
 - **Render całej klatki (1080p) w task 0 nie jest przerywany:** procesy czekają na koniec iteracji.
-- **Brak twardych limitów:** niezerowany BSS, brak detekcji RAM, sterownik ATA bez timeoutów, GemFS bez sygnatury piszący po surowym dysku.
+- **GemFS bez sygnatury** pisze po surowym dysku; chroni go tylko to, że pomija dyski z sygnaturą rozruchową (etap 4).
+- **RAM powyżej 32 MB nie jest używany** (okno identity map, patrz wyżej).
 
 ## Mapa repo
 
 ```text
-boot/       stage1 (MBR) + stage2 (A20, E820, VBE, tryb chroniony, kopia jądra)
+boot/       stage1 (MBR) + stage2 (A20, E820, jądro wg nagłówka, VBE, boot-info)
 kernel/     kernel.c (kernel_main + pętla GUI), gdt/idt/isr, scheduler, process,
             elf, syscall, console (okna aplikacji hostowanych), heap, event,
-            memory/ (paging), fs/ (GemFS), gfx/ (prymitywy, ikony, font),
+            memory/ (paging, pmm), fs/ (GemFS), gfx/ (prymitywy, ikony, font),
             gui/ (WM, okna, topbar, pulpit), ui/ (dock, menu, kursor, fokus),
             app/ (rejestr aplikacji), font/ (TrueType, rasteryzer, cache, AA)
 drivers/    serial, VBE/BGA, PIC, PIT, klawiatura, mysz, ATA PIO, RTC
@@ -64,12 +74,13 @@ docs/       strona GitHub Pages + audyt kodu
 
 ## Budowanie i testy
 
-- `make all` tworzy `build/gemos.img`. Wymaga `nasm` oraz `i686-elf-gcc` albo `x86_64-elf-gcc`; bez nich Makefile używa hostowego `gcc -m32`, tak jak CI.
+- `make all` tworzy `build/gemos.img` (dyskietka) i `build/gemos-hdd.img` (dysk twardy). Wymaga `nasm` oraz `i686-elf-gcc` albo `x86_64-elf-gcc`; bez nich Makefile używa hostowego `gcc -m32`, tak jak CI.
 - `tools/smoke.sh` buduje obraz, bootuje go w QEMU bez okna, uruchamia UTERM, ABOUT i UTEXTEDIT, sprawdza log i zrzuty ekranu. Musi skończyć się `SMOKE: PASS` przed każdym commitem. Test nie wysyła żadnego wejścia, gdy czeka na klatkę: okno ma się pojawić samo.
 - `tools/smoke.sh --stress [N]` (domyślnie 25 cykli) otwiera, obsługuje klawiaturą i myszą i zamyka wszystkie programy; każdy proces musi skończyć z `exit=0`, a log nie może mieć przeplecionych linii. Uruchom go po każdej zmianie schedulera, syscalli, konsoli albo pętli GUI.
-- CI (`.github/workflows/ci.yml`) uruchamia smoke i stress przy każdym pushu i PR.
-- `make run` otwiera QEMU z dyskiem danych `build/data.img`; `make debug` dodatkowo czeka na GDB na porcie `:1234`.
-- Makefile przerywa build, gdy `kernel.bin` przekracza limit loadera (`KERNEL_SECTORS` w `boot/stage2/loader.asm`).
+- `tools/smoke.sh --matrix` uruchamia smoke na 32/64/256 MB, bez dysku danych, z 4 MB VRAM (1280×800, `memcpy`) i przy starcie z dysku twardego. Uruchom go po każdej zmianie bootloadera, pamięci, VBE albo ATA.
+- CI (`.github/workflows/ci.yml`) uruchamia smoke, stress i macierz przy każdym pushu i PR.
+- `make run` otwiera QEMU z dyskiem danych `build/data.img`, `make run-hdd` startuje z dysku twardego, `make debug` dodatkowo czeka na GDB na porcie `:1234` (działa też bez dysku danych).
+- Makefile przerywa build, gdy `kernel.bin` nie zaczyna się nagłówkiem `GEMK` z właściwym rozmiarem albo nie mieści się na dyskietce.
 - Zmiany, które nie powinny zmieniać zachowania, sprawdzaj porównaniem binariów (`build/kernel.bin`, `build/*.elf`) przed i po.
 
 ## Zasady architektury

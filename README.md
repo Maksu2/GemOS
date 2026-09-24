@@ -35,8 +35,8 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 
 ### Boot and kernel foundations
 
-- 2-stage bootloader
-- A20, protected mode, kernel entry
+- 2-stage bootloader from a floppy (CHS) or a hard disk (INT 13h extensions, LBA); the kernel size comes from a header in the image
+- A20, E820 memory map, protected mode, kernel entry with a boot info block (boot drive, memory map, video mode)
 - kernel-owned GDT for ring 0 / ring 3
 - TSS, `ltr`, and `esp0` stack switching
 - IDT, ISR / IRQ handling, PIC remap, PIT, RTC
@@ -44,7 +44,7 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 
 ### Memory and execution
 
-- heap allocator
+- heap and page frame pool sized from the E820 map (the kernel uses RAM below 32 MB; it stops with a message if there is too little)
 - 32-bit legacy paging with 4 KB pages
 - separate `CR3` per process
 - shared supervisor-only kernel mapping as the transition model
@@ -54,13 +54,13 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 
 ### Desktop, drivers and storage
 
-- VBE LFB graphics
-- page-flipped rendering path
+- VBE LFB graphics: the best mode from 1920x1080 down to 800x600 (32 bpp); the UI is drawn 2x on Full HD
+- page flipping on the Bochs/QEMU adapter (BGA), memcpy to the framebuffer elsewhere
 - PS/2 keyboard and mouse
 - TrueType font rendering
 - window manager
 - topbar, dock, menus and focus model
-- ATA PIO
+- ATA PIO with IDENTIFY, timeouts and error checks; without a data disk the system runs without a file system
 - GemFS
 
 ### Userland transition
@@ -131,13 +131,15 @@ sudo apt-get install nasm qemu-system-x86 gcc
 Build, test and run:
 
 ```bash
-make all          # build/gemos.img
+make all          # build/gemos.img (floppy) and build/gemos-hdd.img
 tools/smoke.sh    # build, boot headless in QEMU, start UTERM/ABOUT/UTEXTEDIT
 tools/smoke.sh --stress   # 25 cycles of opening, typing into and closing them
+tools/smoke.sh --matrix   # smoke test on 32/64/256 MB, no data disk, 4 MB VRAM, hard disk boot
 make run          # QEMU window with the GemFS data disk (build/data.img)
+make run-hdd      # the same, booting from the hard disk image
 ```
 
-`tools/smoke.sh` prints one PASS/FAIL line per check and keeps the serial log and screenshots in `build/smoke/` (`build/stress/` for the stress test). CI runs `make all`, the smoke test and the stress test on every push and pull request.
+`tools/smoke.sh` prints one PASS/FAIL line per check and keeps the serial log and screenshots in `build/smoke/` (`build/stress/`, `build/matrix/<variant>/`). CI runs `make all`, the smoke test, the stress test and the matrix on every push and pull request.
 
 Run under GDB:
 
@@ -173,7 +175,7 @@ The work follows the stages of the [September 2026 code audit](docs/AUDIT-2026-0
 
 0. Safety net: CI and the QEMU smoke test (done)
 1. Clean-up: dead code, duplicated headers, stale docs (done)
-2. Boot and memory: zeroed BSS, boot info with the E820 map, memory detection, a new loader, an ATA driver with timeouts
+2. Boot and memory: zeroed BSS, boot info with the E820 map, memory detection, a new loader, an ATA driver with timeouts (done)
 3. Concurrency and isolation: kernel code is not preempted and waits block (done); FPU state, a fault in ring 3 kills only the process, a hardened ELF loader and heap
 4. Storage: GemFS with a superblock and allocation, files larger than 8 KB
 5. GUI and apps: clipping, window placement, `UTEXTEDIT.ELF` open/save, then retiring the kernel text editor
