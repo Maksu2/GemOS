@@ -15,10 +15,12 @@
 
 #define SYSCALL_DEBUG_WRITE_MAX 256U
 #define SYSCALL_CONSOLE_WRITE_CHUNK 128U
-#define SYSCALL_FILE_NAME_MAX (GEMFS_MAX_FILENAME + 1U)
+/* Longest SYS_file_write. A syscall runs with interrupts off from entry to
+ * exit (AGENTS.md), so this also bounds how long the disk keeps them off. */
+#define SYSCALL_FILE_WRITE_MAX (1024U * 1024U)
 
 static gemos_console_cell_t console_present_cells[GEMOS_CONSOLE_MAX_CELLS];
-static uint8_t syscall_file_buffer[GEMFS_MAX_FILESIZE + 1U];
+static uint8_t syscall_file_buffer[GEMFS_BLOCK_SIZE]; /* one chunk of a read */
 
 extern void isr128(void);
 
@@ -291,67 +293,117 @@ static uint32_t syscall_console_present(uint32_t handle,
                                    console_present_cells);
 }
 
-static uint32_t syscall_file_read(uintptr_t user_name_ptr,
-                                  uintptr_t user_buffer_ptr,
-                                  size_t user_capacity) {
-  char name[SYSCALL_FILE_NAME_MAX];
-  int read_result;
-  size_t copy_length;
-
-  if (user_name_ptr == 0 || user_buffer_ptr == 0 || user_capacity == 0U) {
-    return (uint32_t)GEMOS_ERR_INVAL;
+/* Copy a path from user memory. Unlike copy_user_string, a path that does
+ * not fit is an error: cut short, it could name another file. */
+static uint32_t copy_user_path(char path[GEMFS_PATH_MAX], uintptr_t user_path) {
+  for (size_t i = 0; i < GEMFS_PATH_MAX; ++i) {
+    if (!copy_from_user(&path[i], (const char *)user_path + i, 1)) {
+      return (uint32_t)GEMOS_ERR_FAULT;
+    }
+    if (path[i] == '\0') {
+      return (uint32_t)GEMOS_OK;
+    }
   }
-  if (user_capacity > sizeof(syscall_file_buffer)) {
-    user_capacity = sizeof(syscall_file_buffer);
-  }
-  if (!copy_user_string(name, (const char *)user_name_ptr, sizeof(name))) {
-    return (uint32_t)GEMOS_ERR_FAULT;
-  }
-
-  read_result =
-      gemfs_read(name, (char *)syscall_file_buffer, (uint32_t)user_capacity);
-  if (read_result < 0) {
-    return (uint32_t)GEMOS_ERR_NOENT;
-  }
-
-  copy_length = (size_t)read_result + 1U;
-  if (copy_length > user_capacity) {
-    copy_length = user_capacity;
-  }
-  if (!copy_to_user((void *)user_buffer_ptr, syscall_file_buffer, copy_length)) {
-    return (uint32_t)GEMOS_ERR_FAULT;
-  }
-
-  return (uint32_t)read_result;
+  return (uint32_t)GEMOS_ERR_INVAL;
 }
 
-static uint32_t syscall_file_write(uintptr_t user_name_ptr,
-                                   uintptr_t user_buffer_ptr, size_t length) {
-  char name[SYSCALL_FILE_NAME_MAX];
-  int write_result;
-
-  if (user_name_ptr == 0 || user_buffer_ptr == 0) {
+static uint32_t syscall_file_error(int error) {
+  switch (error) {
+  case GEMFS_ERR_NOFS:
+  case GEMFS_ERR_NOENT:
+    return (uint32_t)GEMOS_ERR_NOENT;
+  case GEMFS_ERR_TOOBIG:
+  case GEMFS_ERR_NOSPC:
+    return (uint32_t)GEMOS_ERR_TOO_BIG;
+  case GEMFS_ERR_SOURCE:
+    return (uint32_t)GEMOS_ERR_FAULT;
+  default:
     return (uint32_t)GEMOS_ERR_INVAL;
   }
-  if (length > GEMFS_MAX_FILESIZE) {
+}
+
+/* Reads at most capacity - 1 bytes and ends them with a NUL. Returns the
+ * number of bytes read. */
+static uint32_t syscall_file_read(uintptr_t user_path, uintptr_t user_buffer,
+                                  size_t capacity) {
+  char path[GEMFS_PATH_MAX];
+  gemfs_stat_t stat;
+  uint32_t length;
+  uint32_t done = 0;
+  uint8_t terminator = 0;
+  uint32_t status;
+  int result;
+
+  if (user_path == 0 || user_buffer == 0 || capacity == 0U) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+  status = copy_user_path(path, user_path);
+  if (status != (uint32_t)GEMOS_OK) {
+    return status;
+  }
+  result = gemfs_stat(path, &stat);
+  if (result != GEMFS_OK) {
+    return syscall_file_error(result);
+  }
+  if (stat.type != GEMFS_TYPE_FILE) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+
+  length = stat.size < capacity - 1U ? stat.size : (uint32_t)(capacity - 1U);
+  while (done < length) {
+    uint32_t chunk = length - done < sizeof(syscall_file_buffer)
+                         ? length - done
+                         : (uint32_t)sizeof(syscall_file_buffer);
+
+    result = gemfs_read(stat.inode, done, syscall_file_buffer, chunk);
+    if (result != (int)chunk) {
+      return result < 0 ? syscall_file_error(result)
+                        : (uint32_t)GEMOS_ERR_INVAL;
+    }
+    if (!copy_to_user((void *)(user_buffer + done), syscall_file_buffer,
+                      chunk)) {
+      return (uint32_t)GEMOS_ERR_FAULT;
+    }
+    done += chunk;
+  }
+  if (!copy_to_user((void *)(user_buffer + length), &terminator, 1)) {
+    return (uint32_t)GEMOS_ERR_FAULT;
+  }
+  return length;
+}
+
+/* GemFS reads the new contents block by block straight from the process */
+static int syscall_user_source(void *ctx, uint32_t offset, void *dst,
+                               uint32_t len) {
+  uintptr_t user_buffer = *(const uintptr_t *)ctx;
+
+  return copy_from_user(dst, (const void *)(user_buffer + offset), len) ? 0
+                                                                        : -1;
+}
+
+static uint32_t syscall_file_write(uintptr_t user_path,
+                                   uintptr_t user_buffer, size_t length) {
+  char path[GEMFS_PATH_MAX];
+  uint32_t status;
+  int result;
+
+  if (user_path == 0 || user_buffer == 0) {
+    return (uint32_t)GEMOS_ERR_INVAL;
+  }
+  if (length > SYSCALL_FILE_WRITE_MAX) {
     return (uint32_t)GEMOS_ERR_TOO_BIG;
   }
-  if (!copy_user_string(name, (const char *)user_name_ptr, sizeof(name))) {
-    return (uint32_t)GEMOS_ERR_FAULT;
-  }
-  if (length > 0U &&
-      !copy_from_user(syscall_file_buffer, (const void *)user_buffer_ptr,
-                      length)) {
-    return (uint32_t)GEMOS_ERR_FAULT;
+  status = copy_user_path(path, user_path);
+  if (status != (uint32_t)GEMOS_OK) {
+    return status;
   }
 
-  write_result = gemfs_write(name, (const char *)syscall_file_buffer,
-                             (uint32_t)length);
-  if (write_result < 0) {
-    return (uint32_t)GEMOS_ERR_INVAL;
+  result = gemfs_write_from(path, (uint32_t)length, syscall_user_source,
+                            &user_buffer, 0, 0);
+  if (result < 0) {
+    return syscall_file_error(result);
   }
-
-  return (uint32_t)write_result;
+  return (uint32_t)result;
 }
 
 void syscall_interrupt_handler(registers_t *regs) {

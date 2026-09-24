@@ -15,7 +15,8 @@
 
 static process_t process_table[MAX_PROCESSES];
 static uint32_t next_pid = 1;
-static uint8_t process_file_buffer[GEMFS_MAX_FILESIZE];
+#define PROCESS_IMAGE_MAX 8192U
+static uint8_t process_file_buffer[PROCESS_IMAGE_MAX];
 
 typedef enum {
   PROCESS_IMAGE_SOURCE_NONE = 0,
@@ -101,7 +102,8 @@ static int process_copy_embedded_image(const char *name, int *image_size) {
 
 static int process_load_image(const char *name, int *image_size,
                               process_image_source_t *source) {
-  int file_size;
+  gemfs_stat_t stat;
+  int file_size = -1;
 
   if (name == NULL || image_size == NULL || source == NULL) {
     return 0;
@@ -109,8 +111,10 @@ static int process_load_image(const char *name, int *image_size,
 
   *source = PROCESS_IMAGE_SOURCE_NONE;
 
-  file_size =
-      gemfs_read(name, (char *)process_file_buffer, sizeof(process_file_buffer));
+  if (gemfs_stat(name, &stat) == GEMFS_OK && stat.type == GEMFS_TYPE_FILE &&
+      stat.size <= sizeof(process_file_buffer)) {
+    file_size = gemfs_read(stat.inode, 0, process_file_buffer, stat.size);
+  }
   if (file_size > 0 &&
       process_has_elf_magic(process_file_buffer, (size_t)file_size)) {
     *image_size = file_size;
@@ -208,14 +212,14 @@ int process_seed_userland(void) {
     const embedded_user_program_t *program = &embedded_user_programs[i];
     size_t blob_size = (size_t)(program->end - program->start);
 
-    if (blob_size == 0 || blob_size > GEMFS_MAX_FILESIZE) {
+    if (blob_size == 0 || blob_size > PROCESS_IMAGE_MAX) {
       serial_print("[PROC] Invalid embedded user image: ");
       serial_print(program->name);
       serial_print("\n");
       continue;
     }
-    if (gemfs_write(program->name, (const char *)program->start,
-                    (uint32_t)blob_size) < 0) {
+    if (gemfs_write(program->name, program->start, (uint32_t)blob_size, 0,
+                    0) < 0) {
       serial_print("[PROC] Failed to seed user image: ");
       serial_print(program->name);
       serial_print("\n");

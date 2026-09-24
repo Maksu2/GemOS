@@ -101,7 +101,7 @@ KERNEL_C_SOURCES := kernel/kernel.c kernel/console.c kernel/gdt.c kernel/idt.c \
                     apps/textedit/textedit.c apps/textedit/inputbox.c \
                     apps/textedit/filepicker.c apps/textedit/utextedit_launcher.c \
                     apps/explorer/explorer.c \
-                    kernel/fs/gemfs.c \
+                    kernel/fs/gemfs.c kernel/fs/crc32.c \
                     kernel/font/aa.c kernel/font/truetype.c kernel/font/scanline.c \
                     kernel/font/font_cache.c kernel/font/font_mem.c
 
@@ -311,8 +311,8 @@ $(OS_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
 
 # Bootable hard disk image (16 MB) with the floppy's layout: stage 1 in the
 # MBR, stage 2 in sectors 1-32, the kernel from sector 33. Both stages read
-# it with the INT 13h extensions (LBA). GemFS never uses a disk with a boot
-# signature, so the data disk goes second.
+# it with the INT 13h extensions (LBA). GemFS mounts only a disk with its
+# own superblock, so it never writes to this one; the data disk goes second.
 HDD_SECTORS := 32768
 
 $(HDD_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
@@ -325,10 +325,11 @@ $(HDD_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
 	@mv $@.tmp $@
 	@echo "Hard disk image created: $@"
 
-# GemFS data disk (10MB). Created once and kept between runs.
+# GemFS data disk (10 MB), made by tools/mkgemfs when it does not exist and
+# kept between runs. The kernel never formats a disk: an old or foreign
+# data.img is not mounted until "tools/mkgemfs format --force" remakes it.
 $(DATA_IMAGE): | $(BUILD_DIR)
-	@echo "Creating data image..."
-	dd if=/dev/zero of=$@ bs=1M count=10 2>/dev/null
+	tools/mkgemfs format $@ --size 10M
 
 # Run in QEMU
 run: $(OS_IMAGE) $(DATA_IMAGE)

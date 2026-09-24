@@ -65,17 +65,18 @@ def set_resolution(width, height):
 # must appear (regular expressions).
 MATRIX = [
     ("floppy-128M", [], [r"\[GFX\] BGA page flipping enabled",
-                         r"\[GemFS\] v2 Mounted"]),
+                         r"\[GemFS\] Mounted GemFS v3"]),
     ("32M", ["--memory", "32"], [r"\[MEM\] Heap 0x"]),
     ("64M", ["--memory", "64"], [r"\[MEM\] Heap 0x"]),
     ("256M", ["--memory", "256"], [r"not used above 32 MB"]),
     ("no-data-disk", ["--no-data-disk"],
-     [r"\[GemFS\] No data disk", r"No file system: programs run"]),
+     [r"\[GemFS\] No GemFS disk", r"No file system: programs run"]),
     ("vga-4M", ["--vga-mem", "4", "--resolution", "1280x800"],
      [r"Resolution: 1280x800x32", r"page flip unavailable, using memcpy"]),
     ("hdd-boot", ["--boot", "hdd"],
-     [r"\[BOOT\] Boot drive 0x00000080", r"\[GemFS\] Skipping bootable disk",
-      r"\[GemFS\] v2 Mounted"]),
+     [r"\[BOOT\] Boot drive 0x00000080",
+      r"\[GemFS\] [^\n]*: no GemFS signature, not mounted",
+      r"\[GemFS\] Mounted GemFS v3"]),
 ]
 
 # Topbar menus (kernel/gui/topbar/topbar.c): "GemOS" at x 10..80, "Apps" at
@@ -159,6 +160,17 @@ LOG_TAG = re.compile(r"\[[A-Za-z][A-Za-z0-9_]*\] ")
 
 class SmokeError(Exception):
     pass
+
+
+MKGEMFS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mkgemfs")
+
+
+def make_gemfs(path):
+    """A fresh 10 MB GemFS data disk (tools/mkgemfs)."""
+    result = subprocess.run([sys.executable, MKGEMFS, "format", path,
+                             "--size", "10M"], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SmokeError("mkgemfs format: %s" % result.stderr.strip())
 
 
 def title_bar_problem(image):
@@ -362,16 +374,16 @@ class Smoke:
         boot = os.path.join(self.out, os.path.basename(self.args.image))
         data = os.path.join(self.out, "data.img")
         shutil.copyfile(self.args.image, boot)
-        with open(data, "wb") as f:
-            f.truncate(10 * 1024 * 1024)
+        if not self.args.no_data_disk:
+            make_gemfs(data)
 
         # unix socket paths are limited to ~108 bytes; keep it short
         self.sockdir = tempfile.mkdtemp(prefix="gemos-smoke-")
         sock = os.path.join(self.sockdir, "hmp.sock")
         cmd = [qemu]
         if self.args.boot == "hdd":
-            # boot disk first; GemFS skips it (MBR signature) and uses the
-            # data disk behind it
+            # boot disk first; GemFS finds no superblock there and mounts
+            # the data disk behind it
             cmd += ["-drive", "file=%s,if=ide,index=0,format=raw" % boot,
                     "-boot", "c"]
             data_drive = "file=%s,if=ide,index=1,format=raw" % data
