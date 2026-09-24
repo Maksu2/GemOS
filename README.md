@@ -66,7 +66,7 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 - window manager
 - topbar, dock, menus and focus model
 - ATA PIO with IDENTIFY, timeouts and error checks; without a data disk the system runs without a file system
-- GemFS
+- GemFS v3 on a whole disk: a superblock with a checksum, a block bitmap, inodes and directories, files up to about 4 MB. The kernel mounts only a disk with a valid superblock, never formats one and never writes to a disk it has not mounted; `tools/mkgemfs` makes and inspects disks on the host
 
 ### Userland transition
 
@@ -139,15 +139,18 @@ Build, test and run:
 make all          # build/gemos.img (floppy) and build/gemos-hdd.img
 tools/smoke.sh    # build, boot headless in QEMU, start UTERM/ABOUT/UTEXTEDIT
 tools/smoke.sh --stress   # 25 cycles of opening, typing into and closing them
-tools/smoke.sh --matrix   # smoke test on 32/64/256 MB, no data disk, 4 MB VRAM, hard disk boot
-tools/smoke.sh --selftest # kernel self-test image: heap, ELF loader, FPU, every ring 3 exception
+tools/smoke.sh --matrix   # smoke test on 32/64/256 MB, no data disk, 4 MB VRAM, hard disk boot,
+                          # disks without GemFS that must stay unchanged, a second boot
+tools/smoke.sh --selftest # kernel self-test image: heap, ELF loader, GemFS, FPU, every ring 3
+                          # exception; boots twice on the same disks
 make run          # QEMU window with the GemFS data disk (build/data.img)
+tools/mkgemfs ls build/data.img /   # list, cat, put, mkdir, rm, check on the host
 make run-hdd      # the same, booting from the hard disk image
 ```
 
 `tools/smoke.sh` prints one PASS/FAIL line per check and keeps the serial log and screenshots in `build/smoke/` (`build/stress/`, `build/matrix/<variant>/`, `build/selftest-run/`). CI runs `make all`, the smoke test, the stress test, the matrix and the self-test on every push and pull request.
 
-`make selftest` builds `build/selftest/gemos.img`, a kernel with `kernel/selftest.c`: it checks that heap corruption is detected, that broken ELF files are rejected, that every exception a ring 3 program can raise ends only that program and that each task keeps its FPU state, then overflows its own kernel stack on purpose to show the guard page at work.
+`make selftest` builds `build/selftest/gemos.img`, a kernel with `kernel/selftest.c`: it checks that heap corruption is detected, that broken ELF files are rejected, that every exception a ring 3 program can raise ends only that program and that each task keeps its FPU state. It exercises GemFS (directories, a 100 KB file, replacing, a failed write, errors, recursive delete) and runs `FILETEST.ELF`, an 83 KB program started from GemFS that writes and reads files through the syscalls and must be refused when it tries to overwrite `UTERM.ELF`. The harness boots it twice on the same disks, so the second boot checks what the first one wrote. Last, it overflows its own kernel stack on purpose to show the guard page at work.
 
 Run under GDB:
 
@@ -173,8 +176,8 @@ userland/   user-space binaries, runtime and shared helpers
 include/    freestanding C headers and the userland ABI (include/gemos)
 lib/        freestanding support code
 assets/     system font (Inter) and its license
-tools/      QEMU smoke test
-docs/       GitHub Pages site and the code audit
+tools/      QEMU smoke test and mkgemfs (GemFS disks on the host)
+docs/       GitHub Pages site, the code audit and the GemFS format
 ```
 
 ## Roadmap
@@ -185,7 +188,7 @@ The work follows the stages of the [September 2026 code audit](docs/AUDIT-2026-0
 1. Clean-up: dead code, duplicated headers, stale docs (done)
 2. Boot and memory: zeroed BSS, boot info with the E820 map, memory detection, a new loader, an ATA driver with timeouts (done)
 3. Concurrency and isolation: kernel code is not preempted and waits block; FPU state, a fault in ring 3 kills only the process, a hardened ELF loader and heap, guarded kernel stacks (done)
-4. Storage: GemFS with a superblock and allocation, files larger than 8 KB
+4. Storage: GemFS v3 with a superblock, a block bitmap, inodes and directories; no writes to a disk without it; programs larger than 8 KB, written to disk only when they change and read-only for processes (done)
 5. GUI and apps: clipping, window placement, `UTEXTEDIT.ELF` open/save, then retiring the kernel text editor
 
 ## Out of scope right now
