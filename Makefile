@@ -224,27 +224,40 @@ $(KERNEL_ELF): $(KERNEL_OBJS) $(BLOB_OBJS) linker.ld
 $(KERNEL_BIN): $(KERNEL_ELF)
 	$(OBJCOPY) -O binary $< $@
 
-# Create disk image
+# Boot floppy (1.44 MB), always written from scratch so no sectors from an
+# older build survive behind the kernel.
 # Layout:
-#   Sector 0: Stage 1 (512 bytes)
+#   Sector 0:     Stage 1 (512 bytes)
 #   Sectors 1-32: Stage 2 (16KB)
-#   Sectors 33+: Kernel
-$(OS_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
-	@echo "Creating disk image..."
-	# Create empty 1.44MB floppy image IF IT DOES NOT EXIST
-	if [ ! -f $@ ]; then dd if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null; fi
-	# Write Stage 1 (MBR)
-	dd if=$(BOOT_STAGE1) of=$@ conv=notrunc bs=512 count=1 2>/dev/null
-	# Write Stage 2
-	dd if=$(BOOT_STAGE2) of=$@ conv=notrunc bs=512 seek=1 2>/dev/null
-	# Write kernel
-	dd if=$(KERNEL_BIN) of=$@ conv=notrunc bs=512 seek=33 2>/dev/null
-	@echo "Disk image updated: $@"
-	@echo "  Stage 1: 512 bytes"
-	@echo "  Stage 2: $$(stat -f%z $(BOOT_STAGE2) 2>/dev/null || stat -c%s $(BOOT_STAGE2)) bytes"
-	@echo "  Kernel:  $$(stat -f%z $(KERNEL_BIN) 2>/dev/null || stat -c%s $(KERNEL_BIN)) bytes"
+#   Sectors 33+:  Kernel, at most KERNEL_SECTORS sectors (stage 2 loads
+#                 exactly that many and would silently cut a larger kernel)
+FLOPPY_SECTORS := 2880
+KERNEL_START_SECTOR := $(shell sed -n 's/^KERNEL_START_SECTOR[[:space:]]*equ[[:space:]]*\([0-9][0-9]*\).*/\1/p' $(BOOT_DIR)/stage2/loader.asm)
+KERNEL_MAX_SECTORS := $(shell sed -n 's/^KERNEL_SECTORS[[:space:]]*equ[[:space:]]*\([0-9][0-9]*\).*/\1/p' $(BOOT_DIR)/stage2/loader.asm)
+ifeq ($(KERNEL_START_SECTOR)$(KERNEL_MAX_SECTORS),)
+    $(error Cannot read KERNEL_START_SECTOR / KERNEL_SECTORS from $(BOOT_DIR)/stage2/loader.asm)
+endif
 
-# Create data image (10MB) if not exists
+$(OS_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
+	@size=$$(wc -c < $(KERNEL_BIN)); max=$$(( $(KERNEL_MAX_SECTORS) * 512 )); \
+	if [ $$size -gt $$max ]; then \
+	  echo "error: $(KERNEL_BIN) is $$size bytes, but stage 2 loads only $(KERNEL_MAX_SECTORS) sectors ($$max bytes)." >&2; \
+	  echo "       Raise KERNEL_SECTORS in $(BOOT_DIR)/stage2/loader.asm (the kernel must stay below 0xA0000 in real mode)." >&2; \
+	  exit 1; \
+	fi
+	@echo "Creating disk image..."
+	@rm -f $@ $@.tmp
+	dd if=/dev/zero of=$@.tmp bs=512 count=$(FLOPPY_SECTORS) 2>/dev/null
+	dd if=$(BOOT_STAGE1) of=$@.tmp conv=notrunc bs=512 count=1 2>/dev/null
+	dd if=$(BOOT_STAGE2) of=$@.tmp conv=notrunc bs=512 seek=1 2>/dev/null
+	dd if=$(KERNEL_BIN) of=$@.tmp conv=notrunc bs=512 seek=$(KERNEL_START_SECTOR) 2>/dev/null
+	@mv $@.tmp $@
+	@echo "Disk image created: $@"
+	@echo "  Stage 1: $$(wc -c < $(BOOT_STAGE1) | tr -d ' ') bytes"
+	@echo "  Stage 2: $$(wc -c < $(BOOT_STAGE2) | tr -d ' ') bytes"
+	@echo "  Kernel:  $$(wc -c < $(KERNEL_BIN) | tr -d ' ') of $$(( $(KERNEL_MAX_SECTORS) * 512 )) bytes"
+
+# GemFS data disk (10MB). Created once and kept between runs.
 $(DATA_IMAGE): | $(BUILD_DIR)
 	@echo "Creating data image..."
 	dd if=/dev/zero of=$@ bs=1M count=10 2>/dev/null
@@ -253,9 +266,10 @@ $(DATA_IMAGE): | $(BUILD_DIR)
 run: $(OS_IMAGE) $(DATA_IMAGE)
 	$(QEMU) -fda $(OS_IMAGE) -hda $(DATA_IMAGE) -serial stdio -m 128M
 
-# Debug mode (pause at start, enable GDB)
-debug: $(OS_IMAGE)
-	$(QEMU) -fda $(OS_IMAGE) -serial stdio -m 128M -S -s
+# Debug mode (pause at start, enable GDB). The data disk is required: the
+# kernel waits forever in the ATA driver when no disk is attached.
+debug: $(OS_IMAGE) $(DATA_IMAGE)
+	$(QEMU) -fda $(OS_IMAGE) -hda $(DATA_IMAGE) -serial stdio -m 128M -S -s
 
 # Clean build artifacts
 clean:
