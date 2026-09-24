@@ -136,15 +136,8 @@ void gfx_fill_circle(gfx_context_t *ctx, int cx, int cy, int radius,
       int dx = px - scx;
       int dy = py - scy;
       if (dx * dx + dy * dy <= sr2) {
-        gfx_put_pixel(ctx, (int)(px / ui_scale), (int)(py / ui_scale), color);
-        /* WAIT. gfx_put_pixel ALSO SCALES. */
-        /* If I call gfx_put_pixel with scaled coordinates, it will scale them
-         * AGAIN. */
-        /* BAD. */
-        /* I should use internal pixel put or just write to buffer. */
-
-        /* Direct buffer access logic copied from gfx_put_pixel but simplified
-         */
+        /* px/py are already physical: write the pixel directly
+         * (gfx_put_pixel would scale them a second time). */
         uint32_t offset = py * ctx->pitch + px * (ctx->bpp / 8);
         uint8_t *pixel_addr = (uint8_t *)ctx->framebuffer + offset;
 
