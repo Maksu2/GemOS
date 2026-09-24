@@ -14,6 +14,12 @@ the monitor:
   * the serial log has no PANIC, user fault or allocation failure, and no
     line was printed into the middle of another one.
 
+With --stress N it runs a load test instead: N cycles of opening all
+three programs from the menus, typing into them and moving the mouse while
+they start and exit, then closing them (Esc or the close button, taking
+turns). Every process must be reaped with exit=0, the log must stay free of
+failures and interleaved lines, and the desktop must be empty at the end.
+
 Artifacts (serial log, QEMU output, PNG screenshots) go to --out.
 Only the Python standard library is used.
 
@@ -65,6 +71,26 @@ APPS = [
 # Hosted console windows open at logical (120, 100) (kernel/console.c); this
 # point lies on the title bar of every hosted app, away from text and buttons.
 TITLE_BAR_PROBE = (500, 103)
+
+# Stress test: what to type into each program (QEMU sendkey names; no Esc
+# and no "q", which close windows) and where its close button is. A hosted
+# window at (120, 100) is cols * 8 + 16 wide; the button is 16 px, 6 px from
+# the right edge and 5 px below the top (kernel/gui/wm/wm.c).
+STRESS_TYPING = {
+    "UTERM.ELF": ["h", "e", "l", "p", "ret", "p", "i", "d", "ret",
+                  "t", "i", "c", "k", "s", "ret", "a", "b", "c", "ret"],
+    "ABOUT.ELF": ["a", "b", "c", "spc", "ret", "backspace"],
+    "UTEXTEDIT.ELF": ["h", "e", "l", "l", "o", "spc", "g", "e", "m", "ret",
+                      "x", "y", "z", "backspace", "ret"],
+}
+CLOSE_BUTTON = {
+    "UTERM.ELF": (120 + 80 * 8 + 16 - 14, 113),      # 80x25 cells
+    "ABOUT.ELF": (120 + 60 * 8 + 16 - 14, 113),      # 60x18 cells
+    "UTEXTEDIT.ELF": (120 + 84 * 8 + 16 - 14, 113),  # 84x28 cells
+}
+# Mouse path over the windows, the desktop and the dock (no clicks).
+STRESS_WIGGLE = [(300, 200), (700, 300), (500, 480), (880, 520), (200, 400),
+                 (640, 140), (60, 300)]
 
 # How long a frame may take to show up on its own (seconds). The first
 # window of a font size is the slowest: its glyphs are rasterized on the
@@ -492,6 +518,96 @@ class Smoke:
                           "%s.png, %s" % (shot, issue or
                                           "%.1f s, no input" % seconds))
 
+    # -- stress test -----------------------------------------------------------
+    def burst(self, keys):
+        """Input while programs start or exit: small mouse moves and keys."""
+        for key in keys:
+            self.monitor.cmd("mouse_move 3 2")
+            self.monitor.cmd("sendkey %s" % key)
+            self.monitor.cmd("mouse_move -3 -2")
+            time.sleep(0.03)
+
+    def stress_open(self, name, menu, item):
+        opened_re = re.compile(r"\[CONSOLE\] Opened PID=(\d+) ")
+        before = len(opened_re.findall(self.log_text()))
+        self.pointer.home()
+        self.pointer.move_to(menu)
+        self.pointer.click()
+        time.sleep(0.3)
+        self.pointer.move_to(item)
+        self.pointer.press()
+        self.burst(["a", "b"])        # typed while the program starts
+        self.pointer.release()
+        opened = self.wait_for(
+            lambda t: opened_re.findall(t)[before:], self.args.app_timeout)
+        if not opened:
+            raise SmokeError("stress: %s did not open a window" % name)
+        for key in STRESS_TYPING[name]:
+            self.monitor.cmd("sendkey %s" % key)
+            time.sleep(0.02)
+        return opened[0]
+
+    def stress(self):
+        cycles = self.args.stress
+        start = time.monotonic()
+        spawn_re = re.compile(r"\[PROC\] Spawned PID=(\d+) ")
+        reap_re = re.compile(r"\[PROC\] Reaped PID=(\d+) exit=(-?\d+)")
+        for cycle in range(cycles):
+            if time.monotonic() > self.deadline:
+                raise SmokeError("stress: time budget used up after %d cycles"
+                                 % cycle)
+            pids = [self.stress_open(name, menu, item)
+                    for name, menu, item, _ in APPS]
+            for point in STRESS_WIGGLE:
+                self.pointer.move_to(point)
+            # close from the top window down, alternating Esc and the button
+            for (name, _, _, _), pid in reversed(list(zip(APPS, pids))):
+                if cycle % 2 == 0:
+                    self.monitor.cmd("sendkey esc")
+                else:
+                    self.pointer.home()
+                    self.pointer.move_to(CLOSE_BUTTON[name])
+                    self.pointer.click()
+                self.burst(["x", "y"])    # goes to the next window down
+                if not self.wait_for(
+                        lambda t, p=pid: "[PROC] Reaped PID=%s " % p in t,
+                        self.args.app_timeout):
+                    raise SmokeError("stress: cycle %d, %s (PID=%s) was not "
+                                     "reaped" % (cycle + 1, name, pid))
+            print("  cycle %d/%d done (%.0f s)" % (cycle + 1, cycles,
+                                                   time.monotonic() - start),
+                  flush=True)
+
+        text = self.log_text()
+        pids = spawn_re.findall(text)
+        reaped = dict(reap_re.findall(text))
+        opened = re.findall(r"\[CONSOLE\] Opened PID=(\d+) ", text)
+        self.check(len(pids) == 3 * cycles,
+                   "stress: %d programs started" % (3 * cycles),
+                   "%d Spawned lines" % len(pids))
+        self.check(sorted(opened) == sorted(pids),
+                   "stress: every program opened its window",
+                   "%d of %d" % (len(opened), len(pids)))
+        missing = [p for p in pids if p not in reaped]
+        bad_exit = ["%s:%s" % (p, reaped[p]) for p in pids
+                    if p in reaped and reaped[p] != "0"]
+        self.check(not missing and not bad_exit,
+                   "stress: every program reaped with exit=0",
+                   "missing %s, exit %s" % (missing[:5], bad_exit[:5])
+                   if missing or bad_exit else "%d reaped" % len(pids))
+
+        def no_window(image):
+            if title_bar_problem(image) is None:
+                return "a window is still open"
+            return None
+
+        time.sleep(1.0)
+        issue, _ = self.watch_screen("stress-end", no_window, 5.0)
+        self.check(issue is None, "stress: desktop empty at the end",
+                   issue or "stress-end.png")
+        self.check(True, "stress: %d cycles" % cycles,
+                   "%.0f s" % (time.monotonic() - start))
+
     def scan_log(self):
         text = self.log_text()
         hits = []
@@ -513,9 +629,12 @@ class Smoke:
             if not self.boot():
                 return
             self.desktop()
-            for name, menu, item, updating_area in APPS:
-                self.run_app(name, menu, item, updating_area)
-                time.sleep(0.5)
+            if self.args.stress:
+                self.stress()
+            else:
+                for name, menu, item, updating_area in APPS:
+                    self.run_app(name, menu, item, updating_area)
+                    time.sleep(0.5)
             self.scan_log()
         finally:
             self.stop_qemu()
@@ -529,6 +648,8 @@ def main():
                         help="overall time budget in seconds")
     parser.add_argument("--boot-timeout", type=float, default=120.0)
     parser.add_argument("--app-timeout", type=float, default=45.0)
+    parser.add_argument("--stress", type=int, default=0, metavar="CYCLES",
+                        help="run the load test with this many cycles")
     args = parser.parse_args()
 
     def on_signal(signum, _frame):

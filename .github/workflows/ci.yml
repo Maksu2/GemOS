@@ -39,3 +39,32 @@ jobs:
             build/smoke/*.png
             build/smoke/*.log
           if-no-files-found: ignore
+
+  stress:
+    name: make all + QEMU stress test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nasm and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
+
+      - name: Build
+        run: make all
+
+      # 25 cycles of opening, typing into and closing all three programs
+      - name: Stress test
+        run: tools/smoke.sh --no-build --stress
+
+      - name: Upload stress artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-artifacts
+          path: |
+            build/stress/*.png
+            build/stress/*.log
+          if-no-files-found: ignore
