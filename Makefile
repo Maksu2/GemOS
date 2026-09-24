@@ -83,6 +83,7 @@ KERNEL_C_SOURCES := kernel/kernel.c kernel/console.c kernel/gdt.c kernel/idt.c \
                     kernel/syscall.c kernel/heap.c \
                     kernel/event.c kernel/memory/paging.c \
                     kernel/gfx/rect.c kernel/gfx/context.c kernel/gfx/primitives.c \
+                    kernel/gfx/icons.c \
                     kernel/gfx/font/font.c \
                     kernel/gui/desktop.c kernel/gui/window/window.c \
                     kernel/gui/wm/wm.c kernel/gui/topbar/topbar.c \

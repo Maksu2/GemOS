@@ -6,7 +6,7 @@
 #include "../../kernel/gfx/primitives.h"
 #include "../../kernel/gui/wm/wm.h"
 #include "../../kernel/include/heap.h"
-#include "explorer_icons.h"
+#include "../../kernel/gfx/icons.h"
 #include <stddef.h>
 
 #define GRID_COLS 5
