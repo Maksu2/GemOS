@@ -623,10 +623,22 @@ class Smoke:
                    "; ".join(repr(line) for line in bad[:3]))
         self.check(self.qemu.poll() is None, "QEMU still running at the end")
 
+    def save_diagnostics(self):
+        """On failure: the screen and the CPU registers (EIP shows where the
+        guest is, e.g. `nm build/kernel.elf | sort`) next to the log."""
+        try:
+            self.screendump("failure")
+            with open(os.path.join(self.out, "registers.txt"), "wb") as f:
+                f.write(self.monitor.cmd("info registers"))
+            print("diagnostics: failure.png, registers.txt", flush=True)
+        except (OSError, SmokeError, ValueError):
+            pass
+
     def run(self):
         self.start_qemu()
         try:
             if not self.boot():
+                self.save_diagnostics()
                 return
             self.desktop()
             if self.args.stress:
@@ -636,6 +648,11 @@ class Smoke:
                     self.run_app(name, menu, item, updating_area)
                     time.sleep(0.5)
             self.scan_log()
+            if any(not ok for ok, _, _ in self.results):
+                self.save_diagnostics()
+        except SmokeError:
+            self.save_diagnostics()
+            raise
         finally:
             self.stop_qemu()
 

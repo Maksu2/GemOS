@@ -38,6 +38,7 @@ jobs:
           path: |
             build/smoke/*.png
             build/smoke/*.log
+            build/smoke/*.txt
           if-no-files-found: ignore
 
   stress:
@@ -67,4 +68,5 @@ jobs:
           path: |
             build/stress/*.png
             build/stress/*.log
+            build/stress/*.txt
           if-no-files-found: ignore
