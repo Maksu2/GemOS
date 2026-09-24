@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # GemOS smoke test: build the image and boot it in headless QEMU.
 #
-# Usage:  tools/smoke.sh [--no-build] [--stress [CYCLES]]
+# Usage:  tools/smoke.sh [--no-build] [--stress [CYCLES] | --matrix]
 #
 #   --stress   load test instead of the smoke test: CYCLES (default 25)
 #              rounds of opening, typing into and closing all programs
+#   --matrix   the smoke test on every machine variant: 32/64/256 MB,
+#              no data disk, 4 MB VRAM (smaller mode, no page flip),
+#              boot from the hard disk image
 #
 # Environment:
 #   QEMU           emulator binary (default: qemu-system-i386)
 #   SMOKE_TIMEOUT  hard limit for the QEMU part in seconds
-#                  (default: 600, with --stress 1800)
-#   SMOKE_OUT      artifacts directory (default: build/smoke, build/stress)
+#                  (default: 600, with --stress or --matrix 1800)
+#   SMOKE_OUT      artifacts directory (default: build/smoke, build/stress,
+#                  build/matrix)
 #
 # The QEMU part lives in tools/smoke.py (Python 3, standard library only).
 # Prints one PASS/FAIL line per check and ends with "SMOKE: PASS" or
@@ -20,6 +24,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build=1
 stress=0
+matrix=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -28,13 +33,17 @@ while [ $# -gt 0 ]; do
       stress=25
       if [ $# -gt 1 ] && [[ "$2" =~ ^[0-9]+$ ]]; then stress="$2"; shift; fi
       ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    --matrix) matrix=1 ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
 
-if [ "$stress" -gt 0 ]; then
+if [ "$matrix" -eq 1 ]; then
+  out="${SMOKE_OUT:-$root/build/matrix}"
+  limit="${SMOKE_TIMEOUT:-1800}"
+elif [ "$stress" -gt 0 ]; then
   out="${SMOKE_OUT:-$root/build/stress}"
   limit="${SMOKE_TIMEOUT:-1800}"
 else
@@ -55,6 +64,9 @@ echo "== QEMU smoke test (limit ${limit}s, artifacts in ${out})"
 budget=$(( limit > 60 ? limit - 30 : limit ))
 cmd=(python3 "$root/tools/smoke.py" --image "$root/build/gemos.img"
      --out "$out" --timeout "$budget" --stress "$stress")
+if [ "$matrix" -eq 1 ]; then
+  cmd+=(--matrix)
+fi
 status=0
 if command -v timeout >/dev/null 2>&1; then
   timeout --kill-after=15 "$limit" "${cmd[@]}" || status=$?
