@@ -49,6 +49,8 @@ USERLAND_DIR := userland
 # Compiler flags
 CFLAGS := -m32 -ffreestanding -fno-pie -fno-stack-protector
 CFLAGS += -nostdlib -nostdinc -fno-builtin
+# No unwinder in the kernel or userland: do not emit .eh_frame
+CFLAGS += -fno-asynchronous-unwind-tables
 CFLAGS += -Wall -Wextra -Werror
 CFLAGS += -O2 -g
 CFLAGS += -I. -Iinclude
@@ -169,21 +171,22 @@ $(BOOT_STAGE1): $(BOOT_DIR)/stage1/boot.asm | $(BUILD_DIR)
 $(BOOT_STAGE2): $(BOOT_DIR)/stage2/loader.asm | $(BUILD_DIR)
 	$(AS) -f bin $< -o $@
 
+# Objects also depend on the Makefile, so changing flags rebuilds them.
 # Userland objects (listed first: GNU make 3.81 picks the first matching rule)
-$(OBJ_DIR)/$(USERLAND_DIR)/%.o: $(USERLAND_DIR)/%.c
+$(OBJ_DIR)/$(USERLAND_DIR)/%.o: $(USERLAND_DIR)/%.c Makefile
 	@mkdir -p $(@D)
 	$(CC) $(USERLAND_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(OBJ_DIR)/$(USERLAND_DIR)/%.o: $(USERLAND_DIR)/%.S
+$(OBJ_DIR)/$(USERLAND_DIR)/%.o: $(USERLAND_DIR)/%.S Makefile
 	@mkdir -p $(@D)
 	$(CC) $(USERLAND_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 # Kernel, driver and library objects
-$(OBJ_DIR)/%.o: %.c
+$(OBJ_DIR)/%.o: %.c Makefile
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(OBJ_DIR)/%.o: %.S
+$(OBJ_DIR)/%.o: %.S Makefile
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
