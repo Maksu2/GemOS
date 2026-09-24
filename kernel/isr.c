@@ -190,7 +190,8 @@ uint32_t isr_handler(registers_t *regs) {
   /* Log output */
   if (regs->int_no >= PIC1_OFFSET && regs->int_no <= PIC2_OFFSET + 7) {
     /* Silent normal hardware IRQs for clean serial output. */
-  } else if (regs->int_no == SYSCALL_VECTOR) {
+  } else if (regs->int_no == SYSCALL_VECTOR ||
+             regs->int_no == KERNEL_YIELD_VECTOR) {
     /* Silent normal syscall traffic; user-visible output comes from handlers. */
   } else {
     serial_print("[ISR] Interrupt: ");

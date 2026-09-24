@@ -27,6 +27,7 @@
 #include "../kernel/gui/wm/wm.h"         // WM Integration
 #include "../kernel/include/event.h"
 #include "../kernel/include/heap.h"
+#include "../kernel/include/irq.h"
 #include "../kernel/memory/paging.h"
 #include "../kernel/ui/cursor.h"
 #include "../kernel/ui/dock/dock.h"
@@ -41,7 +42,25 @@ extern uintptr_t __kernel_end;
 gfx_context_t screen_ctx;
 static bool pending_redraw = true;
 
-void kernel_request_redraw(void) { pending_redraw = true; }
+void kernel_request_redraw(void) {
+  pending_redraw = true;
+  scheduler_wake(TASK_GUI);
+}
+
+/* End of a GUI loop iteration. Kernel code is never preempted, so the GUI
+ * task gives up the CPU here and sleeps until an input event, a timer tick,
+ * a redraw request or a process exit wakes it (hlt only runs in the idle
+ * task). The check and the block happen with interrupts off so that an
+ * event pushed in between is not missed. */
+static void gui_wait(void) {
+  uint32_t flags = irq_save();
+
+  if (!event_pending()) {
+    scheduler_block_current(0);
+  }
+  scheduler_yield();
+  irq_restore(flags);
+}
 
 void kernel_main(void) {
   /* Initialize Serial Port for debugging */
@@ -311,6 +330,6 @@ void kernel_main(void) {
       }
     }
 
-    __asm__ volatile("hlt");
+    gui_wait();
   }
 }
