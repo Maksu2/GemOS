@@ -9,8 +9,9 @@
 #
 # Targets:
 #   make all    - build build/gemos.img (boot floppy)
-#   make run    - boot the image in QEMU with the GemFS data disk
-#   make debug  - same, paused, with a GDB stub on :1234
+#   make run    - boot the floppy image in QEMU with the GemFS data disk
+#   make run-hdd - boot the hard disk image instead (data disk second)
+#   make debug  - same as run, paused, with a GDB stub on :1234
 #   make clean  - remove build/
 #   make info   - show the toolchain and the object list
 #
@@ -68,6 +69,7 @@ BOOT_STAGE2 := $(BUILD_DIR)/loader.bin
 KERNEL_ELF := $(BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(BUILD_DIR)/kernel.bin
 OS_IMAGE := $(BUILD_DIR)/gemos.img
+HDD_IMAGE := $(BUILD_DIR)/gemos-hdd.img
 DATA_IMAGE := $(BUILD_DIR)/data.img
 
 # =============================================================================
@@ -152,12 +154,12 @@ DEPS := $(KERNEL_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 # Targets
 # =============================================================================
 
-.PHONY: all clean run debug info
+.PHONY: all clean run run-hdd debug info
 
 # Keep intermediate files (e.g. build/uterm_image.bin) instead of deleting them
 .SECONDARY:
 
-all: $(OS_IMAGE)
+all: $(OS_IMAGE) $(HDD_IMAGE)
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -270,6 +272,22 @@ $(OS_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
 	@echo "  Stage 2: $$(wc -c < $(BOOT_STAGE2) | tr -d ' ') bytes"
 	@echo "  Kernel:  $$(wc -c < $(KERNEL_BIN) | tr -d ' ') bytes"
 
+# Bootable hard disk image (16 MB) with the floppy's layout: stage 1 in the
+# MBR, stage 2 in sectors 1-32, the kernel from sector 33. Both stages read
+# it with the INT 13h extensions (LBA). GemFS never uses a disk with a boot
+# signature, so the data disk goes second.
+HDD_SECTORS := 32768
+
+$(HDD_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
+	$(check-kernel-image)
+	@rm -f $@ $@.tmp
+	dd if=/dev/zero of=$@.tmp bs=512 count=$(HDD_SECTORS) 2>/dev/null
+	dd if=$(BOOT_STAGE1) of=$@.tmp conv=notrunc bs=512 count=1 2>/dev/null
+	dd if=$(BOOT_STAGE2) of=$@.tmp conv=notrunc bs=512 seek=1 2>/dev/null
+	dd if=$(KERNEL_BIN) of=$@.tmp conv=notrunc bs=512 seek=$(KERNEL_START_SECTOR) 2>/dev/null
+	@mv $@.tmp $@
+	@echo "Hard disk image created: $@"
+
 # GemFS data disk (10MB). Created once and kept between runs.
 $(DATA_IMAGE): | $(BUILD_DIR)
 	@echo "Creating data image..."
@@ -279,8 +297,13 @@ $(DATA_IMAGE): | $(BUILD_DIR)
 run: $(OS_IMAGE) $(DATA_IMAGE)
 	$(QEMU) -fda $(OS_IMAGE) -hda $(DATA_IMAGE) -serial stdio -m 128M
 
-# Debug mode (pause at start, enable GDB). The data disk is required: the
-# kernel waits forever in the ATA driver when no disk is attached.
+run-hdd: $(HDD_IMAGE) $(DATA_IMAGE)
+	$(QEMU) -drive file=$(HDD_IMAGE),if=ide,index=0,format=raw \
+	  -drive file=$(DATA_IMAGE),if=ide,index=1,format=raw -boot c \
+	  -serial stdio -m 128M
+
+# Debug mode (pause at start, enable GDB). Without the data disk the system
+# starts too, just without a file system.
 debug: $(OS_IMAGE) $(DATA_IMAGE)
 	$(QEMU) -fda $(OS_IMAGE) -hda $(DATA_IMAGE) -serial stdio -m 128M -S -s
 
