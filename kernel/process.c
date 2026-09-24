@@ -20,14 +20,14 @@ typedef enum {
   PROCESS_IMAGE_SOURCE_EMBEDDED,
 } process_image_source_t;
 
-extern uint8_t _binary_build_usrsmoke_elf_start[];
-extern uint8_t _binary_build_usrsmoke_elf_end[];
-extern uint8_t _binary_build_uterm_image_bin_start[];
-extern uint8_t _binary_build_uterm_image_bin_end[];
-extern uint8_t _binary_build_about_image_bin_start[];
-extern uint8_t _binary_build_about_image_bin_end[];
-extern uint8_t _binary_build_utextedit_image_bin_start[];
-extern uint8_t _binary_build_utextedit_image_bin_end[];
+extern uint8_t _binary_usrsmoke_elf_start[];
+extern uint8_t _binary_usrsmoke_elf_end[];
+extern uint8_t _binary_uterm_image_bin_start[];
+extern uint8_t _binary_uterm_image_bin_end[];
+extern uint8_t _binary_about_image_bin_start[];
+extern uint8_t _binary_about_image_bin_end[];
+extern uint8_t _binary_utextedit_image_bin_start[];
+extern uint8_t _binary_utextedit_image_bin_end[];
 
 typedef struct {
   const char *name;
@@ -36,14 +36,14 @@ typedef struct {
 } embedded_user_program_t;
 
 static embedded_user_program_t embedded_user_programs[] = {
-    {"USRSMOKE.ELF", _binary_build_usrsmoke_elf_start,
-     _binary_build_usrsmoke_elf_end},
-    {"UTERM.ELF", _binary_build_uterm_image_bin_start,
-     _binary_build_uterm_image_bin_end},
-    {"ABOUT.ELF", _binary_build_about_image_bin_start,
-     _binary_build_about_image_bin_end},
-    {"UTEXTEDIT.ELF", _binary_build_utextedit_image_bin_start,
-     _binary_build_utextedit_image_bin_end},
+    {"USRSMOKE.ELF", _binary_usrsmoke_elf_start,
+     _binary_usrsmoke_elf_end},
+    {"UTERM.ELF", _binary_uterm_image_bin_start,
+     _binary_uterm_image_bin_end},
+    {"ABOUT.ELF", _binary_about_image_bin_start,
+     _binary_about_image_bin_end},
+    {"UTEXTEDIT.ELF", _binary_utextedit_image_bin_start,
+     _binary_utextedit_image_bin_end},
 };
 
 #define PROCESS_INITIAL_FRAME_WORDS 16U
@@ -225,23 +225,12 @@ int process_seed_userland(void) {
   return seeded;
 }
 
-int process_spawn_user_from_file(const char *name) {
+/* Start the program whose image is in process_file_buffer. */
+static int process_spawn_loaded(const char *name, int image_size,
+                                process_image_source_t image_source) {
   process_t *process;
-  int image_size;
   int task_id;
   uint32_t initial_esp;
-  process_image_source_t image_source;
-
-  if (name == NULL) {
-    return -1;
-  }
-
-  if (!process_load_image(name, &image_size, &image_source)) {
-    serial_print("[PROC] Failed to read user image: ");
-    serial_print(name);
-    serial_print("\n");
-    return -1;
-  }
 
   process = process_allocate();
   if (process == NULL) {
@@ -314,6 +303,24 @@ int process_spawn_user_from_file(const char *name) {
   return (int)process->pid;
 }
 
+int process_spawn_user_from_file(const char *name) {
+  int image_size;
+  process_image_source_t image_source;
+
+  if (name == NULL) {
+    return -1;
+  }
+
+  if (!process_load_image(name, &image_size, &image_source)) {
+    serial_print("[PROC] Failed to read user image: ");
+    serial_print(name);
+    serial_print("\n");
+    return -1;
+  }
+
+  return process_spawn_loaded(name, image_size, image_source);
+}
+
 int process_kill_pid(uint32_t pid, int32_t exit_code) {
   process_t *process = process_find_by_pid(pid);
 
@@ -344,16 +351,18 @@ void process_reap_zombies(void) {
   for (int i = 0; i < MAX_PROCESSES; ++i) {
     process_t *process = &process_table[i];
 
+    if (process->state != PROC_ZOMBIE && process->state != PROC_FAULTED) {
+      continue;
+    }
+
+    console_destroy_for_pid(process->pid);
     if (process->state == PROC_ZOMBIE) {
-      console_destroy_for_pid(process->pid);
       serial_print("[PROC] Reaped PID=");
       serial_print_dec(process->pid);
       serial_print(" exit=");
       serial_print_dec((uint32_t)process->exit_code);
       serial_print("\n");
-      process_destroy(process);
-    } else if (process->state == PROC_FAULTED) {
-      console_destroy_for_pid(process->pid);
+    } else {
       serial_print("[PROC] Faulted PID=");
       serial_print_dec(process->pid);
       serial_print(" vec=");
@@ -363,7 +372,7 @@ void process_reap_zombies(void) {
       serial_print(" cr2=0x");
       serial_print_hex(process->fault_cr2);
       serial_print("\n");
-      process_destroy(process);
     }
+    process_destroy(process);
   }
 }

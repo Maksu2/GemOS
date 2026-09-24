@@ -147,8 +147,8 @@ USER_OBJS := $(USER_CRT0_OBJ) $(USRSMOKE_OBJ) $(UTERM_OBJS) $(ABOUT_OBJS) \
              $(UTEXTEDIT_OBJS)
 
 # Binary blobs linked into the kernel. objcopy derives the symbol names from
-# the input path (e.g. _binary_build_uterm_image_bin_start), and
-# kernel/kernel.c and kernel/process.c refer to those names.
+# the file name (e.g. _binary_uterm_image_bin_start), and kernel/kernel.c
+# and kernel/process.c refer to those names.
 FONT_BLOB := $(OBJ_DIR)/blobs/font.ttf.o
 USER_BLOBS := $(OBJ_DIR)/blobs/usrsmoke.elf.o \
               $(OBJ_DIR)/blobs/uterm_image.bin.o \
@@ -230,9 +230,9 @@ $(FONT_BLOB): assets/font.ttf
 	@mkdir -p $(@D)
 	cd $(<D) && $(OBJCOPY) -I binary -O elf32-i386 -B i386 $(<F) $(abspath $@)
 
-$(OBJ_DIR)/blobs/%.o: $(BUILD_DIR)/%
+$(OBJ_DIR)/blobs/%.o: $(BUILD_DIR)/% Makefile
 	@mkdir -p $(@D)
-	$(OBJCOPY) -I binary -O elf32-i386 -B i386 $< $@
+	cd $(BUILD_DIR) && $(OBJCOPY) -I binary -O elf32-i386 -B i386 $* $(abspath $@)
 
 # Kernel
 $(KERNEL_ELF): $(KERNEL_OBJS) $(BLOB_OBJS) linker.ld
