@@ -4,7 +4,7 @@
  * Basic string manipulation functions (no libc dependency).
  */
 
-#include "string.h"
+#include <string.h>
 
 /* Fill memory with a constant byte - optimized with rep stosd */
 void *memset(void *dest, int c, size_t n) {

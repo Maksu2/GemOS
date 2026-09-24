@@ -1,5 +1,5 @@
 #include "context.h"
-#include "../include/string.h" /* For memset if needed */
+#include <string.h>
 #include "../ui/ui_scale.h"
 
 void gfx_init_context(gfx_context_t *ctx, uint32_t *fb, uint32_t w, uint32_t h,

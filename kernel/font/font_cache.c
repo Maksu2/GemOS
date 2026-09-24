@@ -1,5 +1,5 @@
 #include "font_cache.h"
-#include "../../include/string.h"
+#include <string.h>
 #include "../include/heap.h"
 
 #define CACHE_SIZE 512

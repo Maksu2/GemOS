@@ -1,3 +1,11 @@
+/*
+ * GemOS freestanding <string.h>
+ *
+ * The subset of the C string functions the kernel uses, implemented in
+ * lib/string.c. memcpy, memmove, memset and memcmp must stay: GCC may emit
+ * calls to them even in freestanding code.
+ */
+
 #ifndef STRING_H
 #define STRING_H
 

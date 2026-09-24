@@ -2,7 +2,7 @@
 #include "../../drivers/serial.h"
 #include "../gfx/font/font.h"
 #include "../gfx/primitives.h"
-#include "../include/string.h"
+#include <string.h>
 #include "ui_scale.h"
 #include <stddef.h>
 

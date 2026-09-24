@@ -1,6 +1,6 @@
 #include "app_manager.h"
 #include "../../drivers/serial.h"
-#include "../../include/string.h"
+#include <string.h>
 
 #define MAX_APPS 16
 static app_t *registered_apps[MAX_APPS];

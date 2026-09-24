@@ -1,5 +1,5 @@
 #include "font.h"
-#include "../../../include/string.h"
+#include <string.h>
 #include "../../font/font_cache.h"
 #include "../../font/scanline.h"
 #include "../../font/truetype.h"

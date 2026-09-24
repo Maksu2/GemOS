@@ -1,5 +1,5 @@
 #include "scanline.h"
-#include "../../include/string.h"
+#include <string.h>
 #include "../include/heap.h"
 
 #define V_OVERSAMPLE 4
