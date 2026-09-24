@@ -123,8 +123,6 @@ void keyboard_callback(registers_t *regs) {
     /* Handle CapsLock toggle */
     if (scancode == SC_CAPSLOCK) {
       caps_lock = !caps_lock;
-      serial_print("[KBD] CapsLock: ");
-      serial_print(caps_lock ? "ON\n" : "OFF\n");
       return;
     }
 

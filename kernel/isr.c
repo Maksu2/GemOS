@@ -190,7 +190,8 @@ uint32_t isr_handler(registers_t *regs) {
   /* Log output */
   if (regs->int_no >= PIC1_OFFSET && regs->int_no <= PIC2_OFFSET + 7) {
     /* Silent normal hardware IRQs for clean serial output. */
-  } else if (regs->int_no == SYSCALL_VECTOR) {
+  } else if (regs->int_no == SYSCALL_VECTOR ||
+             regs->int_no == KERNEL_YIELD_VECTOR) {
     /* Silent normal syscall traffic; user-visible output comes from handlers. */
   } else {
     serial_print("[ISR] Interrupt: ");
@@ -225,7 +226,7 @@ uint32_t isr_handler(registers_t *regs) {
       serial_print("\n");
 
       scheduler_mark_current_fault(regs->int_no, regs->err_code, fault_cr2);
-      return scheduler_switch_now((uint32_t)(uintptr_t)regs);
+      return scheduler_interrupt_exit((uint32_t)(uintptr_t)regs);
     }
 
     /* CPU Exception */
@@ -262,5 +263,5 @@ uint32_t isr_handler(registers_t *regs) {
     handler(regs);
   }
 
-  return syscall_take_pending_resume_esp();
+  return scheduler_interrupt_exit((uint32_t)(uintptr_t)regs);
 }

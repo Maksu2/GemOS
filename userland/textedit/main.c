@@ -21,17 +21,6 @@ int main(void) {
   utextedit_state_init(&textedit_state);
 
   for (;;) {
-    int saw_event = 0;
-
-    while ((poll_result = gemos_hosted_app_poll_event(&textedit_app)) == 1) {
-      saw_event = 1;
-      utextedit_state_handle_event(&textedit_state, &textedit_app.event);
-    }
-
-    if (poll_result < 0) {
-      return 2;
-    }
-
     if (textedit_state.dirty) {
       utextedit_render_build_frame(&textedit_state, &textedit_app.frame,
                                    textedit_cells);
@@ -45,8 +34,16 @@ int main(void) {
       return 0;
     }
 
-    if (!saw_event && !textedit_state.dirty) {
-      gemos_hosted_app_idle();
+    /* Sleep until the next event, then handle everything queued. */
+    poll_result =
+        gemos_hosted_app_wait_event(&textedit_app, GEMOS_WAIT_FOREVER);
+    while (poll_result == 1) {
+      utextedit_state_handle_event(&textedit_state, &textedit_app.event);
+      poll_result = gemos_hosted_app_poll_event(&textedit_app);
+    }
+
+    if (poll_result < 0) {
+      return 2;
     }
   }
 }

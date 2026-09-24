@@ -3,6 +3,7 @@
 #include "process.h"
 
 #include "../drivers/serial.h"
+#include "include/irq.h"
 #include "memory/paging.h"
 #include <string.h>
 
@@ -52,18 +53,6 @@ typedef struct {
   uintptr_t start;
   uintptr_t end;
 } elf_load_region_t;
-
-static uint32_t elf_save_and_disable_interrupts(void) {
-  uint32_t eflags;
-  __asm__ volatile("pushfl; popl %0; cli" : "=r"(eflags) : : "memory");
-  return eflags;
-}
-
-static void elf_restore_interrupts(uint32_t eflags) {
-  if (eflags & 0x200U) {
-    __asm__ volatile("sti");
-  }
-}
 
 static int elf_validate_header(const elf32_ehdr_t *header, size_t image_size) {
   if (header == NULL || image_size < sizeof(*header)) {
@@ -255,7 +244,7 @@ int elf_load_into_process(process_t *process, const uint8_t *image,
     }
   }
 
-  interrupt_state = elf_save_and_disable_interrupts();
+  interrupt_state = irq_save();
   paging_switch_directory(process->as.page_directory);
   for (uint16_t i = 0; i < header->e_phnum; ++i) {
     const elf32_phdr_t *segment = &segments[i];
@@ -269,7 +258,7 @@ int elf_load_into_process(process_t *process, const uint8_t *image,
            segment->p_filesz);
   }
   paging_switch_directory(paging_get_directory());
-  elf_restore_interrupts(interrupt_state);
+  irq_restore(interrupt_state);
 
   process->entry_eip = header->e_entry;
   process->image_base = lowest_base;

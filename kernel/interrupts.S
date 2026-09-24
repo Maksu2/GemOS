@@ -126,3 +126,6 @@ ISR_NOERRCODE 47
 
 /* System call gate */
 ISR_NOERRCODE 128
+
+/* Kernel yield (KERNEL_YIELD_VECTOR, kernel/scheduler.h) */
+ISR_NOERRCODE 129

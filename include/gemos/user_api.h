@@ -93,6 +93,13 @@ static inline int32_t gemos_console_poll_event(int32_t handle,
                         (uintptr_t)event);
 }
 
+static inline int32_t gemos_console_wait_event(int32_t handle,
+                                               gemos_console_event_t *event,
+                                               uint32_t timeout_ms) {
+  return gemos_syscall3(SYS_console_wait_event, (uintptr_t)handle,
+                        (uintptr_t)event, timeout_ms);
+}
+
 static inline int32_t gemos_console_clear(int32_t handle) {
   return gemos_syscall1(SYS_console_clear, (uintptr_t)handle);
 }

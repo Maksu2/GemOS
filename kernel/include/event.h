@@ -44,4 +44,7 @@ int event_push(event_t event);
 /* Pop an event from the queue (Returns 1 if event popped, 0 if empty) */
 int event_pop(event_t *event);
 
+/* Non-zero if the queue holds at least one event */
+int event_pending(void);
+
 #endif /* EVENT_H */

@@ -229,6 +229,7 @@ static int console_push_event(console_session_t *session,
 
   session->input_queue[session->input_head] = event;
   session->input_head = next_head;
+  process_wake(session->owner_pid);  /* it may sleep in wait_event */
   return 1;
 }
 

@@ -6,11 +6,13 @@
  * This stub replaces isr32 in the IDT after scheduler_init() calls
  * idt_set_gate(32, scheduler_irq0_stub, ...).
  *
- * Stack layout on entry (ring 0 -> ring 0, CPU does NOT push SS/ESP):
+ * Stack layout on entry:
  *
  *   [ESP+0]  EIP    (CPU)
  *   [ESP+4]  CS     (CPU)
  *   [ESP+8]  EFLAGS (CPU)
+ *   [ESP+12] ESP, [ESP+16] SS — only when IRQ0 interrupted Ring 3; the
+ *            stub leaves them alone and iret pops them again.
  *
  * After push $0 / push $32 / pusha / push DS — matches registers_t in isr.h:
  *
@@ -33,7 +35,9 @@
  *
  * scheduler_tick(current_esp) receives the address of the DS field (= frame
  * base) and returns new_esp — either the same address (no switch) or a
- * different task's saved frame base.
+ * different task's saved frame base. It switches only when IRQ0 interrupted
+ * Ring 3 (see kernel/scheduler.c). isr_common_stub saves the same frame, so
+ * a task can be resumed through either stub.
  *
  * Context switch happens at the single instruction:
  *   mov %eax, %esp
@@ -53,7 +57,7 @@ scheduler_irq0_stub:
 
     /* Save DS and load kernel data segment */
     mov %ds, %ax
-    push %eax           /* push as uint32 (upper 16 bits = 0 after zeroing) */
+    push %eax           /* only %ax matters when the frame is restored */
 
     mov $0x10, %ax
     mov %ax, %ds

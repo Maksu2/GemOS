@@ -8,6 +8,10 @@ struct process;
 #define MAX_TASKS       16
 #define TASK_STACK_SIZE (16 * 1024)  /* 16 KB per task */
 #define TASK_QUANTUM    10           /* ticks per task, 10ms @ 1000 Hz */
+#define TASK_GUI        0            /* task 0: the GUI loop in kernel_main */
+
+/* Software interrupt a kernel task uses to give up the CPU. */
+#define KERNEL_YIELD_VECTOR 0x81
 
 typedef enum {
     TASK_UNUSED  = 0,
@@ -30,6 +34,7 @@ typedef struct {
     uint8_t      *stack;           /* Stack base (kalloc'd), NULL for task0 */
     uint32_t      kernel_stack_top;
     uint32_t      ticks_remaining; /* Per-task quantum countdown (decremented only when RUNNING) */
+    uint64_t      wake_tick;       /* BLOCKED: wake at this tick, 0 = only scheduler_wake() */
     struct process *process;
 } task_t;
 
@@ -41,8 +46,22 @@ int      task_create_user(struct process *process, uint32_t initial_esp);
 
 /* Called from assembly stub — returns new ESP to switch to */
 uint32_t scheduler_tick(uint32_t current_esp);
-uint32_t scheduler_yield_now(uint32_t current_esp);
-uint32_t scheduler_switch_now(uint32_t current_esp);
+
+/* Ask to give up the CPU when the current interrupt returns. */
+void     scheduler_request_yield(void);
+/* Kernel tasks only: give up the CPU now (int 0x81). Returns when the task
+ * is scheduled again. */
+void     scheduler_yield(void);
+/* Mark the current task blocked until scheduler_wake() or until the tick
+ * count reaches wake_tick (0 = no timeout). The caller must then give up
+ * the CPU: scheduler_yield() in a kernel task, return from the syscall in a
+ * user task. */
+void     scheduler_block_current(uint64_t wake_tick);
+/* Make a blocked task runnable. Safe from IRQ handlers. */
+void     scheduler_wake(uint32_t task_id);
+/* Called on every interrupt exit except IRQ0: returns the ESP of the task to
+ * resume, or 0 to resume the interrupted one. */
+uint32_t scheduler_interrupt_exit(uint32_t current_esp);
 
 void     scheduler_mark_current_zombie(int32_t exit_code);
 void     scheduler_mark_current_fault(uint32_t vector, uint32_t error,

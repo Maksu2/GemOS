@@ -1,18 +1,17 @@
 #include "pit.h"
 #include "../include/io.h"
 #include "../kernel/include/event.h"
+#include "../kernel/include/irq.h"
 #include "../kernel/isr.h"
 #include "pic.h"
 #include "serial.h"
 
 /* Global tick counter */
 static volatile uint64_t global_ticks = 0;
-static uint32_t log_counter = 0;
 
 /* Core timer logic — called from scheduler_tick (bypasses isr_handler path) */
 void pit_tick(void) {
   global_ticks++;
-  log_counter++;
 
   /* Push Timer Event every 10 ticks (10ms) to avoid spamming the queue */
   if (global_ticks % 10 == 0) {
@@ -20,14 +19,6 @@ void pit_tick(void) {
     ev.type = EVENT_TIMER_TICK;
     ev.data.timer.tick_count = global_ticks;
     event_push(ev);
-  }
-
-  /* Log every 1000 ticks (1 second) */
-  if (log_counter >= 1000) {
-    log_counter = 0;
-    serial_print("[TIMER] 1 second passed (Ticks: ");
-    serial_print_dec((uint32_t)global_ticks);
-    serial_print(")\n");
   }
 }
 
@@ -65,4 +56,10 @@ void init_pit(void) {
 }
 
 /* Get current tick count */
-uint64_t timer_get_ticks(void) { return global_ticks; }
+uint64_t timer_get_ticks(void) {
+  /* two 32-bit loads: keep IRQ0 out of the middle */
+  uint32_t flags = irq_save();
+  uint64_t ticks = global_ticks;
+  irq_restore(flags);
+  return ticks;
+}

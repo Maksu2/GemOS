@@ -22,18 +22,9 @@ int main(void) {
   about_state_init(&about_state, (uint32_t)about_app.pid);
 
   for (;;) {
-    int saw_event = 0;
+    uint32_t now_ms = (uint32_t)gemos_ticks_ms();
 
-    while ((poll_result = gemos_hosted_app_poll_event(&about_app)) == 1) {
-      saw_event = 1;
-      about_state_handle_event(&about_state, &about_app.event);
-    }
-
-    if (poll_result < 0) {
-      return 2;
-    }
-
-    about_state_tick(&about_state, (uint32_t)gemos_ticks_ms());
+    about_state_tick(&about_state, now_ms);
 
     if (about_state.dirty) {
       about_render_build_frame(&about_state, &about_app.frame, about_cells);
@@ -47,8 +38,16 @@ int main(void) {
       return 0;
     }
 
-    if (!saw_event && !about_state.dirty) {
-      gemos_hosted_app_idle();
+    /* Sleep until the next event or the next full second of uptime. */
+    poll_result =
+        gemos_hosted_app_wait_event(&about_app, 1000U - now_ms % 1000U);
+    while (poll_result == 1) {
+      about_state_handle_event(&about_state, &about_app.event);
+      poll_result = gemos_hosted_app_poll_event(&about_app);
+    }
+
+    if (poll_result < 0) {
+      return 2;
     }
   }
 }

@@ -1,5 +1,10 @@
 #include "include/event.h"
+#include "include/irq.h"
+#include "scheduler.h"
 #include "../drivers/serial.h"
+
+/* Producers are IRQ handlers (keyboard, mouse, PIT), the consumer is the
+ * GUI task. */
 
 #define MAX_EVENTS 256
 
@@ -29,15 +34,22 @@ int event_push(event_t event) {
 
   event_queue[head] = event;
   head = next_head;
+  scheduler_wake(TASK_GUI);
   return 1;
 }
 
 int event_pop(event_t *event) {
+  uint32_t flags = irq_save();
+
   if (head == tail) {
+    irq_restore(flags);
     return 0; /* Empty */
   }
 
   *event = event_queue[tail];
   tail = (tail + 1) % MAX_EVENTS;
+  irq_restore(flags);
   return 1;
 }
+
+int event_pending(void) { return head != tail; }

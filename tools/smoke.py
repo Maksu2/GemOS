@@ -9,7 +9,16 @@ the monitor:
   * the desktop screendump is a rendered 1920x1080 frame,
   * UTERM.ELF, ABOUT.ELF and UTEXTEDIT.ELF are started from the topbar menus,
     open their console window, close on Esc and are reaped with exit=0,
-  * the serial log has no PANIC, user fault or allocation failure.
+  * every frame checked must appear on screen by itself: no input is sent
+    while waiting for it,
+  * the serial log has no PANIC, user fault or allocation failure, and no
+    line was printed into the middle of another one.
+
+With --stress N it runs a load test instead: N cycles of opening all
+three programs from the menus, typing into them and moving the mouse while
+they start and exit, then closing them (Esc or the close button, taking
+turns). Every process must be reaped with exit=0, the log must stay free of
+failures and interleaved lines, and the desktop must be empty at the end.
 
 Artifacts (serial log, QEMU output, PNG screenshots) go to --out.
 Only the Python standard library is used.
@@ -46,16 +55,48 @@ def menu_item(x, index):
     return (x, 41 + 24 * index)
 
 
-# (program, menu to open, item to click)
+# ABOUT.ELF redraws its uptime once a second through console_present: a
+# redraw requested by a syscall, not by input. Its client area (logical
+# x0, y0, x1, y1) must change on its own. The window is 60x18 cells at
+# (120, 100) (userland/about/about_theme.h, kernel/console.c).
+ABOUT_CLIENT = (124, 128, 612, 408)
+
+# (program, menu to open, item to click, area that updates by itself)
 APPS = [
-    ("UTERM.ELF", MENU_APPS, menu_item(130, 1)),       # Apps -> Terminal
-    ("ABOUT.ELF", MENU_GEMOS, menu_item(60, 0)),       # GemOS -> About GemOS
-    ("UTEXTEDIT.ELF", MENU_APPS, menu_item(130, 3)),   # Apps -> Text Editor
+    ("UTERM.ELF", MENU_APPS, menu_item(130, 1), None),    # Apps -> Terminal
+    ("ABOUT.ELF", MENU_GEMOS, menu_item(60, 0), ABOUT_CLIENT),  # GemOS -> About
+    ("UTEXTEDIT.ELF", MENU_APPS, menu_item(130, 3), None),  # Apps -> Text Editor
 ]
 
 # Hosted console windows open at logical (120, 100) (kernel/console.c); this
 # point lies on the title bar of every hosted app, away from text and buttons.
 TITLE_BAR_PROBE = (500, 103)
+
+# Stress test: what to type into each program (QEMU sendkey names; no Esc
+# and no "q", which close windows) and where its close button is. A hosted
+# window at (120, 100) is cols * 8 + 16 wide; the button is 16 px, 6 px from
+# the right edge and 5 px below the top (kernel/gui/wm/wm.c).
+STRESS_TYPING = {
+    "UTERM.ELF": ["h", "e", "l", "p", "ret", "p", "i", "d", "ret",
+                  "t", "i", "c", "k", "s", "ret", "a", "b", "c", "ret"],
+    "ABOUT.ELF": ["a", "b", "c", "spc", "ret", "backspace"],
+    "UTEXTEDIT.ELF": ["h", "e", "l", "l", "o", "spc", "g", "e", "m", "ret",
+                      "x", "y", "z", "backspace", "ret"],
+}
+CLOSE_BUTTON = {
+    "UTERM.ELF": (120 + 80 * 8 + 16 - 14, 113),      # 80x25 cells
+    "ABOUT.ELF": (120 + 60 * 8 + 16 - 14, 113),      # 60x18 cells
+    "UTEXTEDIT.ELF": (120 + 84 * 8 + 16 - 14, 113),  # 84x28 cells
+}
+# Mouse path over the windows, the desktop and the dock (no clicks).
+STRESS_WIGGLE = [(300, 200), (700, 300), (500, 480), (880, 520), (200, 400),
+                 (640, 140), (60, 300)]
+
+# How long a frame may take to show up on its own (seconds). The first
+# window of a font size is the slowest: its glyphs are rasterized on the
+# first render (about 1 s under TCG).
+DESKTOP_TIMEOUT = 20.0
+WINDOW_TIMEOUT = 10.0
 
 FAILURE_PATTERNS = [
     r"PANIC",
@@ -67,28 +108,35 @@ FAILURE_PATTERNS = [
     r"\[ELF\]",
 ]
 
-# Lines printed with interrupts disabled (IRQ0 timer log, syscalls) are
-# atomic, but they can land in the middle of a line that the preemptible
-# kernel task is printing. Removing them restores the kernel task's own lines.
-ATOMIC_LINES = re.compile(
-    r"\[TIMER\] 1 second passed \(Ticks: \d+\)\r?\n"
-    r"|\[DOCK\] Window (?:Registered|Unregistered)\r?\n"
-    r"|\[FOCUS\] Dispatching event\. Type: (?:WINDOW|DESKTOP)\r?\n"
-    r"|\[CONSOLE\] Opened PID=\d+ handle=\d+\r?\n"
-    r"|\[USER\] [^\n]*\n"
-)
+# Kernel log lines start with a "[Tag] " prefix; indented lines continue the
+# previous one. A tag after other text means that one line was printed into
+# the middle of another.
+LOG_TAG = re.compile(r"\[[A-Za-z][A-Za-z0-9_]*\] ")
 
 
 class SmokeError(Exception):
     pass
 
 
-def kernel_task_stream(text):
-    while True:
-        stripped = ATOMIC_LINES.sub("", text)
-        if stripped == text:
-            return text
-        text = stripped
+def title_bar_problem(image):
+    r, g, b = image.logical_rgb(TITLE_BAR_PROBE)
+    if b > 150 and b > r + 60:
+        return None
+    return "probe #%02x%02x%02x after %.0f s" % (r, g, b, WINDOW_TIMEOUT)
+
+
+def interleaved_lines(text):
+    bad = []
+    for line in text.replace("\r", "").split("\n"):
+        if not line.strip() or line.startswith("  "):
+            continue
+        tag = LOG_TAG.match(line)
+        if not tag:
+            bad.append(line)
+        elif not line.startswith("[USER] ") and LOG_TAG.search(line, tag.end()):
+            # [USER] lines carry text from user programs
+            bad.append(line)
+    return bad
 
 
 def read_ppm(path):
@@ -146,6 +194,12 @@ class Image:
 
     def logical_rgb(self, point):
         return self.rgb(point[0] * UI_SCALE, point[1] * UI_SCALE)
+
+    def logical_area(self, box):
+        x0, y0, x1, y1 = [v * UI_SCALE for v in box]
+        return b"".join(
+            self.pixels[(y * self.width + x0) * 3:(y * self.width + x1) * 3]
+            for y in range(y0, y1))
 
 
 class Monitor:
@@ -217,8 +271,14 @@ class Pointer:
         self.x, self.y = point
 
     def click(self):
+        self.press()
+        self.release()
+
+    def press(self):
         self.monitor.cmd("mouse_button 1")
         time.sleep(0.15)
+
+    def release(self):
         self.monitor.cmd("mouse_button 0")
         time.sleep(0.15)
 
@@ -318,14 +378,29 @@ class Smoke:
                 return None
             time.sleep(0.2)
 
-    def screendump(self, name):
+    def screendump(self, name, save=True):
         ppm = os.path.join(self.out, name + ".ppm")
         self.monitor.cmd("screendump %s" % ppm)
         width, height, pixels = read_ppm(ppm)
-        write_png(os.path.join(self.out, name + ".png"), width, height,
-                  pixels)
+        if save:
+            write_png(os.path.join(self.out, name + ".png"), width, height,
+                      pixels)
         os.remove(ppm)
         return Image(width, height, pixels)
+
+    def watch_screen(self, shot, problem, timeout):
+        """Take screendumps until problem(image) returns None or the timeout
+        passes. No input is sent: the frame has to appear by itself."""
+        start = time.monotonic()
+        while True:
+            image = self.screendump(shot, save=False)
+            issue = problem(image)
+            elapsed = time.monotonic() - start
+            if issue is None or elapsed > timeout:
+                write_png(os.path.join(self.out, shot + ".png"), image.width,
+                          image.height, image.pixels)
+                return issue, elapsed
+            time.sleep(0.1)
 
     # -- test steps ----------------------------------------------------------
     def boot(self):
@@ -339,36 +414,31 @@ class Smoke:
         topbar = (300, 5)
         dock = (900, 530)
         wallpaper = (600, 300)
-        problem = "no frame"
-        image = None
-        for attempt in range(20):
-            if attempt >= 2:
-                # an input event forces a redraw (see check_window_drawn)
-                self.monitor.cmd("mouse_move 1 0")
-                self.monitor.cmd("mouse_move -1 0")
-            time.sleep(0.5)
-            image = self.screendump("desktop")
+
+        def problem(image):
             bar = image.logical_rgb(topbar)
             wall = image.logical_rgb(wallpaper)
             if (image.width, image.height) != SCREEN_SIZE:
-                problem = "screen is %dx%d" % (image.width, image.height)
-            elif bar != (0x20, 0x20, 0x20):
-                problem = "topbar pixel is #%02x%02x%02x" % bar
-            elif image.logical_rgb(dock) != (0x20, 0x20, 0x20):
-                problem = "dock pixel is #%02x%02x%02x" % image.logical_rgb(dock)
-            elif wall in ((0, 0, 0), bar):
-                problem = "wallpaper pixel is #%02x%02x%02x" % wall
-            else:
-                return self.check(True, "desktop: screendump shows topbar, "
-                                  "wallpaper and dock", "desktop.png")
-        return self.check(False, "desktop: screendump shows topbar, wallpaper "
-                          "and dock", problem)
+                return "screen is %dx%d" % (image.width, image.height)
+            if bar != (0x20, 0x20, 0x20):
+                return "topbar pixel is #%02x%02x%02x" % bar
+            if image.logical_rgb(dock) != (0x20, 0x20, 0x20):
+                return "dock pixel is #%02x%02x%02x" % image.logical_rgb(dock)
+            if wall in ((0, 0, 0), bar):
+                return "wallpaper pixel is #%02x%02x%02x" % wall
+            return None
 
-    def run_app(self, name, menu, item):
+        issue, seconds = self.watch_screen("desktop", problem,
+                                           DESKTOP_TIMEOUT)
+        return self.check(issue is None, "desktop: screendump shows topbar, "
+                          "wallpaper and dock",
+                          issue or "desktop.png, %.1f s" % seconds)
+
+    def run_app(self, name, menu, item, updating_area):
         spawn_re = re.compile(r"\[PROC\] Spawned PID=(\d+) " + re.escape(name))
 
         def spawned(text):
-            return spawn_re.findall(kernel_task_stream(text))
+            return spawn_re.findall(text)
 
         before = len(spawned(self.log_text()))
         self.pointer.home()
@@ -376,29 +446,39 @@ class Smoke:
         self.pointer.click()
         time.sleep(0.4)
         self.pointer.move_to(item)
-        self.pointer.click()
+        # The menu starts the program on the button press. The button stays
+        # down until the window check is done, so no input event can make
+        # the kernel redraw while the test waits for the window.
+        self.pointer.press()
+        try:
+            pids = self.wait_for(
+                lambda t: spawned(t) if len(spawned(t)) > before else None,
+                self.args.app_timeout)
+            if not self.check(bool(pids), "%s: spawned" % name):
+                return False
+            pid = pids[-1]
 
-        pids = self.wait_for(
-            lambda t: spawned(t) if len(spawned(t)) > before else None,
-            self.args.app_timeout)
-        if not self.check(bool(pids), "%s: spawned" % name):
-            return False
-        pid = pids[-1]
+            opened = self.wait_for(
+                lambda t: "[CONSOLE] Opened PID=%s handle=" % pid in t,
+                self.args.app_timeout)
+            if not self.check(bool(opened), "%s: console window opened" % name,
+                              "PID=%s" % pid):
+                return False
 
-        opened = self.wait_for(
-            lambda t: "[CONSOLE] Opened PID=%s handle=" % pid in t,
-            self.args.app_timeout)
-        if not self.check(bool(opened), "%s: console window opened" % name,
-                          "PID=%s" % pid):
-            return False
+            self.check_window_drawn(name)
+        finally:
+            try:
+                self.pointer.release()
+            except (OSError, SmokeError):
+                pass  # QEMU is gone; the original error is reported
 
-        self.check_window_drawn(name)
+        if updating_area:
+            self.check_redraws_by_itself(name, updating_area)
 
         self.monitor.cmd("sendkey esc")
         reap_re = re.compile(r"\[PROC\] Reaped PID=%s exit=(\d+)" % pid)
-        reaped = self.wait_for(
-            lambda t: reap_re.search(kernel_task_stream(t)),
-            self.args.app_timeout)
+        reaped = self.wait_for(lambda t: reap_re.search(t),
+                               self.args.app_timeout)
         if not reaped:
             return self.check(False, "%s: closed with Esc and reaped" % name,
                               "no Reaped line for PID=%s" % pid)
@@ -406,28 +486,127 @@ class Smoke:
                           "%s: closed with Esc and reaped" % name,
                           "PID=%s exit=%s" % (pid, reaped.group(1)))
 
+    def check_redraws_by_itself(self, name, area):
+        # Baseline: a frame that shows the window. The button release causes
+        # one more frame, which a kernel that drops syscall redraw requests
+        # would draw too, so the baseline must not be older than that frame.
+        time.sleep(0.3)
+        issue, _ = self.watch_screen("updating", title_bar_problem,
+                                     WINDOW_TIMEOUT)
+        if issue:
+            return self.check(False, "%s: window redraws by itself" % name,
+                              "window not on screen: %s" % issue)
+        time.sleep(0.3)
+        first = self.screendump("updating", save=False).logical_area(area)
+        start = time.monotonic()
+        while time.monotonic() - start < 5.0:
+            time.sleep(0.5)
+            if self.screendump("updating", save=False).logical_area(area) != first:
+                return self.check(True, "%s: window redraws by itself" % name,
+                                  "content changed after %.1f s, no input"
+                                  % (time.monotonic() - start))
+        return self.check(False, "%s: window redraws by itself" % name,
+                          "unchanged for 5 s without input")
+
     def check_window_drawn(self, name):
-        # Known kernel race (audit, concurrency): the main loop clears
-        # pending_redraw after a frame, so a redraw requested by a syscall
-        # while that frame was being drawn is lost and the screen stays stale
-        # until the next input event. A 1 px mouse wiggle is such an event.
         shot = name.split(".")[0].lower()
-        nudges = 0
-        while True:
-            time.sleep(0.7)
-            image = self.screendump(shot)
-            r, g, b = image.logical_rgb(TITLE_BAR_PROBE)
-            if (b > 150 and b > r + 60) or nudges == 4:
-                break
-            nudges += 1
-            self.monitor.cmd("mouse_move 1 0")
-            time.sleep(0.05)
-            self.monitor.cmd("mouse_move -1 0")
-        detail = "%s.png, probe #%02x%02x%02x" % (shot, r, g, b)
-        if nudges:
-            detail += ", after %d redraw nudge(s): lost-redraw race" % nudges
-        return self.check(b > 150 and b > r + 60,
-                          "%s: window title bar on screen" % name, detail)
+
+        issue, seconds = self.watch_screen(shot, title_bar_problem,
+                                           WINDOW_TIMEOUT)
+        return self.check(issue is None,
+                          "%s: window title bar on screen" % name,
+                          "%s.png, %s" % (shot, issue or
+                                          "%.1f s, no input" % seconds))
+
+    # -- stress test -----------------------------------------------------------
+    def burst(self, keys):
+        """Input while programs start or exit: small mouse moves and keys."""
+        for key in keys:
+            self.monitor.cmd("mouse_move 3 2")
+            self.monitor.cmd("sendkey %s" % key)
+            self.monitor.cmd("mouse_move -3 -2")
+            time.sleep(0.03)
+
+    def stress_open(self, name, menu, item):
+        opened_re = re.compile(r"\[CONSOLE\] Opened PID=(\d+) ")
+        before = len(opened_re.findall(self.log_text()))
+        self.pointer.home()
+        self.pointer.move_to(menu)
+        self.pointer.click()
+        time.sleep(0.3)
+        self.pointer.move_to(item)
+        self.pointer.press()
+        self.burst(["a", "b"])        # typed while the program starts
+        self.pointer.release()
+        opened = self.wait_for(
+            lambda t: opened_re.findall(t)[before:], self.args.app_timeout)
+        if not opened:
+            raise SmokeError("stress: %s did not open a window" % name)
+        for key in STRESS_TYPING[name]:
+            self.monitor.cmd("sendkey %s" % key)
+            time.sleep(0.02)
+        return opened[0]
+
+    def stress(self):
+        cycles = self.args.stress
+        start = time.monotonic()
+        spawn_re = re.compile(r"\[PROC\] Spawned PID=(\d+) ")
+        reap_re = re.compile(r"\[PROC\] Reaped PID=(\d+) exit=(-?\d+)")
+        for cycle in range(cycles):
+            if time.monotonic() > self.deadline:
+                raise SmokeError("stress: time budget used up after %d cycles"
+                                 % cycle)
+            pids = [self.stress_open(name, menu, item)
+                    for name, menu, item, _ in APPS]
+            for point in STRESS_WIGGLE:
+                self.pointer.move_to(point)
+            # close from the top window down, alternating Esc and the button
+            for (name, _, _, _), pid in reversed(list(zip(APPS, pids))):
+                if cycle % 2 == 0:
+                    self.monitor.cmd("sendkey esc")
+                else:
+                    self.pointer.home()
+                    self.pointer.move_to(CLOSE_BUTTON[name])
+                    self.pointer.click()
+                self.burst(["x", "y"])    # goes to the next window down
+                if not self.wait_for(
+                        lambda t, p=pid: "[PROC] Reaped PID=%s " % p in t,
+                        self.args.app_timeout):
+                    raise SmokeError("stress: cycle %d, %s (PID=%s) was not "
+                                     "reaped" % (cycle + 1, name, pid))
+            print("  cycle %d/%d done (%.0f s)" % (cycle + 1, cycles,
+                                                   time.monotonic() - start),
+                  flush=True)
+
+        text = self.log_text()
+        pids = spawn_re.findall(text)
+        reaped = dict(reap_re.findall(text))
+        opened = re.findall(r"\[CONSOLE\] Opened PID=(\d+) ", text)
+        self.check(len(pids) == 3 * cycles,
+                   "stress: %d programs started" % (3 * cycles),
+                   "%d Spawned lines" % len(pids))
+        self.check(sorted(opened) == sorted(pids),
+                   "stress: every program opened its window",
+                   "%d of %d" % (len(opened), len(pids)))
+        missing = [p for p in pids if p not in reaped]
+        bad_exit = ["%s:%s" % (p, reaped[p]) for p in pids
+                    if p in reaped and reaped[p] != "0"]
+        self.check(not missing and not bad_exit,
+                   "stress: every program reaped with exit=0",
+                   "missing %s, exit %s" % (missing[:5], bad_exit[:5])
+                   if missing or bad_exit else "%d reaped" % len(pids))
+
+        def no_window(image):
+            if title_bar_problem(image) is None:
+                return "a window is still open"
+            return None
+
+        time.sleep(1.0)
+        issue, _ = self.watch_screen("stress-end", no_window, 5.0)
+        self.check(issue is None, "stress: desktop empty at the end",
+                   issue or "stress-end.png")
+        self.check(True, "stress: %d cycles" % cycles,
+                   "%.0f s" % (time.monotonic() - start))
 
     def scan_log(self):
         text = self.log_text()
@@ -439,18 +618,41 @@ class Smoke:
                 hits.append(text[start:end if end >= 0 else None].strip())
         self.check(not hits, "serial log: no PANIC, faults or failures",
                    "; ".join(hits[:3]))
+        bad = interleaved_lines(text)
+        self.check(not bad, "serial log: no interleaved lines",
+                   "; ".join(repr(line) for line in bad[:3]))
         self.check(self.qemu.poll() is None, "QEMU still running at the end")
+
+    def save_diagnostics(self):
+        """On failure: the screen and the CPU registers (EIP shows where the
+        guest is, e.g. `nm build/kernel.elf | sort`) next to the log."""
+        try:
+            self.screendump("failure")
+            with open(os.path.join(self.out, "registers.txt"), "wb") as f:
+                f.write(self.monitor.cmd("info registers"))
+            print("diagnostics: failure.png, registers.txt", flush=True)
+        except (OSError, SmokeError, ValueError):
+            pass
 
     def run(self):
         self.start_qemu()
         try:
             if not self.boot():
+                self.save_diagnostics()
                 return
             self.desktop()
-            for name, menu, item in APPS:
-                self.run_app(name, menu, item)
-                time.sleep(0.5)
+            if self.args.stress:
+                self.stress()
+            else:
+                for name, menu, item, updating_area in APPS:
+                    self.run_app(name, menu, item, updating_area)
+                    time.sleep(0.5)
             self.scan_log()
+            if any(not ok for ok, _, _ in self.results):
+                self.save_diagnostics()
+        except SmokeError:
+            self.save_diagnostics()
+            raise
         finally:
             self.stop_qemu()
 
@@ -463,6 +665,8 @@ def main():
                         help="overall time budget in seconds")
     parser.add_argument("--boot-timeout", type=float, default=120.0)
     parser.add_argument("--app-timeout", type=float, default=45.0)
+    parser.add_argument("--stress", type=int, default=0, metavar="CYCLES",
+                        help="run the load test with this many cycles")
     args = parser.parse_args()
 
     def on_signal(signum, _frame):

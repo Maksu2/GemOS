@@ -1,9 +1,11 @@
 #include "cursor.h"
 #include "../gfx/primitives.h"
+#include "../include/irq.h"
 #include "ui_scale.h"
 #include <stddef.h>
 
-/* Global Instance */
+/* Global Instance. The mouse IRQ handler moves it: access it from task
+ * context with interrupts off. */
 cursor_state_t cursor = {0, 0};
 
 static gfx_context_t *cursor_ctx = NULL;
@@ -26,8 +28,12 @@ void cursor_init(gfx_context_t *ctx) {
   cursor_ctx = ctx;
   /* Start in center */
   if (ctx) {
-    cursor.x = (int)(ctx->width / ui_scale) / 2;
-    cursor.y = (int)(ctx->height / ui_scale) / 2;
+    int x = (int)(ctx->width / ui_scale) / 2;
+    int y = (int)(ctx->height / ui_scale) / 2;
+    uint32_t flags = irq_save();
+    cursor.x = x;
+    cursor.y = y;
+    irq_restore(flags);
   }
 }
 
@@ -38,8 +44,10 @@ void cursor_draw(void) {
   /* The mouse driver keeps the position on screen; gfx_put_pixel clips the
    * parts of the arrow that stick out past the screen edge. */
 
+  uint32_t flags = irq_save();
   int cx = cursor.x;
   int cy = cursor.y;
+  irq_restore(flags);
 
   /* Iterate Bitmap */
   for (int y = 0; cursor_bitmap[y] != NULL; y++) {

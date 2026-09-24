@@ -48,7 +48,7 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 - 32-bit legacy paging with 4 KB pages
 - separate `CR3` per process
 - shared supervisor-only kernel mapping as the transition model
-- preemptive round-robin scheduler
+- round-robin scheduler with an idle task and blocking waits; only ring 3 code is preempted, kernel code runs until it gives up the CPU
 - `process_t` / `task_t` split
 - user processes that fault with #DE, #UD, #TS, #NP, #SS, #GP or #PF are killed and reaped; any other exception raised in ring 3 still halts the whole system
 
@@ -133,10 +133,11 @@ Build, test and run:
 ```bash
 make all          # build/gemos.img
 tools/smoke.sh    # build, boot headless in QEMU, start UTERM/ABOUT/UTEXTEDIT
+tools/smoke.sh --stress   # 25 cycles of opening, typing into and closing them
 make run          # QEMU window with the GemFS data disk (build/data.img)
 ```
 
-`tools/smoke.sh` prints one PASS/FAIL line per check and keeps the serial log and screenshots in `build/smoke/`. CI runs `make all` and the smoke test on every push and pull request.
+`tools/smoke.sh` prints one PASS/FAIL line per check and keeps the serial log and screenshots in `build/smoke/` (`build/stress/` for the stress test). CI runs `make all`, the smoke test and the stress test on every push and pull request.
 
 Run under GDB:
 
@@ -173,7 +174,7 @@ The work follows the stages of the [September 2026 code audit](docs/AUDIT-2026-0
 0. Safety net: CI and the QEMU smoke test (done)
 1. Clean-up: dead code, duplicated headers, stale docs (done)
 2. Boot and memory: zeroed BSS, boot info with the E820 map, memory detection, a new loader, an ATA driver with timeouts
-3. Concurrency and isolation: syscalls stop changing GUI and filesystem state directly, blocking waits, FPU state, a fault in ring 3 kills only the process
+3. Concurrency and isolation: kernel code is not preempted and waits block (done); FPU state, a fault in ring 3 kills only the process, a hardened ELF loader and heap
 4. Storage: GemFS with a superblock and allocation, files larger than 8 KB
 5. GUI and apps: clipping, window placement, `UTEXTEDIT.ELF` open/save, then retiring the kernel text editor
 
