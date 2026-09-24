@@ -17,7 +17,6 @@
 #define SYSCALL_CONSOLE_WRITE_CHUNK 128U
 #define SYSCALL_FILE_NAME_MAX (GEMFS_MAX_FILENAME + 1U)
 
-static uint32_t pending_resume_esp = 0;
 static gemos_console_cell_t console_present_cells[GEMOS_CONSOLE_MAX_CELLS];
 static uint8_t syscall_file_buffer[GEMFS_MAX_FILESIZE + 1U];
 
@@ -25,12 +24,6 @@ extern void isr128(void);
 
 static process_t *syscall_current_process(void) {
   return scheduler_get_current_process();
-}
-
-uint32_t syscall_take_pending_resume_esp(void) {
-  uint32_t resume_esp = pending_resume_esp;
-  pending_resume_esp = 0;
-  return resume_esp;
 }
 
 int copy_from_user(void *destination, const void *user_source, size_t length) {
@@ -292,16 +285,14 @@ static uint32_t syscall_file_write(uintptr_t user_name_ptr,
 }
 
 void syscall_interrupt_handler(registers_t *regs) {
-  pending_resume_esp = 0;
-
   switch (regs->eax) {
   case SYS_exit:
+    /* the task no longer runs: isr_handler switches on the way out */
     scheduler_mark_current_zombie((int32_t)regs->ebx);
-    pending_resume_esp = scheduler_switch_now((uint32_t)(uintptr_t)regs);
     break;
   case SYS_yield:
     regs->eax = 0;
-    pending_resume_esp = scheduler_yield_now((uint32_t)(uintptr_t)regs);
+    scheduler_request_yield();
     break;
   case SYS_debug_write:
     regs->eax = syscall_debug_write((uintptr_t)regs->ebx, (size_t)regs->ecx);

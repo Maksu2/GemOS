@@ -11,7 +11,6 @@
 
 void syscall_init(void);
 void syscall_interrupt_handler(registers_t *regs);
-uint32_t syscall_take_pending_resume_esp(void);
 
 int copy_from_user(void *destination, const void *user_source, size_t length);
 int copy_to_user(void *user_destination, const void *source, size_t length);

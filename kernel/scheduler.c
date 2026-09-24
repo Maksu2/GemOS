@@ -13,6 +13,7 @@
 static task_t tasks[MAX_TASKS];
 static int    current_task = 0;
 static int    task_count   = 0;
+static int    yield_requested = 0;
 
 static uint32_t scheduler_read_esp(void) {
     uint32_t esp;
@@ -196,31 +197,30 @@ uint32_t scheduler_tick(uint32_t current_esp) {
     return scheduler_choose_next(current_esp);
 }
 
-uint32_t scheduler_yield_now(uint32_t current_esp) {
-    tasks[current_task].esp = current_esp;
-    if (tasks[current_task].state == TASK_RUNNING) {
-        tasks[current_task].state = TASK_READY;
-        if (tasks[current_task].process != NULL) {
-            tasks[current_task].process->state = PROC_READY;
+void scheduler_request_yield(void) { yield_requested = 1; }
+
+/*
+ * scheduler_interrupt_exit — called by isr_handler before it returns to the
+ * interrupted code. Keeps running the current task unless it cannot continue
+ * (it exited, faulted or was killed) or asked to give up the CPU. Returns the
+ * ESP of the task to resume, or 0 to resume the interrupted one.
+ */
+uint32_t scheduler_interrupt_exit(uint32_t current_esp) {
+    task_t *task = &tasks[current_task];
+
+    if (task->state == TASK_RUNNING && !yield_requested) {
+        return 0;
+    }
+    yield_requested = 0;
+
+    task->esp = current_esp;
+    if (task->state == TASK_RUNNING) {
+        task->state = TASK_READY;
+        if (task->process != NULL) {
+            task->process->state = PROC_READY;
         }
     }
     return scheduler_choose_next(current_esp);
-}
-
-uint32_t scheduler_switch_now(uint32_t current_esp) {
-    int next;
-
-    tasks[current_task].esp = current_esp;
-    next = scheduler_find_next_runnable(current_task);
-    if (next < 0) {
-        next = 0;
-    }
-
-    if (next == current_task) {
-        return current_esp;
-    }
-
-    return scheduler_resume_task(next, current_esp);
 }
 
 void scheduler_mark_current_zombie(int32_t exit_code) {

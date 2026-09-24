@@ -41,8 +41,12 @@ int      task_create_user(struct process *process, uint32_t initial_esp);
 
 /* Called from assembly stub — returns new ESP to switch to */
 uint32_t scheduler_tick(uint32_t current_esp);
-uint32_t scheduler_yield_now(uint32_t current_esp);
-uint32_t scheduler_switch_now(uint32_t current_esp);
+
+/* Ask to give up the CPU when the current interrupt returns. */
+void     scheduler_request_yield(void);
+/* Called on every interrupt exit except IRQ0: returns the ESP of the task to
+ * resume, or 0 to resume the interrupted one. */
+uint32_t scheduler_interrupt_exit(uint32_t current_esp);
 
 void     scheduler_mark_current_zombie(int32_t exit_code);
 void     scheduler_mark_current_fault(uint32_t vector, uint32_t error,
