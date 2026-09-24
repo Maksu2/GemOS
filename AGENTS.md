@@ -15,13 +15,13 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
   - Paging 4 KB: identity map 0–32 MB + 16 MB framebuffera, pula ramek użytkownika do `0x02000000`, osobny katalog stron na proces.
   - Rozmiar RAM nie jest wykrywany; minimum to 32 MB.
 - **Procesy:**
-  - Round-robin z wywłaszczaniem, kwant 10 ms, maksymalnie 16 zadań. Zadanie 0 to pętla GUI w `kernel_main`.
+  - Round-robin, kwant 10 ms, maksymalnie 16 zadań plus zadanie idle. Wywłaszczany jest tylko kod w Ring 3 (reguła niżej). Zadanie 0 to pętla GUI w `kernel_main`: po każdej iteracji oddaje CPU i śpi (`TASK_BLOCKED`), dopóki nie ma zdarzeń. `hlt` wykonuje tylko idle.
   - Programy użytkownika to statyczne ELF32 `ET_EXEC` linkowane pod `0x02000000`, ze stosem 8 KB pod `0x07FFF000`. Maksymalny rozmiar programu to ok. 8 KB (bufor loadera, slot GemFS).
   - Proces z wyjątkiem #DE, #UD, #TS, #NP, #SS, #GP lub #PF jest zabijany; każdy inny wyjątek z ring 3 zatrzymuje system.
-- **Syscalle:** `int 0x80`, 12 wywołań (`include/gemos/syscall_abi.h`). Wskaźniki użytkownika przechodzą przez `copy_from_user`/`copy_to_user` (sprawdzanie tablic stron).
+- **Syscalle:** `int 0x80`, 13 wywołań (`include/gemos/syscall_abi.h`), każde od wejścia do `iret` z IF=0. Wskaźniki użytkownika przechodzą przez `copy_from_user`/`copy_to_user` (sprawdzanie tablic stron). `SYS_console_wait_event` blokuje proces do zdarzenia albo timeoutu: przy blokadzie EIP cofa się na `int $0x80` i syscall wykonuje się ponownie po obudzeniu.
 - **Userland:**
   - `UTERM.ELF`, `ABOUT.ELF` i `UTEXTEDIT.ELF` (plus `USRSMOKE.ELF` do debugowania) są wbudowane w obraz jądra i przy każdym starcie zapisywane do GemFS; loader woli kopię z GemFS.
-  - Model „hosted app”: aplikacja wysyła siatkę komórek tekstowych (maks. 96×32), jądro rysuje okno. Działa najwyżej 8 takich okien naraz.
+  - Model „hosted app”: aplikacja wysyła siatkę komórek tekstowych (maks. 96×32), jądro rysuje okno. Działa najwyżej 8 takich okien naraz. Aplikacje śpią w `SYS_console_wait_event` (ABOUT z timeoutem do pełnej sekundy).
   - `UTEXTEDIT` nie zapisuje ani nie otwiera plików.
 - **GUI (w jądrze):**
   - Menedżer okien, topbar, dock, menu, font TrueType (Inter) z antyaliasingiem.
@@ -37,8 +37,9 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
 
 Nie obchodzić ich po cichu; plan naprawy jest w §8.2 audytu.
 
-- **Brak synchronizacji.** Jądro jest wywłaszczalne, a syscalle zmieniają stertę, listę okien, dock i GemFS bez blokad. Widoczny objaw to zgubione żądanie odświeżenia ekranu po otwarciu okna. `tools/smoke.sh` obchodzi to ruchem myszy i raportuje jako `lost-redraw race`.
+- **Syscalle z IF=0:** długi syscall (zapis pliku to do ~24 sektorów ATA bez timeoutów) wstrzymuje przerwania, a PIT gubi ticki.
 - **Brak zapisu stanu FPU**, choć jądro liczy na `float` (`ui_scale`), także w przerwaniu myszy.
+- **Render całej klatki (1080p) w task 0 nie jest przerywany:** procesy czekają na koniec iteracji.
 - **Brak twardych limitów:** niezerowany BSS, brak detekcji RAM, sterownik ATA bez timeoutów, GemFS bez sygnatury piszący po surowym dysku.
 
 ## Mapa repo
@@ -64,13 +65,31 @@ docs/       strona GitHub Pages + audyt kodu
 ## Budowanie i testy
 
 - `make all` tworzy `build/gemos.img`. Wymaga `nasm` oraz `i686-elf-gcc` albo `x86_64-elf-gcc`; bez nich Makefile używa hostowego `gcc -m32`, tak jak CI.
-- `tools/smoke.sh` buduje obraz, bootuje go w QEMU bez okna, uruchamia UTERM, ABOUT i UTEXTEDIT, sprawdza log i zrzuty ekranu. Musi skończyć się `SMOKE: PASS` przed każdym commitem. CI (`.github/workflows/ci.yml`) uruchamia to samo przy każdym pushu i PR.
+- `tools/smoke.sh` buduje obraz, bootuje go w QEMU bez okna, uruchamia UTERM, ABOUT i UTEXTEDIT, sprawdza log i zrzuty ekranu. Musi skończyć się `SMOKE: PASS` przed każdym commitem. Test nie wysyła żadnego wejścia, gdy czeka na klatkę: okno ma się pojawić samo.
+- `tools/smoke.sh --stress [N]` (domyślnie 25 cykli) otwiera, obsługuje klawiaturą i myszą i zamyka wszystkie programy; każdy proces musi skończyć z `exit=0`, a log nie może mieć przeplecionych linii. Uruchom go po każdej zmianie schedulera, syscalli, konsoli albo pętli GUI.
+- CI (`.github/workflows/ci.yml`) uruchamia smoke i stress przy każdym pushu i PR.
 - `make run` otwiera QEMU z dyskiem danych `build/data.img`; `make debug` dodatkowo czeka na GDB na porcie `:1234`.
 - Makefile przerywa build, gdy `kernel.bin` przekracza limit loadera (`KERNEL_SECTORS` w `boot/stage2/loader.asm`).
 - Zmiany, które nie powinny zmieniać zachowania, sprawdzaj porównaniem binariów (`build/kernel.bin`, `build/*.elf`) przed i po.
 
 ## Zasady architektury
 
+- **Współbieżność: kod w Ring 0 nie jest wywłaszczany.** Szczegóły są w `kernel/scheduler.c`.
+  - **Kiedy następuje przełączenie zadania:**
+    - IRQ0 przerwał Ring 3 (koniec kwantu albo obudzone inne zadanie),
+    - zadanie samo oddaje CPU: syscall kończy się `exit`/`yield`/blokadą, fault zabija proces, zadanie jądra woła `scheduler_yield()`.
+  - **Kod jądra wykonuje się po kolei.** Task 0 i syscalle biegną jeden po drugim między punktami oddania CPU i nie potrzebują blokad względem innych zadań. Nie wolno oddawać CPU w środku operacji na współdzielonym stanie.
+  - **Nie wolno czekać w pętli na inne zadanie** (`hlt`, busy-wait). Należy zablokować zadanie (`scheduler_block_current()`) i obudzić je (`scheduler_wake()`, `process_wake()`):
+    - zadanie jądra woła potem `scheduler_yield()`,
+    - syscall blokuje się z restartem jak `SYS_console_wait_event`,
+    - `hlt` wykonuje tylko idle.
+  - **Handlery IRQ przerywają także Ring 0**, więc nie drukują logu, nie alokują i nie dotykają GUI ani FS. Stan dzielony z IRQ zmienia się z zadania tylko w `irq_save()`/`irq_restore()` (`kernel/include/irq.h`). Ten stan to:
+    - kolejka zdarzeń,
+    - licznik ticków,
+    - tablica zadań,
+    - stan klawiatury i myszy,
+    - pozycja kursora.
+  - **Odświeżanie ekranu:** wszystko, co zmienia zawartość ekranu, woła `kernel_request_redraw()`, co budzi task 0.
 - **32-bit, własny bootloader**, bez GRUB-a, bez libc i bez libgcc.
 - **GUI zostaje w jądrze.** Userland rozmawia z systemem wyłącznie przez ABI z `include/gemos/` (`syscall_abi.h`, `console_abi.h`, `user_api.h`) i nie includuje nagłówków jądra.
 - **Kody klawiszy** pochodzą tylko z `GEMOS_KEY_*` w `include/gemos/console_abi.h`.
