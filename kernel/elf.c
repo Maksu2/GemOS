@@ -54,6 +54,14 @@ typedef struct {
   uintptr_t end;
 } elf_load_region_t;
 
+/* [offset, offset + length) lies inside the image. Written without adding
+ * offset and length: the file is untrusted (GemFS copies can be rewritten
+ * by any process) and a 32-bit sum wraps around. */
+static int elf_range_in_image(uint32_t offset, uint32_t length,
+                              size_t image_size) {
+  return offset <= image_size && length <= image_size - offset;
+}
+
 static int elf_validate_header(const elf32_ehdr_t *header, size_t image_size) {
   if (header == NULL || image_size < sizeof(*header)) {
     return 0;
@@ -74,8 +82,9 @@ static int elf_validate_header(const elf32_ehdr_t *header, size_t image_size) {
       header->e_phnum > ELF_MAX_LOAD_SEGMENTS) {
     return 0;
   }
-  if ((size_t)header->e_phoff + ((size_t)header->e_phnum * sizeof(elf32_phdr_t)) >
-      image_size) {
+  if (!elf_range_in_image(header->e_phoff,
+                          (uint32_t)header->e_phnum * sizeof(elf32_phdr_t),
+                          image_size)) {
     return 0;
   }
 
@@ -96,22 +105,18 @@ static int elf_validate_segment(const elf32_phdr_t *segment, size_t image_size,
   if (segment->p_memsz < segment->p_filesz) {
     return 0;
   }
-  if ((size_t)segment->p_offset + segment->p_filesz > image_size) {
+  if (!elf_range_in_image(segment->p_offset, segment->p_filesz, image_size)) {
     return 0;
   }
-  if (segment->p_vaddr < PAGING_USER_BASE) {
-    return 0;
-  }
-  if ((uintptr_t)segment->p_vaddr + (uintptr_t)segment->p_memsz <
-      (uintptr_t)segment->p_vaddr) {
+  /* inside user space below the stack, compared without an end that could
+   * wrap around */
+  if (segment->p_vaddr < PAGING_USER_BASE || segment->p_vaddr >= stack_bottom ||
+      segment->p_memsz > stack_bottom - segment->p_vaddr) {
     return 0;
   }
 
   segment_start = segment->p_vaddr;
   segment_end = segment->p_vaddr + segment->p_memsz;
-  if (segment_end > stack_bottom || segment_end > PAGING_USER_LIMIT) {
-    return 0;
-  }
 
   if (*lowest_base == 0 || segment_start < *lowest_base) {
     *lowest_base = segment_start;
