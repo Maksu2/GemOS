@@ -34,6 +34,7 @@
 #define ATA_TIMEOUT_POLLS 1000000U
 
 static ata_device_t ata_devices[ATA_MAX_DEVICES];
+static uint8_t ata_writable[ATA_MAX_DEVICES]; /* set by ata_allow_writes */
 
 static uint8_t ata_alt_status(const ata_device_t *dev) {
   /* the alternate status register does not acknowledge an interrupt */
@@ -162,6 +163,7 @@ void ata_init(void) {
     ata_device_t *dev = &ata_devices[i];
 
     dev->present = 0;
+    ata_writable[i] = 0;
     dev->io_base = io_bases[i / 2];
     dev->ctrl_base = ctrl_bases[i / 2];
     dev->slave = (uint8_t)(i % 2);
@@ -262,6 +264,12 @@ int ata_read(int index, uint32_t lba, uint32_t count, void *buf) {
   return ATA_OK;
 }
 
+void ata_allow_writes(int index) {
+  if (ata_get_device(index) != NULL) {
+    ata_writable[index] = 1;
+  }
+}
+
 int ata_write(int index, uint32_t lba, uint32_t count, const void *buf) {
   const ata_device_t *dev;
   const uint16_t *words = (const uint16_t *)buf;
@@ -269,6 +277,14 @@ int ata_write(int index, uint32_t lba, uint32_t count, const void *buf) {
 
   if (result != ATA_OK) {
     return result;
+  }
+  if (!ata_writable[index]) {
+    serial_print("[ATA] Refused a write to read-only disk ");
+    serial_print(dev->model);
+    serial_print(" at LBA ");
+    serial_print_dec(lba);
+    serial_print("\n");
+    return ATA_ERR_READ_ONLY;
   }
   result = ata_start(dev, lba, count, ATA_CMD_WRITE_PIO);
   if (result != ATA_OK) {

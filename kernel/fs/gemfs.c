@@ -620,7 +620,7 @@ static const char *gemfs_load(int device) {
   if (bitmap == NULL || inode_used == NULL) {
     return "no memory for the bitmap";
   }
-  fs_device = device; /* for dev_read; writes are enabled by gemfs_init */
+  fs_device = device; /* for dev_read; the disk is still read-only */
   for (uint32_t i = 0; i < sb.bitmap_blocks; ++i) {
     if (block_read(sb.bitmap_start + i, bitmap + i * GEMFS_BLOCK_SIZE) !=
         GEMFS_OK) {
@@ -701,6 +701,7 @@ void gemfs_init(void) {
 
     alloc_hint = 0;
     map_block = 0;
+    ata_allow_writes(device); /* the only disk the kernel may change */
     serial_print("[GemFS] Mounted GemFS v3 on ");
     serial_print(dev->model);
     serial_print(": ");

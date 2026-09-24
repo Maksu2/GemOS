@@ -150,6 +150,7 @@ FAILURE_PATTERNS = [
     r"Alloc failed",
     r"Failed to",
     r"\[ELF\]",
+    r"\[ATA\] (Refused|read failed|write failed)",
 ]
 
 # Kernel log lines start with a "[Tag] " prefix; indented lines continue the
