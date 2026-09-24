@@ -1,37 +1,35 @@
 # =============================================================================
 # GemOS Makefile
 # =============================================================================
-# Build system for GemOS kernel and bootloader.
-# 
 # Prerequisites:
-#   - nasm (assembler)
-#   - i686-elf-gcc (cross-compiler) or gcc with -m32
-#   - i686-elf-ld (linker) or ld with appropriate flags
-#   - qemu-system-i386
+#   - nasm
+#   - an i686-elf or x86_64-elf cross toolchain, or a host gcc/binutils that
+#     accept -m32 / -m elf_i386 (fallback, used by CI)
+#   - qemu-system-i386 (run, debug, tools/smoke.sh)
 #
 # Targets:
-#   make all    - Build everything
-#   make run    - Build and run in QEMU
-#   make clean  - Remove build artifacts
-#   make debug  - Run with QEMU debug options
+#   make all    - build build/gemos.img (boot floppy)
+#   make run    - boot the image in QEMU with the GemFS data disk
+#   make debug  - same, paused, with a GDB stub on :1234
+#   make clean  - remove build/
+#   make info   - show the toolchain and the object list
+#
+# Smoke test: tools/smoke.sh
 # =============================================================================
 
-# Toolchain
-# Try to use i686-elf cross-compiler, then x86_64-elf with -m32
+# Toolchain: prefer an i686-elf cross compiler, then x86_64-elf with -m32,
+# then the host toolchain with -m32.
 ifneq ($(shell which i686-elf-gcc 2>/dev/null),)
-    # i686-elf cross-compiler available
     CC := i686-elf-gcc
     LD := i686-elf-ld
     OBJCOPY := i686-elf-objcopy
     CROSS_COMPILE := 1
 else ifneq ($(shell which x86_64-elf-gcc 2>/dev/null),)
-    # x86_64-elf cross-compiler available (use with -m32)
     CC := x86_64-elf-gcc
     LD := x86_64-elf-ld
     OBJCOPY := x86_64-elf-objcopy
     CROSS_COMPILE := 1
 else
-    # No cross-compiler, this likely won't work on non-x86 hosts
     $(warning No x86 cross-compiler found. Please install i686-elf-gcc or x86_64-elf-gcc)
     CC := gcc
     LD := ld
@@ -44,10 +42,8 @@ QEMU := $(shell which qemu-system-i386 2>/dev/null || echo /opt/homebrew/bin/qem
 
 # Directories
 BUILD_DIR := build
+OBJ_DIR := $(BUILD_DIR)/obj
 BOOT_DIR := boot
-KERNEL_DIR := kernel
-DRIVERS_DIR := drivers
-LIB_DIR := lib
 USERLAND_DIR := userland
 
 # Compiler flags
@@ -58,12 +54,11 @@ CFLAGS += -O2 -g
 CFLAGS += -I. -Iinclude
 CFLAGS += -mno-sse -mno-sse2 -mno-mmx
 USERLAND_CFLAGS := $(filter-out -g -O2,$(CFLAGS)) -Os
+DEPFLAGS := -MMD -MP
 
 # Linker flags
 LDFLAGS := -m elf_i386 -T linker.ld -nostdlib
-
-# Assembler flags
-ASFLAGS := -f elf32
+USER_LDSCRIPT := $(USERLAND_DIR)/user_linker.ld
 
 # Output files
 BOOT_STAGE1 := $(BUILD_DIR)/boot.bin
@@ -71,214 +66,161 @@ BOOT_STAGE2 := $(BUILD_DIR)/loader.bin
 KERNEL_ELF := $(BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(BUILD_DIR)/kernel.bin
 OS_IMAGE := $(BUILD_DIR)/gemos.img
-USER_SMOKE_OBJ := $(BUILD_DIR)/usrsmoke_user.o
-USER_SMOKE_ELF := $(BUILD_DIR)/usrsmoke.elf
-USER_SMOKE_BLOB := $(BUILD_DIR)/usrsmoke_blob.o
-UTERM_CRT_OBJ := $(BUILD_DIR)/uterm_crt0.o
+DATA_IMAGE := $(BUILD_DIR)/data.img
+
+# =============================================================================
+# Sources
+# =============================================================================
+# The order below is the link order. entry.S must stay first: stage 2 jumps
+# to the first byte of the kernel image (0x100000), which must be _start.
+KERNEL_ASM_SOURCES := kernel/entry.S kernel/interrupts.S \
+                      kernel/context_switch.S kernel/gdt_flush.S
+
+KERNEL_C_SOURCES := kernel/kernel.c kernel/console.c kernel/gdt.c kernel/idt.c \
+                    kernel/isr.c kernel/scheduler.c kernel/process.c kernel/elf.c \
+                    kernel/syscall.c kernel/tests.c tests/visual_test.c \
+                    tests/window_test.c tests/font_test.c kernel/heap.c \
+                    kernel/event.c kernel/memory/paging.c \
+                    kernel/gfx/rect.c kernel/gfx/context.c kernel/gfx/primitives.c \
+                    kernel/gfx/font/font.c kernel/gfx/font/glyphs.c \
+                    kernel/gui/desktop.c kernel/gui/window/window.c \
+                    kernel/gui/wm/wm.c kernel/gui/topbar/topbar.c \
+                    kernel/ui/ui_scale.c kernel/ui/menu.c kernel/ui/dock/dock.c \
+                    kernel/ui/cursor.c kernel/ui/focus.c \
+                    kernel/app/app_manager.c apps/testapp/testapp.c \
+                    apps/about/about.c apps/about/uabout_launcher.c \
+                    apps/terminal/terminal.c apps/terminal/uterm_launcher.c \
+                    apps/textedit/textedit.c apps/textedit/inputbox.c \
+                    apps/textedit/filepicker.c apps/textedit/utextedit_launcher.c \
+                    apps/explorer/explorer.c \
+                    kernel/fs/gemfs.c \
+                    kernel/gfx/blur.c \
+                    kernel/font/glyphs_sys.c kernel/font/rasterizer.c \
+                    kernel/font/aa.c kernel/font/truetype.c kernel/font/scanline.c \
+                    kernel/font/font_cache.c
+
+DRIVER_SOURCES := drivers/serial.c drivers/vbe.c drivers/pic.c drivers/pit.c \
+                  drivers/keyboard.c drivers/mouse.c drivers/ata.c drivers/rtc.c
+
+LIB_SOURCES := lib/string.c
+
+# Userland programs embedded into the kernel image
+USER_CRT0_SOURCE := $(USERLAND_DIR)/crt0.S
+USRSMOKE_SOURCE := $(USERLAND_DIR)/usrsmoke.S
 UTERM_SOURCES := $(USERLAND_DIR)/uterm2/main.c \
                  $(USERLAND_DIR)/uterm2/term_model.c \
                  $(USERLAND_DIR)/uterm2/term_input.c \
                  $(USERLAND_DIR)/uterm2/term_commands.c \
                  $(USERLAND_DIR)/uterm2/term_render.c
-UTERM_OBJS := $(patsubst $(USERLAND_DIR)/uterm2/%.c,$(BUILD_DIR)/uterm2_%.o,$(UTERM_SOURCES))
-UTERM_ELF := $(BUILD_DIR)/uterm.elf
-UTERM_IMAGE := $(BUILD_DIR)/uterm_image.bin
-UTERM_BLOB := $(BUILD_DIR)/uterm_blob.o
 ABOUT_SOURCES := $(USERLAND_DIR)/about/main.c \
                  $(USERLAND_DIR)/about/about_state.c \
                  $(USERLAND_DIR)/about/about_render.c
-ABOUT_OBJS := $(patsubst $(USERLAND_DIR)/about/%.c,$(BUILD_DIR)/about_%.o,$(ABOUT_SOURCES))
-ABOUT_ELF := $(BUILD_DIR)/about.elf
-ABOUT_IMAGE := $(BUILD_DIR)/about_image.bin
-ABOUT_BLOB := $(BUILD_DIR)/about_blob.o
 UTEXTEDIT_SOURCES := $(USERLAND_DIR)/textedit/main.c \
                      $(USERLAND_DIR)/textedit/textedit_document.c \
                      $(USERLAND_DIR)/textedit/textedit_state.c \
                      $(USERLAND_DIR)/textedit/textedit_render.c
-UTEXTEDIT_OBJS := $(patsubst $(USERLAND_DIR)/textedit/%.c,$(BUILD_DIR)/utextedit_%.o,$(UTEXTEDIT_SOURCES))
-UTEXTEDIT_ELF := $(BUILD_DIR)/utextedit.elf
-UTEXTEDIT_IMAGE := $(BUILD_DIR)/utextedit_image.bin
-UTEXTEDIT_BLOB := $(BUILD_DIR)/utextedit_blob.o
 
-# Source files
-# Source files
-KERNEL_SOURCES := $(KERNEL_DIR)/kernel.c $(KERNEL_DIR)/console.c $(KERNEL_DIR)/gdt.c $(KERNEL_DIR)/idt.c $(KERNEL_DIR)/isr.c $(KERNEL_DIR)/scheduler.c $(KERNEL_DIR)/process.c $(KERNEL_DIR)/elf.c $(KERNEL_DIR)/syscall.c $(KERNEL_DIR)/tests.c tests/visual_test.c tests/window_test.c tests/font_test.c $(KERNEL_DIR)/heap.c $(KERNEL_DIR)/event.c $(KERNEL_DIR)/memory/paging.c \
-                  $(KERNEL_DIR)/gfx/rect.c $(KERNEL_DIR)/gfx/context.c $(KERNEL_DIR)/gfx/primitives.c $(KERNEL_DIR)/gfx/font/font.c $(KERNEL_DIR)/gfx/font/glyphs.c $(KERNEL_DIR)/gui/desktop.c \
-                  $(KERNEL_DIR)/gui/window/window.c $(KERNEL_DIR)/gui/wm/wm.c $(KERNEL_DIR)/gui/topbar/topbar.c \
-                  $(KERNEL_DIR)/ui/ui_scale.c $(KERNEL_DIR)/ui/menu.c $(KERNEL_DIR)/ui/dock/dock.c $(KERNEL_DIR)/ui/cursor.c $(KERNEL_DIR)/ui/focus.c \
-                  $(KERNEL_DIR)/app/app_manager.c apps/testapp/testapp.c apps/about/about.c apps/about/uabout_launcher.c apps/terminal/terminal.c apps/terminal/uterm_launcher.c \
-                  apps/textedit/textedit.c apps/textedit/inputbox.c apps/textedit/filepicker.c apps/textedit/utextedit_launcher.c \
-                  apps/explorer/explorer.c \
-                  $(KERNEL_DIR)/fs/gemfs.c \
-                  $(KERNEL_DIR)/gfx/blur.c \
-                  $(KERNEL_DIR)/font/glyphs_sys.c $(KERNEL_DIR)/font/rasterizer.c $(KERNEL_DIR)/font/aa.c $(KERNEL_DIR)/font/truetype.c $(KERNEL_DIR)/font/scanline.c $(KERNEL_DIR)/font/font_cache.c
+# =============================================================================
+# Objects (build/obj mirrors the source tree)
+# =============================================================================
+obj = $(addprefix $(OBJ_DIR)/,$(addsuffix .o,$(basename $(1))))
 
-# ... later in file ...
+KERNEL_OBJS := $(call obj,$(KERNEL_ASM_SOURCES) $(KERNEL_C_SOURCES) \
+                          $(DRIVER_SOURCES) $(LIB_SOURCES))
 
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/ui/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-DRIVER_SOURCES := $(DRIVERS_DIR)/serial.c $(DRIVERS_DIR)/vbe.c $(DRIVERS_DIR)/pic.c $(DRIVERS_DIR)/pit.c $(DRIVERS_DIR)/keyboard.c $(DRIVERS_DIR)/mouse.c $(DRIVERS_DIR)/ata.c $(DRIVERS_DIR)/rtc.c
-LIB_SOURCES := $(LIB_DIR)/string.c
-ASM_SOURCES := $(KERNEL_DIR)/entry.S $(KERNEL_DIR)/interrupts.S $(KERNEL_DIR)/context_switch.S $(KERNEL_DIR)/gdt_flush.S
+USER_CRT0_OBJ := $(call obj,$(USER_CRT0_SOURCE))
+USRSMOKE_OBJ := $(call obj,$(USRSMOKE_SOURCE))
+UTERM_OBJS := $(call obj,$(UTERM_SOURCES))
+ABOUT_OBJS := $(call obj,$(ABOUT_SOURCES))
+UTEXTEDIT_OBJS := $(call obj,$(UTEXTEDIT_SOURCES))
+USER_OBJS := $(USER_CRT0_OBJ) $(USRSMOKE_OBJ) $(UTERM_OBJS) $(ABOUT_OBJS) \
+             $(UTEXTEDIT_OBJS)
 
-# Object files
-KERNEL_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(notdir $(KERNEL_SOURCES)))
-DRIVER_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(notdir $(DRIVER_SOURCES)))
-LIB_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(notdir $(LIB_SOURCES)))
-ASM_OBJS := $(patsubst %.S,$(BUILD_DIR)/%.o,$(notdir $(ASM_SOURCES)))
+# Binary blobs linked into the kernel. objcopy derives the symbol names from
+# the input path (e.g. _binary_build_uterm_image_bin_start), and
+# kernel/kernel.c and kernel/process.c refer to those names.
+FONT_BLOB := $(OBJ_DIR)/blobs/font.ttf.o
+USER_BLOBS := $(OBJ_DIR)/blobs/usrsmoke.elf.o \
+              $(OBJ_DIR)/blobs/uterm_image.bin.o \
+              $(OBJ_DIR)/blobs/about_image.bin.o \
+              $(OBJ_DIR)/blobs/utextedit_image.bin.o
+BLOB_OBJS := $(FONT_BLOB) $(USER_BLOBS)
 
-ALL_OBJS := $(ASM_OBJS) $(KERNEL_OBJS) $(DRIVER_OBJS) $(LIB_OBJS) $(BUILD_DIR)/font_data.o $(USER_SMOKE_BLOB) $(UTERM_BLOB) $(ABOUT_BLOB) $(UTEXTEDIT_BLOB)
+DEPS := $(KERNEL_OBJS:.o=.d) $(USER_OBJS:.o=.d)
 
 # =============================================================================
 # Targets
 # =============================================================================
 
-.PHONY: all clean run debug
+.PHONY: all clean run debug info
+
+# Keep intermediate files (e.g. build/uterm_image.bin) instead of deleting them
+.SECONDARY:
 
 all: $(OS_IMAGE)
 
-# Create build directory
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-# Stage 1 bootloader
+# Stage 1 and stage 2 bootloader
 $(BOOT_STAGE1): $(BOOT_DIR)/stage1/boot.asm | $(BUILD_DIR)
 	$(AS) -f bin $< -o $@
 
-# Stage 2 bootloader
 $(BOOT_STAGE2): $(BOOT_DIR)/stage2/loader.asm | $(BUILD_DIR)
 	$(AS) -f bin $< -o $@
 
-# Generic rule for C files
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+# Userland objects (listed first: GNU make 3.81 picks the first matching rule)
+$(OBJ_DIR)/$(USERLAND_DIR)/%.o: $(USERLAND_DIR)/%.c
+	@mkdir -p $(@D)
+	$(CC) $(USERLAND_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/memory/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+$(OBJ_DIR)/$(USERLAND_DIR)/%.o: $(USERLAND_DIR)/%.S
+	@mkdir -p $(@D)
+	$(CC) $(USERLAND_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/gui/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+# Kernel, driver and library objects
+$(OBJ_DIR)/%.o: %.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/gfx/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+$(OBJ_DIR)/%.o: %.S
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/gfx/font/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/gui/window/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/gui/wm/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: $(DRIVERS_DIR)/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: $(LIB_DIR)/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/gui/topbar/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/ui/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/ui/dock/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/app/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: apps/testapp/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: apps/about/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: apps/terminal/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: apps/textedit/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: apps/explorer/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Generic rule for Test files
-$(BUILD_DIR)/%.o: tests/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Generic rule for ASM files
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/%.S | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(USER_SMOKE_OBJ): $(USERLAND_DIR)/usrsmoke.S | $(BUILD_DIR)
-	$(CC) $(USERLAND_CFLAGS) -c $< -o $@
-
-$(USER_SMOKE_ELF): $(USER_SMOKE_OBJ) $(USERLAND_DIR)/user_linker.ld
-	$(LD) -m elf_i386 -T $(USERLAND_DIR)/user_linker.ld -nostdlib $(USER_SMOKE_OBJ) -o $@
+# Userland programs
+define link-user
+	$(LD) -m elf_i386 -T $(USER_LDSCRIPT) -nostdlib $(filter %.o,$^) -o $@
 	$(OBJCOPY) --strip-all $@
+endef
 
-$(USER_SMOKE_BLOB): $(USER_SMOKE_ELF)
-	$(OBJCOPY) -I binary -O elf32-i386 -B i386 $< $@
+$(BUILD_DIR)/usrsmoke.elf: $(USRSMOKE_OBJ) $(USER_LDSCRIPT)
+	$(link-user)
 
-$(UTERM_CRT_OBJ): $(USERLAND_DIR)/crt0.S | $(BUILD_DIR)
-	$(CC) $(USERLAND_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/uterm.elf: $(USER_CRT0_OBJ) $(UTERM_OBJS) $(USER_LDSCRIPT)
+	$(link-user)
 
-$(BUILD_DIR)/uterm2_%.o: $(USERLAND_DIR)/uterm2/%.c | $(BUILD_DIR)
-	$(CC) $(USERLAND_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/about.elf: $(USER_CRT0_OBJ) $(ABOUT_OBJS) $(USER_LDSCRIPT)
+	$(link-user)
 
-$(BUILD_DIR)/about_%.o: $(USERLAND_DIR)/about/%.c | $(BUILD_DIR)
-	$(CC) $(USERLAND_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/utextedit.elf: $(USER_CRT0_OBJ) $(UTEXTEDIT_OBJS) $(USER_LDSCRIPT)
+	$(link-user)
 
-$(BUILD_DIR)/utextedit_%.o: $(USERLAND_DIR)/textedit/%.c | $(BUILD_DIR)
-	$(CC) $(USERLAND_CFLAGS) -c $< -o $@
-
-$(UTERM_ELF): $(UTERM_CRT_OBJ) $(UTERM_OBJS) $(USERLAND_DIR)/user_linker.ld
-	$(LD) -m elf_i386 -T $(USERLAND_DIR)/user_linker.ld -nostdlib $(UTERM_CRT_OBJ) $(UTERM_OBJS) -o $@
-	$(OBJCOPY) --strip-all $@
-
-$(UTERM_IMAGE): $(UTERM_ELF)
+$(BUILD_DIR)/%_image.bin: $(BUILD_DIR)/%.elf
 	cp $< $@
 
-$(UTERM_BLOB): $(UTERM_IMAGE)
+# Blobs
+$(FONT_BLOB): font.ttf
+	@mkdir -p $(@D)
 	$(OBJCOPY) -I binary -O elf32-i386 -B i386 $< $@
 
-$(ABOUT_ELF): $(UTERM_CRT_OBJ) $(ABOUT_OBJS) $(USERLAND_DIR)/user_linker.ld
-	$(LD) -m elf_i386 -T $(USERLAND_DIR)/user_linker.ld -nostdlib $(UTERM_CRT_OBJ) $(ABOUT_OBJS) -o $@
-	$(OBJCOPY) --strip-all $@
-
-$(ABOUT_IMAGE): $(ABOUT_ELF)
-	cp $< $@
-
-$(ABOUT_BLOB): $(ABOUT_IMAGE)
+$(OBJ_DIR)/blobs/%.o: $(BUILD_DIR)/%
+	@mkdir -p $(@D)
 	$(OBJCOPY) -I binary -O elf32-i386 -B i386 $< $@
 
-$(UTEXTEDIT_ELF): $(UTERM_CRT_OBJ) $(UTEXTEDIT_OBJS) $(USERLAND_DIR)/user_linker.ld
-	$(LD) -m elf_i386 -T $(USERLAND_DIR)/user_linker.ld -nostdlib $(UTERM_CRT_OBJ) $(UTEXTEDIT_OBJS) -o $@
-	$(OBJCOPY) --strip-all $@
+# Kernel
+$(KERNEL_ELF): $(KERNEL_OBJS) $(BLOB_OBJS) linker.ld
+	$(LD) $(LDFLAGS) $(KERNEL_OBJS) $(BLOB_OBJS) -o $@
 
-$(UTEXTEDIT_IMAGE): $(UTEXTEDIT_ELF)
-	cp $< $@
-
-$(UTEXTEDIT_BLOB): $(UTEXTEDIT_IMAGE)
-	$(OBJCOPY) -I binary -O elf32-i386 -B i386 $< $@
-
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/font/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/%.o: $(KERNEL_DIR)/fs/%.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Font Data (linked binary)
-$(BUILD_DIR)/font_data.o: font.ttf
-	$(OBJCOPY) -I binary -O elf32-i386 -B i386 font.ttf $@
-
-# Link kernel
-$(KERNEL_ELF): $(ALL_OBJS) linker.ld
-	$(LD) $(LDFLAGS) $(ALL_OBJS) -o $@
-
-# Convert ELF to raw binary
 $(KERNEL_BIN): $(KERNEL_ELF)
 	$(OBJCOPY) -O binary $< $@
 
@@ -302,13 +244,10 @@ $(OS_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
 	@echo "  Stage 2: $$(stat -f%z $(BOOT_STAGE2) 2>/dev/null || stat -c%s $(BOOT_STAGE2)) bytes"
 	@echo "  Kernel:  $$(stat -f%z $(KERNEL_BIN) 2>/dev/null || stat -c%s $(KERNEL_BIN)) bytes"
 
-
-DATA_IMAGE := $(BUILD_DIR)/data.img
-
 # Create data image (10MB) if not exists
-$(DATA_IMAGE):
+$(DATA_IMAGE): | $(BUILD_DIR)
 	@echo "Creating data image..."
-	if [ ! -f $@ ]; then dd if=/dev/zero of=$@ bs=1M count=10 2>/dev/null; fi
+	dd if=/dev/zero of=$@ bs=1M count=10 2>/dev/null
 
 # Run in QEMU
 run: $(OS_IMAGE) $(DATA_IMAGE)
@@ -331,12 +270,6 @@ info:
 	@echo "  Cross-compile = $(CROSS_COMPILE)"
 	@echo ""
 	@echo "Objects:"
-	@echo "  $(ALL_OBJS)"
+	@echo "  $(KERNEL_OBJS) $(BLOB_OBJS)"
 
-# Run with VNC Bridge (Visual Agent)
-# Usage: make run-bridge
-# Then open http://localhost:6080/vnc.html
-run-bridge: $(OS_IMAGE)
-	@echo "Starting VNC Bridge Mode..."
-	$(QEMU) -fda $(OS_IMAGE) -vnc :0 -serial stdio -m 128M & \
-	./tools/noVNC/utils/novnc_proxy --vnc localhost:5900 --listen 6080
+-include $(DEPS)
