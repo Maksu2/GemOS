@@ -40,6 +40,12 @@ disks: between the boots the harness checks the GemFS disk and the files
 the first boot wrote, and the second boot checks those files again. The
 second disk must come out of both boots unchanged.
 
+With --editor it tests UTEXTEDIT.ELF with files instead: Esc and the close
+button ask before unsaved text is lost (a box appears over the text, Esc
+cancels it), Y saves under a new name, the File Explorer opens that file in
+the editor, which saves it again, N discards, and saving over UTERM.ELF
+shows an error; the file is then read on the host.
+
 With --stress N it runs a load test instead: N cycles of opening all
 three programs from the menus, typing into them and moving the mouse while
 they start and exit, then closing them (Esc or the close button, taking
@@ -161,6 +167,47 @@ CLOSE_BUTTON = {
 # Mouse path over the windows, the desktop and the dock (no clicks).
 STRESS_WIGGLE = [(300, 200), (700, 300), (500, 480), (880, 520), (200, 400),
                  (640, 140), (60, 300)]
+
+
+# --editor: UTEXTEDIT.ELF with files. Its console is 84x28 cells at logical
+# (120, 100), and row r starts at y = 136 + 15 * r (kernel/console.c: title
+# bar, padding, 15 px lines). Questions are drawn as a box over rows 8-12
+# (userland/textedit/textedit_theme.h); the status line is row 26, the last
+# one on a 540 px high screen.
+def editor_rows(first, last):
+    return (124, 136 + 15 * first, 800, 136 + 15 * (last + 1))
+
+
+EDITOR_BOX = editor_rows(8, 12)
+EDITOR_STATUS = editor_rows(26, 26)
+EDITOR_MENU = (MENU_APPS, menu_item(130, 3))     # Apps -> Text Editor
+EXPLORER_MENU = (MENU_APPS, menu_item(130, 0))   # Apps -> File Explorer
+# The File Explorer (apps/explorer/explorer.c) opens at (100, 100) and shows
+# a grid of 80x70 cells. On a new disk the fifth entry of / is the first
+# file the test saves, after the four programs.
+EXPLORER_FIFTH = (100 + 10 + 4 * 80 + 30, 100 + 28 + 30 + 10 + 20)
+EDITOR_FILE = "/notes.txt"
+EDITOR_SAVED = b"first line +more\nsecond"
+# QEMU sendkey names of the characters the test types
+SENDKEY = {" ": "spc", "\n": "ret", ".": "dot", "/": "slash",
+           "+": "shift-equal", "-": "minus"}
+
+
+def key_names(text):
+    return [SENDKEY.get(ch) or ("shift-" + ch.lower() if ch.isupper() else ch)
+            for ch in text]
+
+
+def pixels_changed(before, after):
+    return sum(1 for i in range(0, len(before), 3)
+               if before[i:i + 3] != after[i:i + 3])
+
+
+def reddish_pixels(area):
+    """Pixels of the error style (CONSOLE_ERROR_COLOR, a light red)."""
+    return sum(1 for i in range(0, len(area), 3)
+               if area[i] > 100 and area[i] > area[i + 1] + 50 and
+               area[i] > area[i + 2] + 50)
 
 # How long a frame may take to show up on its own (seconds). The first
 # window of a font size is the slowest: its glyphs are rasterized on the
@@ -476,6 +523,8 @@ class Smoke:
         """After the last QEMU run: the GemFS disk is consistent, and the
         disks that had to stay untouched are byte for byte the same."""
         self.check_gemfs("after the test")
+        if self.args.editor:
+            self.check_editor_files()
         unchanged = list(self.args.expect_unchanged)
         if self.args.selftest:
             unchanged.append("spare")
@@ -826,6 +875,210 @@ class Smoke:
         self.check(True, "stress: %d cycles" % cycles,
                    "%.0f s" % (time.monotonic() - start))
 
+    # -- text editor -----------------------------------------------------------
+    def type_text(self, text):
+        for name in key_names(text):
+            self.monitor.cmd("sendkey %s" % name)
+            time.sleep(0.03)
+
+    def start_editor(self, start, what):
+        """Start UTEXTEDIT.ELF with start() (a click somewhere); its PID once
+        its window is on the screen, None if it did not get there."""
+        spawn_re = re.compile(r"\[PROC\] Spawned PID=(\d+) UTEXTEDIT\.ELF")
+        before = len(spawn_re.findall(self.log_text()))
+        start()
+        pids = self.wait_for(lambda t: spawn_re.findall(t)[before:],
+                             self.args.app_timeout)
+        if not self.check(bool(pids), "editor: %s starts UTEXTEDIT.ELF" % what):
+            return None
+        pid = pids[0]
+        opened = self.wait_for(
+            lambda t: "[CONSOLE] Opened PID=%s handle=" % pid in t,
+            self.args.app_timeout)
+        if not self.check(bool(opened), "editor: its window opened",
+                          "PID=%s" % pid):
+            return None
+        if not self.check_window_drawn("UTEXTEDIT.ELF"):
+            return None
+        time.sleep(0.5)  # the first frame of the editor itself
+        return pid
+
+    def editor_from_menu(self):
+        def click():
+            self.pointer.home()
+            self.pointer.move_to(EDITOR_MENU[0])
+            self.pointer.click()
+            time.sleep(0.4)
+            self.pointer.move_to(EDITOR_MENU[1])
+            self.pointer.click()
+        return self.start_editor(click, "Apps -> Text Editor")
+
+    def editor_exited(self, pid):
+        return "[PROC] Reaped PID=%s " % pid in self.log_text()
+
+    def editor_ended(self, pid, what, since):
+        """The editor ended with exit=0 in the log after offset since: the
+        length of the log before the key or click that should end it."""
+        reap_re = re.compile(r"\[PROC\] Reaped PID=%s exit=(-?\d+)" % pid)
+        reaped = self.wait_for(lambda t: reap_re.search(t, since),
+                               self.args.app_timeout)
+        return self.check(bool(reaped) and reaped.group(1) == "0",
+                          "editor: %s" % what,
+                          "PID=%s exit=%s" % (pid, reaped.group(1) if reaped
+                                               else "none"))
+
+    def editor_running(self, pid, what):
+        time.sleep(1.5)
+        return self.check(not self.editor_exited(pid), "editor: %s" % what,
+                          "PID=%s still running" % pid)
+
+    def editor_box(self, shot, pid, reference, shown, what):
+        """Wait, without input, until the question box is on the screen
+        (the box area differs from reference) or gone again. A window that
+        closed changes the area too, so the editor must still run."""
+        def problem(image):
+            if self.editor_exited(pid):
+                return "UTEXTEDIT.ELF (PID=%s) has exited" % pid
+            changed = pixels_changed(reference,
+                                     image.logical_area(EDITOR_BOX))
+            if shown and changed < 400:
+                return "box area unchanged (%d pixels)" % changed
+            if not shown and changed > 50:
+                return "box area still differs (%d pixels)" % changed
+            return None
+
+        issue, seconds = self.watch_screen(shot, problem, WINDOW_TIMEOUT)
+        return self.check(issue is None, "editor: %s" % what,
+                          "%s.png, %s" % (shot, issue or "%.1f s" % seconds))
+
+    def editor(self):
+        start = time.monotonic()
+
+        # a new document: Esc and the close button ask before closing
+        pid = self.editor_from_menu()
+        if pid is None:
+            return
+        self.type_text("first line\nsecond")
+        time.sleep(1.0)
+        before = self.screendump("editor-typed").logical_area(EDITOR_BOX)
+        self.monitor.cmd("sendkey esc")
+        self.editor_box("editor-question", pid, before, True,
+                        "Esc with unsaved text asks first")
+        self.editor_running(pid, "the window stays while it asks")
+        self.monitor.cmd("sendkey esc")
+        self.editor_box("editor-cancelled", pid, before, False,
+                        "Esc in the question cancels it")
+        self.pointer.home()
+        self.pointer.move_to(CLOSE_BUTTON["UTEXTEDIT.ELF"])
+        self.pointer.click()
+        self.editor_box("editor-close-button", pid, before, True,
+                        "the close button asks as well")
+        self.editor_running(pid, "the close button did not close it yet")
+
+        # Y: save it; there is no file yet, so it asks for a name first
+        since = len(self.log_text())
+        self.monitor.cmd("sendkey y")
+        time.sleep(0.5)
+        self.type_text("notes")        # after the "/" it offers
+        self.monitor.cmd("sendkey ret")
+        if not self.editor_ended(pid, "Y, then Save as \"notes\": saved and "
+                                 "closed", since):
+            return
+
+        # the File Explorer opens the file in the editor
+        def open_from_explorer():
+            self.pointer.home()
+            self.pointer.move_to(EXPLORER_MENU[0])
+            self.pointer.click()
+            time.sleep(0.4)
+            self.pointer.move_to(EXPLORER_MENU[1])
+            self.pointer.click()
+            time.sleep(1.5)
+            self.pointer.move_to(EXPLORER_FIFTH)
+            self.pointer.click()           # select
+            time.sleep(0.5)
+            self.pointer.click()           # open
+        pid = self.start_editor(open_from_explorer, "the File Explorer")
+        if pid is None:
+            return
+        self.check("[UTEXTEDIT] Spawned PID=%s for %s" % (pid, EDITOR_FILE)
+                   in self.log_text(),
+                   "editor: the File Explorer passed %s" % EDITOR_FILE)
+        self.monitor.cmd("sendkey end")
+        self.type_text(" +more")
+        self.monitor.cmd("sendkey ctrl-s")
+        time.sleep(1.0)
+        since = len(self.log_text())
+        self.monitor.cmd("sendkey esc")
+        if not self.editor_ended(pid, "after Ctrl+S, Esc closes without "
+                                 "asking", since):
+            return
+
+        # N discards the changes
+        pid = self.editor_from_menu()
+        if pid is None:
+            return
+        self.type_text("scratch")
+        time.sleep(1.0)
+        before = self.screendump("editor-scratch").logical_area(EDITOR_BOX)
+        self.pointer.home()
+        self.pointer.move_to(CLOSE_BUTTON["UTEXTEDIT.ELF"])
+        self.pointer.click()
+        self.editor_box("editor-discard", pid, before, True,
+                        "the close button asks about the scratch text")
+        since = len(self.log_text())
+        self.monitor.cmd("sendkey n")
+        self.editor_ended(pid, "N discards the text and closes", since)
+
+        # a program cannot be saved over
+        pid = self.editor_from_menu()
+        if pid is None:
+            return
+        self.type_text("x")
+        self.monitor.cmd("sendkey ctrl-shift-s")
+        time.sleep(0.5)
+        self.type_text("UTERM.ELF")
+        self.monitor.cmd("sendkey ret")
+
+        def no_error(image):
+            if self.editor_exited(pid):
+                return "UTEXTEDIT.ELF (PID=%s) has exited" % pid
+            red = reddish_pixels(image.logical_area(EDITOR_STATUS))
+            return None if red > 20 else "no error in the status line"
+
+        issue, seconds = self.watch_screen("editor-readonly", no_error,
+                                           WINDOW_TIMEOUT)
+        self.check(issue is None, "editor: saving as UTERM.ELF shows an error",
+                   "editor-readonly.png, %s" % (issue or "%.1f s" % seconds))
+        self.editor_running(pid, "the refused save keeps the document open")
+        since = len(self.log_text())
+        self.monitor.cmd("sendkey esc")
+        time.sleep(0.5)
+        self.monitor.cmd("sendkey n")
+        self.editor_ended(pid, "then Esc and N close it", since)
+        self.check(True, "editor: done", "%.0f s" % (time.monotonic() - start))
+
+    def check_editor_files(self):
+        """What the editor test left on the disk, read on the host."""
+        result = mkgemfs("cat", self.disks["data"], EDITOR_FILE)
+        self.check(result.returncode == 0 and result.stdout == EDITOR_SAVED,
+                   "disk: %s holds the text typed, saved, reopened and saved "
+                   "again" % EDITOR_FILE, repr(result.stdout[:60]))
+        uterm = os.path.join(os.path.dirname(self.args.image),
+                             "uterm_image.bin")
+        with open(uterm, "rb") as f:
+            expected = f.read()
+        result = mkgemfs("cat", self.disks["data"], "/UTERM.ELF")
+        self.check(result.returncode == 0 and result.stdout == expected,
+                   "disk: UTERM.ELF is still the program from the kernel")
+        result = mkgemfs("ls", self.disks["data"], "/")
+        names = sorted(line.split()[-1] for line in
+                       result.stdout.decode(errors="replace").splitlines())
+        wanted = sorted(["ABOUT.ELF", "USRSMOKE.ELF", "UTERM.ELF",
+                         "UTEXTEDIT.ELF", EDITOR_FILE.lstrip("/")])
+        self.check(names == wanted, "disk: no other files were saved",
+                   ", ".join(names))
+
     # -- self-test -------------------------------------------------------------
     def selftest(self, boot):
         """One boot of the self-test image. Check names of the second boot
@@ -975,6 +1228,8 @@ class Smoke:
                 self.selftest(boot)
             elif self.args.stress:
                 self.stress()
+            elif self.args.editor:
+                self.editor()
             else:
                 for name, menu, item, updating_area in APPS:
                     self.run_app(name, menu, item, updating_area)
@@ -1019,6 +1274,8 @@ def main():
     parser.add_argument("--slow-writes", type=int, default=0, metavar="N",
                         help="let QEMU write at most N requests per second "
                         "to the data disk")
+    parser.add_argument("--editor", action="store_true",
+                        help="open, edit and save files in UTEXTEDIT.ELF")
     parser.add_argument("--preboot", action="store_true",
                         help="boot once on the new disks before the test")
     parser.add_argument("--expect-unchanged", action="append", default=[],
