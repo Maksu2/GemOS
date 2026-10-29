@@ -49,6 +49,7 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 - separate `CR3` per process
 - shared supervisor-only kernel mapping as the transition model
 - round-robin scheduler with an idle task and blocking waits; only ring 3 code is preempted, kernel code runs until it gives up the CPU
+- syscalls run with interrupts on, and a long file read or write lets the GUI and other processes run between disk blocks while it keeps the file system to itself
 - `process_t` / `task_t` split
 - any exception raised in ring 3 kills and reaps only that process (NMI, double fault and machine check excepted); a kernel exception halts with a full register dump
 - per-task x87/SSE state (FXSAVE/FXRSTOR on every task switch); interrupt handlers do not touch the FPU
@@ -76,7 +77,7 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 - safe copy helpers for user pointers
 - hosted app model: kernel hosts the window/surface, userland owns app state and render logic
 - hosted close requests and keyboard modifiers
-- thin file read/write syscalls (no app uses them yet)
+- file read/write syscalls (`UTEXTEDIT.ELF` opens and saves files with them)
 
 ## Current architecture
 
@@ -150,7 +151,7 @@ make run-hdd      # the same, booting from the hard disk image
 
 `tools/smoke.sh` prints one PASS/FAIL line per check and keeps the serial log and screenshots in `build/smoke/` (`build/stress/`, `build/matrix/<variant>/`, `build/selftest-run/`). CI runs `make all`, the smoke test, the stress test, the matrix and the self-test on every push and pull request.
 
-`make selftest` builds `build/selftest/gemos.img`, a kernel with `kernel/selftest.c`: it checks that heap corruption is detected, that broken ELF files are rejected, that every exception a ring 3 program can raise ends only that program and that each task keeps its FPU state. It exercises GemFS (directories, a 100 KB file, replacing, a failed write, errors, recursive delete) and runs `FILETEST.ELF`, an 83 KB program started from GemFS that writes and reads files through the syscalls and must be refused when it tries to overwrite `UTERM.ELF`. The harness boots it twice on the same disks, so the second boot checks what the first one wrote. Last, it overflows its own kernel stack on purpose to show the guard page at work.
+`make selftest` builds `build/selftest/gemos.img`, a kernel with `kernel/selftest.c`: it checks that heap corruption is detected, that broken ELF files are rejected, that every exception a ring 3 program can raise ends only that program and that each task keeps its FPU state. It exercises GemFS (directories, a 100 KB file, replacing, a failed write, errors, recursive delete) and runs `FILETEST.ELF`, an 83 KB program started from GemFS that writes and reads files through the syscalls and must be refused when it tries to overwrite `UTERM.ELF`. With disk writes slowed down, `LONGIO.ELF` checks long file syscalls: the clock, other tasks and the GUI loop go on during one, three processes share two files without seeing half of a write, and a process killed half way through a write leaves the file as it was. The harness boots it twice on the same disks, so the second boot checks what the first one wrote. Last, it overflows its own kernel stack on purpose to show the guard page at work.
 
 Run under GDB:
 
@@ -182,12 +183,12 @@ docs/       GitHub Pages site, the code audit and the GemFS format
 
 ## Roadmap
 
-The work follows the stages of the [September 2026 code audit](docs/AUDIT-2026-09.md) (section 8.2). No new features before stage 3 is done:
+The work follows the stages of the [September 2026 code audit](docs/AUDIT-2026-09.md) (section 8.2). New features had to wait for stage 3 (concurrency), which is done:
 
 0. Safety net: CI and the QEMU smoke test (done)
 1. Clean-up: dead code, duplicated headers, stale docs (done)
 2. Boot and memory: zeroed BSS, boot info with the E820 map, memory detection, a new loader, an ATA driver with timeouts (done)
-3. Concurrency and isolation: kernel code is not preempted and waits block; FPU state, a fault in ring 3 kills only the process, a hardened ELF loader and heap, guarded kernel stacks (done)
+3. Concurrency and isolation: kernel code is not preempted and waits block; syscalls run with interrupts on and long file syscalls let other tasks run; FPU state, a fault in ring 3 kills only the process, a hardened ELF loader and heap, guarded kernel stacks (done)
 4. Storage: GemFS v3 with a superblock, a block bitmap, inodes and directories; no writes to a disk without it; programs larger than 8 KB, written to disk only when they change and read-only for processes (done)
 5. GUI and apps: clipping, window placement, `UTEXTEDIT.ELF` open/save, then retiring the kernel text editor (open/save and retiring the kernel editor: done)
 

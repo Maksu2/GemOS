@@ -29,23 +29,30 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
   - Program startuje z `argc`, wskaźnikami `argv` i NULL na stosie; `userland/crt0.S` woła `main(argc, argv)` (`include/gemos/user_api.h`). `argv[0]` to nazwa, z którą go uruchomiono, a `argv[1]` plik do otwarcia, jeśli jądro go podało (`process_spawn_user_with_arg()`, np. File Explorer przez launcher edytora).
   - Strony kodu są tylko do odczytu także dla jądra (`CR0.WP=1`). Bez PAE nie ma bitu NX, więc dane pozostają wykonywalne.
   - Każdy wyjątek wywołany w Ring 3 (wektory 0–31 poza NMI, #DF i #MC) kończy tylko ten proces (`[USERFAULT]`, potem `Faulted PID=…`). Wyjątek w jądrze to panika z pełnym zrzutem rejestrów (także CR0–CR4) i zatrzymanie.
-- **Syscalle:** `int 0x80`, 13 wywołań (`include/gemos/syscall_abi.h`), każde od wejścia do `iret` z IF=0. Wskaźniki użytkownika przechodzą przez `copy_from_user`/`copy_to_user` (sprawdzanie tablic stron). `SYS_console_wait_event` blokuje proces do zdarzenia albo timeoutu: przy blokadzie EIP cofa się na `int $0x80` i syscall wykonuje się ponownie po obudzeniu.
+- **Syscalle:** `int 0x80`, 13 wywołań (`include/gemos/syscall_abi.h`).
+  - Bramka wyłącza przerwania, a syscall włącza je zaraz po wejściu i wyłącza przed wyjściem, gdzie scheduler wybiera zadanie. IRQ wraca do przerwanego syscalla.
+  - Wskaźniki użytkownika przechodzą przez `copy_from_user`/`copy_to_user` (sprawdzanie tablic stron).
+  - `SYS_console_wait_event` blokuje proces do zdarzenia albo timeoutu: przy blokadzie EIP cofa się na `int $0x80` i syscall wykonuje się ponownie po obudzeniu.
+  - `SYS_file_read`/`SYS_file_write` oddają CPU między blokami dysku (GemFS niżej).
+  - Proces zabity w środku syscalla (`process_kill_pid()`) kończy syscall najszybciej, jak może (zapis się wycofuje), i zamiast wrócić do Ring 3 staje się zombie.
 - **Userland:**
   - `UTERM.ELF`, `ABOUT.ELF` i `UTEXTEDIT.ELF` (plus `USRSMOKE.ELF` do debugowania) są wbudowane w obraz jądra. Przy starcie jądro zapisuje do GemFS, jako pliki systemowe, tylko te, których brakuje, które mają inną wersję (CRC-32 obrazu) albo nie zgadzają się z obrazem; kolejny start z tym samym jądrem nic nie zapisuje (`[PROC] Programs on GemFS: N seeded, M up to date`). Loader woli kopię z GemFS, a gdy jej nie przyjmie, bierze wbudowaną.
   - Procesy nie zmieniają programów: `SYS_file_write` zwraca `GEMOS_ERR_DENIED` dla nazw `*.ELF` (dowolna wielkość liter) i plików z flagą systemową. Sprawdza to `gemfs_write_user()` na sparsowanej nazwie i na inode, który zapis by zastąpił. Jądro (seeding, File Explorer) pisze bez tych ograniczeń.
   - Model „hosted app”: aplikacja wysyła siatkę komórek tekstowych (maks. 96×32), jądro rysuje okno. Działa najwyżej 8 takich okien naraz. Aplikacje śpią w `SYS_console_wait_event` (ABOUT z timeoutem do pełnej sekundy).
   - `UTEXTEDIT` otwiera i zapisuje pliki tekstowe do 8 KB przez `SYS_file_read`/`SYS_file_write` (Ctrl+O, Ctrl+S, Ctrl+Shift+S; nazwa bez rozszerzenia dostaje `.txt`) i otwiera plik z `argv[1]`. Zanim straci niezapisane zmiany (Esc, Ctrl+Q, przycisk X, Ctrl+N, Ctrl+O), pyta: Y zapisz, N porzuć, Esc anuluj. Pytania rysuje w ramce nad tekstem, bo dolny wiersz okna jest poza ekranem 1080p.
-  - `FAULTS.ELF`, `FPUCHECK.ELF` i `FILETEST.ELF` (`userland/selftest/`) są tylko w obrazie autotestu (`make selftest`).
+  - `FAULTS.ELF`, `FPUCHECK.ELF`, `FILETEST.ELF` i `LONGIO.ELF` (`userland/selftest/`) są tylko w obrazie autotestu (`make selftest`).
 - **GUI (w jądrze):**
   - Menedżer okien, topbar, dock, menu, font TrueType (Inter) z antyaliasingiem.
   - Skala UI (całkowita, `int ui_scale`) 2 przy 1920×1080 (współrzędne logiczne 960×540), 1 w mniejszych trybach.
   - Każda klatka przerysowuje cały ekran. Page flip przez BGA tylko po wykryciu adaptera (ID `0xB0C0`–`0xB0C5`) i przy VRAM na dwie strony; inaczej `memcpy` do framebuffera.
-- **ATA:** PIO LBA28 (`drivers/ata.c`). IDENTIFY na 4 pozycjach, każde oczekiwanie z limitem, kody błędów zamiast pętli bez końca. Limity są czasowe, mierzone stoperem na liczniku PIT (`pit_stopwatch_*`, działa też z IF=0): 5 s na IDENTIFY, 30 s na odczyt, zapis i FLUSH CACHE. Po timeoutcie sterownik resetuje kanał (SRST), żeby następne polecenie nie przesłało złych bajtów. Każdy dysk jest tylko do odczytu, dopóki GemFS go nie zamontuje (`ata_allow_writes()`); zapis na inny dysk kończy się `ATA_ERR_READ_ONLY` i linią `[ATA] Refused …` w logu.
+- **ATA:** PIO LBA28 (`drivers/ata.c`). IDENTIFY na 4 pozycjach, każde oczekiwanie z limitem, kody błędów zamiast pętli bez końca. Limity są czasowe, mierzone stoperem na liczniku PIT (`pit_stopwatch_*`: liczy przeładowania licznika, więc działa też z IF=0, a z IF=1 bierze też ticki): 5 s na IDENTIFY, 30 s na odczyt, zapis i FLUSH CACHE. Po timeoutcie sterownik resetuje kanał (SRST), żeby następne polecenie nie przesłało złych bajtów. Każdy dysk jest tylko do odczytu, dopóki GemFS go nie zamontuje (`ata_allow_writes()`); zapis na inny dysk kończy się `ATA_ERR_READ_ONLY` i linią `[ATA] Refused …` w logu.
 - **GemFS v3** (`kernel/fs/`, format w `docs/GEMFS.md`):
   - cały dysk ATA w blokach 4 KB: superblok z magic `GEMOS-FS`, wersją, rozmiarem i CRC-32, bitmapa bloków, tablica inode'ów (128 B: 12 bloków bezpośrednich i 1 pośredni, plik do ok. 4 MB), katalogi (wpisy 64 B, nazwy do 55 bajtów, ścieżki do 127);
   - jądro montuje pierwszy dysk z poprawnym superblokiem, bitmapą i katalogiem głównym. Bez takiego dysku startuje bez FS (programy idą z obrazu jądra) i nie zapisuje na żaden dysk ani jednego sektora;
   - jądro nigdy nie formatuje: dysk tworzy narzędzie hosta `tools/mkgemfs` (`make` robi `build/data.img`, 10 MB);
-  - zapis pliku to copy-on-write: nowe bloki w bitmapie, dane, inode jako zatwierdzenie, na końcu zwolnienie starych bloków, więc stara treść zostaje, dopóki nowa nie jest na dysku. `gemfs_stat`/`write`/`mkdir`/`list`/`delete` przyjmują ścieżki z podkatalogami, a `gemfs_delete` usuwa katalog z całą zawartością.
+  - zapis pliku to copy-on-write: nowe bloki w bitmapie, dane, inode jako zatwierdzenie, na końcu zwolnienie starych bloków, więc stara treść zostaje, dopóki nowa nie jest na dysku. `gemfs_stat`/`write`/`mkdir`/`list`/`delete` przyjmują ścieżki z podkatalogami, a `gemfs_delete` usuwa katalog z całą zawartością;
+  - jedno zadanie naraz: każde publiczne wywołanie trzyma blokadę od początku do końca. Długi odczyt albo zapis oddaje CPU między blokami (`scheduler_preempt_point()`), a inne zadanie, które wtedy wywoła GemFS, śpi do końca tej operacji (zabity proces przestaje czekać). `gemfs_read_file()` czyta cały plik pod jedną blokadą; tak czyta `SYS_file_read`;
+  - zadanie GUI nie śpi na blokadzie: oddaje CPU jej właścicielowi (`scheduler_yield_to()`), który działa sam do końca operacji i od razu oddaje CPU z powrotem. Nic innego nie działa w tym czasie, więc nikt nie zmienia stanu GUI w środku iteracji.
 - **Aplikacje jądra (`apps/`):**
   - File Explorer (foldery, UP, New Folder; plik `.txt`/`.gemtext` otwiera w UTEXTEDIT z pełną ścieżką) i Log Viewer oraz launchery trzech programów userlandu.
   - Test App jest zarejestrowana, ale niedostępna z menu.
@@ -54,7 +61,7 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
 
 Nie obchodzić ich po cichu; plan naprawy jest w §8.2 audytu.
 
-- **Syscalle z IF=0:** długi syscall wstrzymuje przerwania, a PIT gubi ticki. Zapis pliku to do 1 MB, a odczyt do 4 MB, czyli do kilku tysięcy sektorów ATA PIO.
+- **Zadanie GUI czeka na koniec operacji GemFS, w której trakcie potrzebuje dysku** (File Explorer albo start programu w trakcie zapisu do 1 MB): GUI stoi wtedy do jej końca.
 - **Render całej klatki (1080p) w task 0 nie jest przerywany:** procesy czekają na koniec iteracji.
 - **GemFS bez księgowania:** awaria w trakcie zapisu albo usuwania nie psuje istniejących plików, ale może zostawić zajęte bloki i inode'y bez właściciela. Jądro ich nie odzyskuje; `tools/mkgemfs check` je pokazuje.
 - **RAM powyżej 32 MB nie jest używany** (okno identity map, patrz wyżej).
@@ -93,11 +100,16 @@ docs/       strona GitHub Pages, audyt kodu, GEMFS.md (format dysku)
   - stan x87/SSE dwóch kopii `FPUCHECK.ELF` i zadania jądra przez przełączenia;
   - GemFS przez API jądra: katalogi, plik 100 KB z blokiem pośrednim, zastępowanie, zapis przerwany w połowie, błędy, 70 wpisów w jednym katalogu z usuwaniem, rekurencyjne usuwanie bez wycieku bloków i inode'ów;
   - odmowę zapisu ATA na drugi dysk bez GemFS (harness sprawdza potem, że się nie zmienił);
-  - `FILETEST.ELF` (83 KB, uruchamiany z GemFS): plik 80 KB i plik w podkatalogu przez syscalle, odczyt `UTERM.ELF`, odmowa nadpisania programów.
+  - `FILETEST.ELF` (83 KB, uruchamiany z GemFS): plik 80 KB i plik w podkatalogu przez syscalle, odczyt `UTERM.ELF`, odmowa nadpisania programów;
+  - długie syscalle plikowe (`LONGIO.ELF`; autotest spowalnia wtedy każdy zapisany sektor o 2 ms, więc zapis 128 KB trwa ponad pół sekundy):
+    - w trakcie zapisu zegar idzie dalej, a inne zadania i pętla GUI dostają CPU,
+    - trzy procesy na dwóch plikach naraz nie widzą połowy zapisu,
+    - proces zabity w środku zapisu kończy się na następnym bloku, a plik zostaje taki jak był,
+    - zadanie GUI, które potrzebuje GemFS w trakcie zapisu, czeka do jego końca, a działa wtedy tylko właściciel blokady.
 
   Harness uruchamia autotest dwa razy na tych samych dyskach: pliki z pierwszego startu sprawdzają `tools/mkgemfs` na hoście i drugi start.
 
-  Na końcu celowo przepełnia swój stos jądra: log musi skończyć się paniką #DF z nazwą strony ochronnej. Wyjątek, którego CPU nie zgłasza (QEMU TCG: #XM), daje linię `SKIP`, a nie PASS. Uruchom go po każdej zmianie sterty, loadera ELF, obsługi wyjątków, FPU, stosów jądra, GemFS albo syscalli plikowych.
+  Na końcu celowo przepełnia swój stos jądra: log musi skończyć się paniką #DF z nazwą strony ochronnej. Wyjątek, którego CPU nie zgłasza (QEMU TCG: #XM), daje linię `SKIP`, a nie PASS. Uruchom go po każdej zmianie sterty, loadera ELF, obsługi wyjątków, FPU, stosów jądra, schedulera, GemFS albo syscalli plikowych.
 - `tools/smoke.sh --editor` testuje UTEXTEDIT z plikami na nowym dysku GemFS: Esc i przycisk X przy niezapisanym tekście pokazują pytanie (a proces dalej działa), Esc je anuluje, Y i „Save as” zapisuje, File Explorer otwiera ten plik w edytorze, Ctrl+S zapisuje ponownie, N porzuca zmiany, zapis jako `UTERM.ELF` daje błąd w statusie. Na końcu harness czyta plik z dysku na hoście. Uruchom go po każdej zmianie UTEXTEDIT, konsoli, File Explorera albo syscalli plikowych.
 - CI (`.github/workflows/ci.yml`) uruchamia smoke, test edytora, stress, macierz i autotest przy każdym pushu i PR.
 - `make run` otwiera QEMU z dyskiem danych `build/data.img` (robi go `tools/mkgemfs format`, jeśli go nie ma; stary `data.img` sprzed GemFS v3 jądro pomija, trzeba go usunąć), `make run-hdd` startuje z dysku twardego, `make debug` dodatkowo czeka na GDB na porcie `:1234` (działa też bez dysku danych).
@@ -110,13 +122,16 @@ docs/       strona GitHub Pages, audyt kodu, GEMFS.md (format dysku)
 - **Współbieżność: kod w Ring 0 nie jest wywłaszczany.** Szczegóły są w `kernel/scheduler.c`.
   - **Kiedy następuje przełączenie zadania:**
     - IRQ0 przerwał Ring 3 (koniec kwantu albo obudzone inne zadanie),
-    - zadanie samo oddaje CPU: syscall kończy się `exit`/`yield`/blokadą, fault zabija proces, zadanie jądra woła `scheduler_yield()`.
-  - **Kod jądra wykonuje się po kolei.** Task 0 i syscalle biegną jeden po drugim między punktami oddania CPU i nie potrzebują blokad względem innych zadań. Nie wolno oddawać CPU w środku operacji na współdzielonym stanie.
+    - zadanie samo oddaje CPU: syscall kończy się `exit`/`yield`/blokadą, fault zabija proces, kod jądra woła `scheduler_yield()` albo `scheduler_yield_to()`,
+    - długa praca w jądrze woła `scheduler_preempt_point()` tam, gdzie nic nie jest w połowie zmiany (GemFS między blokami), a kwant się skończył albo obudzono inne zadanie. Zadanie GUI oddaje CPU tylko między iteracjami pętli (i właścicielowi blokady GemFS).
+  - **IRQ, które przerwało kod jądra, zawsze do niego wraca** (`isr_handler`, `scheduler_tick`).
+  - **Kod jądra wykonuje się po kolei.** Task 0 i syscalle biegną jeden po drugim między punktami oddania CPU i nie potrzebują blokad względem innych zadań. Nie wolno oddawać CPU w środku operacji na współdzielonym stanie. Wyjątkiem jest GemFS: jego długie operacje oddają CPU, więc ma blokadę.
+  - **Zabicie procesu, który oddał CPU w jądrze, czeka na koniec syscalla.** Proces może wtedy trzymać GemFS albo być w połowie zmiany: `scheduler_kill_task()` tylko go oznacza i budzi, syscall kończy się najszybciej, jak może, a wyjście z niego robi z procesu zombie.
   - **Nie wolno czekać w pętli na inne zadanie** (`hlt`, busy-wait). Należy zablokować zadanie (`scheduler_block_current()`) i obudzić je (`scheduler_wake()`, `process_wake()`):
     - zadanie jądra woła potem `scheduler_yield()`,
-    - syscall blokuje się z restartem jak `SYS_console_wait_event`,
+    - syscall blokuje się z restartem jak `SYS_console_wait_event` albo w środku i woła `scheduler_yield()`, jak przy czekaniu na blokadę GemFS,
     - `hlt` wykonuje tylko idle.
-  - **Handlery IRQ przerywają także Ring 0**, więc nie drukują logu, nie alokują, nie dotykają GUI ani FS i nie używają FPU (pliki z `IRQ_PATH_SOURCES` w Makefile kompilują się z `-mgeneral-regs-only`). Stan dzielony z IRQ zmienia się z zadania tylko w `irq_save()`/`irq_restore()` (`kernel/include/irq.h`). Ten stan to:
+  - **Handlery IRQ przerywają także Ring 0** (również syscalle, bo działają z IF=1), więc nie drukują logu, nie alokują, nie dotykają GUI ani FS i nie używają FPU (pliki z `IRQ_PATH_SOURCES` w Makefile kompilują się z `-mgeneral-regs-only`). Stan dzielony z IRQ zmienia się z zadania tylko w `irq_save()`/`irq_restore()` (`kernel/include/irq.h`). Ten stan to:
     - kolejka zdarzeń,
     - licznik ticków,
     - tablica zadań,
@@ -127,4 +142,4 @@ docs/       strona GitHub Pages, audyt kodu, GEMFS.md (format dysku)
 - **GUI zostaje w jądrze.** Userland rozmawia z systemem wyłącznie przez ABI z `include/gemos/` (`syscall_abi.h`, `console_abi.h`, `user_api.h`; programy autotestu także `selftest_abi.h`) i nie includuje nagłówków jądra.
 - **Kody klawiszy** pochodzą tylko z `GEMOS_KEY_*` w `include/gemos/console_abi.h`.
 - **Jeden `string.h`**: `include/string.h`, dołączany jako `<string.h>`.
-- **Żadnych nowych funkcji przed naprawą współbieżności** (etap 3 audytu). Kolejność prac jest w §8.2 audytu.
+- **Kolejność prac jest w §8.2 audytu.** Nowe funkcje czekały na współbieżność z etapu 3; jest zrobiona, więc teraz kolej na resztę etapu 5.
