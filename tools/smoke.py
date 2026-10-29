@@ -12,6 +12,8 @@ the monitor:
   * windows open between the topbar and the dock, a second one moves off
     the first one's corner, and a dragged window keeps its title bar there,
   * every character of a hosted console sits in its own cell of the grid,
+  * a click on an entry in the File Explorer selects it and leaves no drag
+    outline behind,
   * every frame checked must appear on screen by itself: no input is sent
     while waiting for it,
   * the serial log has no PANIC, user fault, allocation failure or refused
@@ -231,11 +233,21 @@ EDITOR_MENU = (MENU_APPS, menu_item(130, 3))     # Apps -> Text Editor
 EXPLORER_MENU = (MENU_APPS, menu_item(130, 0))   # Apps -> File Explorer
 
 
-def explorer_fifth(window):
-    """The File Explorer (apps/explorer/explorer.c) shows a grid of 80x70
-    cells. On a new disk the fifth entry of / is the first file the test
-    saves, after the four programs."""
-    return (window.x + 10 + 4 * 80 + 30, window.y + 28 + 30 + 10 + 20)
+def explorer_entry(window, index):
+    """The middle of the icon of an entry in the File Explorer
+    (apps/explorer/explorer.c): a grid of 80x70 cells, five in a row, from
+    10 px into the client area below a 30 px toolbar, with 32 px icons
+    2 px below the top of the cell. On a new disk / lists the programs as
+    the kernel puts them there: USRSMOKE.ELF, UTERM.ELF, ABOUT.ELF,
+    UTEXTEDIT.ELF (kernel/process.c), then the files the tests save."""
+    x = window.x + 1 + 10 + 80 * (index % 5)
+    y = window.y + 27 + 30 + 10 + 70 * (index // 5)
+    return (x + 40, y + 18)
+
+
+EXPLORER_ABOUT = 2
+EXPLORER_FIRST_FILE = 4
+EXPLORER_SELECTION = (0xCC, 0xE5, 0xFF)  # COL_SELECTION
 EDITOR_FILE = "/notes.txt"
 EDITOR_SAVED = b"first line +more\nsecond"
 # QEMU sendkey names of the characters the test types
@@ -959,6 +971,55 @@ class Smoke:
         self.monitor.cmd("sendkey n")
         self.editor_ended(pid, "the grid test closes it", since)
 
+    # -- File Explorer -----------------------------------------------------------
+    def open_explorer(self):
+        """The File Explorer from the Apps menu; its window, once it has had
+        time to draw (its first frame rasterizes its font sizes)."""
+        placed_re = re.compile(r"\[WM\] Placed " + Window.GEOMETRY)
+        before = len(placed_re.findall(self.log_text()))
+        self.pointer.home()
+        self.pointer.move_to(EXPLORER_MENU[0])
+        self.pointer.click()
+        time.sleep(0.4)
+        self.pointer.move_to(EXPLORER_MENU[1])
+        self.pointer.click()
+        placed = self.wait_for(lambda t: list(placed_re.finditer(t))[before:],
+                               self.args.app_timeout)
+        if not placed:
+            raise SmokeError("the File Explorer opened no window")
+        time.sleep(1.5)
+        return Window.parse(placed[0])
+
+    def file_explorer(self):
+        """A click in the File Explorer selects an entry and, once the
+        button is up, leaves no drag outline on the screen."""
+        if "[GemFS] Mounted" not in self.log_text():
+            print("SKIP  explorer: no file system, nothing to select",
+                  flush=True)
+            return
+        explorer = self.open_explorer()
+        about = explorer_entry(explorer, EXPLORER_ABOUT)
+        aside = (explorer.x + explorer.w // 2, explorer.y + explorer.h - 60)
+        self.pointer.home()
+        self.pointer.move_to(about)
+        self.pointer.click()                   # select
+        self.pointer.move_to(aside)            # off the entries
+        time.sleep(0.5)
+        image = self.screendump("explorer-selected")
+        cell = image.logical_rgb((about[0] - 36, about[1] - 14))
+        # explorer_render draws a drag as the black outline of a 32 px
+        # square around the pointer: count black pixels on its top edge
+        black = 0
+        for x, y in (about, aside):
+            edge = image.logical_area((x - 16, y - 16, x + 16, y - 15))
+            black += sum(1 for i in range(0, len(edge), 3)
+                         if edge[i:i + 3] == b"\x00\x00\x00")
+        self.check(cell == EXPLORER_SELECTION and black == 0,
+                   "explorer: a click selects ABOUT.ELF and leaves no drag "
+                   "outline", "explorer-selected.png, cell #%02x%02x%02x, "
+                   "%d black pixels where an outline would be"
+                   % (cell + (black,)))
+
     # -- stress test -----------------------------------------------------------
     def burst(self, keys):
         """Input while programs start or exit: small mouse moves and keys."""
@@ -1189,23 +1250,9 @@ class Smoke:
             return
 
         # the File Explorer opens the file in the editor
-        placed_re = re.compile(r"\[WM\] Placed " + Window.GEOMETRY)
-
         def open_from_explorer():
-            before = len(placed_re.findall(self.log_text()))
-            self.pointer.home()
-            self.pointer.move_to(EXPLORER_MENU[0])
-            self.pointer.click()
-            time.sleep(0.4)
-            self.pointer.move_to(EXPLORER_MENU[1])
-            self.pointer.click()
-            placed = self.wait_for(
-                lambda t: list(placed_re.finditer(t))[before:],
-                self.args.app_timeout)
-            if not placed:
-                raise SmokeError("editor: the File Explorer opened no window")
-            time.sleep(1.5)
-            self.pointer.move_to(explorer_fifth(Window.parse(placed[0])))
+            explorer = self.open_explorer()
+            self.pointer.move_to(explorer_entry(explorer, EXPLORER_FIRST_FILE))
             self.pointer.click()           # select
             time.sleep(0.5)
             self.pointer.click()           # open
@@ -1450,6 +1497,7 @@ class Smoke:
                     time.sleep(0.5)
                 self.windows()
                 self.console_grid()
+                self.file_explorer()
             if not self.args.selftest:
                 self.scan_log()
             if any(not ok for ok, _, _ in self.results):

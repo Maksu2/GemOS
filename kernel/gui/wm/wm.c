@@ -21,6 +21,10 @@ static bool wm_is_dragging = false;
 static int wm_drag_offset_x = 0;
 static int wm_drag_offset_y = 0;
 
+/* The window that got the last button press: its app gets the release
+ * too, wherever it happens, so a drag inside the window always ends */
+static window_t *wm_press_window = NULL;
+
 /* Placement */
 #define WM_CASCADE_STEP 24  /* a new window on another one's corner moves */
 #define WM_CASCADE_TRIES 8
@@ -243,6 +247,9 @@ void wm_remove_window(window_t *win) {
   if (!win)
     return;
 
+  if (wm_press_window == win) {
+    wm_press_window = NULL;
+  }
   if (focused_window == win) {
     focused_window = win->prev;
     if (focused_window)
@@ -421,11 +428,13 @@ void wm_handle_event(event_t *event) {
 
     window_t *curr = windows_tail;
 
+    wm_press_window = NULL;
     while (curr) {
       if (rect_contains(&curr->frame_rect, mx, my)) {
         if (curr != focused_window) {
           wm_focus_window(curr);
         }
+        wm_press_window = curr;
 
         /* Forward Click to App */
         if (curr->app && curr->app->handle_event) {
@@ -522,12 +531,22 @@ void wm_handle_event(event_t *event) {
       focused_window->y = y < area.y ? area.y : (y > max_y ? max_y : y);
 
       window_update_rects(focused_window);
+    } else if (focused_window && focused_window->app &&
+               focused_window->app->handle_event) {
+      /* hover, and drags inside the window */
+      focused_window->app->handle_event(focused_window, event);
     }
   } else if (event->type == EVENT_MOUSE_RELEASE) {
+    window_t *pressed = wm_press_window;
+
     if (wm_is_dragging && focused_window) {
       wm_log_rect("[WM] Dropped", focused_window->frame_rect);
     }
     wm_is_dragging = false;
+    wm_press_window = NULL;
+    if (pressed && pressed->app && pressed->app->handle_event) {
+      pressed->app->handle_event(pressed, event);
+    }
   } else if (event->type == EVENT_KEY_PRESS ||
              event->type == EVENT_KEY_RELEASE) {
     if (focused_window) {
