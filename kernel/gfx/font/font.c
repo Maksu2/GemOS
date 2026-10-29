@@ -190,6 +190,23 @@ void font_draw_text(gfx_context_t *ctx, int x, int y, const char *text,
   }
 }
 
+int font_text_width(const char *text, int size_px) {
+  if (!g_font_loaded || !text || !g_raster_buf)
+    return 0;
+
+  int size_phys = size_px * ui_scale;
+  float combined_scale = (float)size_phys / g_font.units_per_em;
+  float width = 0.0f;
+
+  /* the pen as font_draw_text moves it */
+  for (; *text && *text != '\n'; text++) {
+    glyph_cache_entry_t *entry =
+        font_glyph((unsigned char)*text, size_phys, combined_scale);
+    width += entry ? (float)entry->advance : (float)size_phys / 2.0f;
+  }
+  return (int)width / ui_scale;
+}
+
 void font_draw_cell(gfx_context_t *ctx, int x, int y, int cell_w, char c,
                     int size_px, uint32_t color) {
   if (!g_font_loaded || !g_raster_buf)

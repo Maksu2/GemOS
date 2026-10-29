@@ -18,6 +18,8 @@ the monitor:
     while waiting for it,
   * the serial log has no PANIC, user fault, allocation failure or refused
     disk write, and no line was printed into the middle of another one,
+  * GemOS -> Shutdown turns the machine off (QEMU exits by itself) after
+    the kernel has stopped GemFS; every mode but --selftest ends this way,
   * after QEMU has stopped, tools/mkgemfs check finds the GemFS data disk
     consistent.
 
@@ -32,8 +34,9 @@ test: the kernel must not have written a single byte.
 With --matrix it runs the smoke test once per machine variant (32/64/256 MB
 of RAM, no data disk, 4 MB of VRAM, boot from the hard disk image, a data
 disk without GemFS or with a damaged superblock, a second boot, a slow
-disk); each
-variant also checks log lines that show which path the kernel took.
+disk, a machine without ACPI, which Shutdown cannot turn off: the kernel
+halts and says so on the screen); each variant also checks log lines
+that show which path the kernel took.
 
 With --selftest it boots the self-test image (make selftest) instead, with
 a second disk without GemFS: kernel/selftest.c checks the heap, the pool,
@@ -125,6 +128,8 @@ MATRIX = [
     ("slow-disk", ["--slow-writes", "12"],
      [r"\[GemFS\] Mounted GemFS v3",
       r"\[PROC\] Programs on GemFS: 4 seeded, 0 up to date"]),
+    # Shutdown cannot turn the machine off: the kernel halts instead
+    ("no-acpi", ["--no-acpi"], [r"\[GemFS\] Mounted GemFS v3"]),
 ]
 
 # Topbar menus (kernel/gui/topbar/topbar.c): "GemOS" at x 10..80, "Apps" at
@@ -657,6 +662,9 @@ class Smoke:
                     drive += ",throttling.iops-write=%d" % self.args.slow_writes
                 cmd += ["-drive", drive]
                 index += 1
+        if self.args.no_acpi:
+            # no ACPI power management, so no port turns the machine off
+            cmd += ["-machine", "pc,acpi=off"]
         if self.args.vga_mem:
             # (-global VGA.vgamem_mb leaves the machine without a VGA)
             cmd += ["-vga", "none",
@@ -1488,6 +1496,74 @@ class Smoke:
                        "serial log: /%s/" % pattern)
         self.check(self.qemu.poll() is None, "QEMU still running at the end")
 
+    def shutdown(self):
+        """GemOS -> Shutdown: the kernel lets a GemFS call in progress
+        finish, keeps any other from starting and turns the machine off,
+        so QEMU exits by itself. With --no-acpi nothing turns it off: the
+        kernel halts, and the screen says it is safe to turn it off."""
+        since = len(self.log_text())
+        self.pointer.home()
+        self.pointer.move_to(MENU_GEMOS)
+        self.pointer.click()
+        time.sleep(0.4)
+        self.pointer.move_to(menu_item(60, 2))  # GemOS -> Shutdown
+        start = time.monotonic()
+        try:
+            # the menu acts on the press; the button is never released
+            self.monitor.cmd("mouse_button 1")
+        except (OSError, SmokeError):
+            pass  # QEMU has already turned off
+
+        if self.args.no_acpi:
+            halted = self.wait_for(
+                lambda t: "[POWER] Still running" in t[since:], 30.0)
+            self.check(bool(halted),
+                       "shutdown: without ACPI the kernel halts, QEMU stays "
+                       "on", "%.1f s" % (time.monotonic() - start))
+
+            def problem(image):
+                width, height = (v // UI_SCALE for v in SCREEN_SIZE)
+                corner = image.logical_rgb((10, 10))
+                middle = image.logical_area((width // 2 - 150, height // 2 - 12,
+                                             width // 2 + 150, height // 2 + 12))
+                white = sum(1 for i in range(0, len(middle), 3)
+                            if min(middle[i:i + 3]) > 200)
+                if corner != (0, 0, 0):
+                    return "corner pixel #%02x%02x%02x" % corner
+                if white < 200:
+                    return "%d white pixels in the middle" % white
+                return None
+
+            issue, seconds = self.watch_screen("shutdown", problem,
+                                               WINDOW_TIMEOUT)
+            self.check(issue is None, "shutdown: the screen says it is safe "
+                       "to turn the computer off",
+                       "shutdown.png, %s" % (issue or "%.1f s" % seconds))
+            return
+
+        try:
+            code = self.qemu.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            code = None
+        self.check(code == 0, "shutdown: GemOS -> Shutdown turns the machine "
+                   "off", "QEMU exited with status %s after %.1f s"
+                   % (code, time.monotonic() - start) if code is not None
+                   else "QEMU still running after 30 s")
+        text = self.log_text()
+        steps = ["[POWER] Shutdown requested", "[POWER] Powering off"]
+        if "[GemFS] Mounted" in text:
+            steps.insert(1, "[GemFS] Stopped")
+        found = [text.find(step, since) for step in steps]
+        failures = [p for p in FAILURE_PATTERNS + [r"\[POWER\] Still running"]
+                    if re.search(p, text[since:])]
+        self.check(min(found) >= 0 and found == sorted(found) and not failures,
+                   "shutdown: the log shows %s, in that order"
+                   % ", then ".join(steps),
+                   "missing: %s" % ", ".join(s for s, f in zip(steps, found)
+                                             if f < 0) if min(found) < 0
+                   else "failures: %s" % ", ".join(failures) if failures
+                   else "")
+
     def save_diagnostics(self):
         """On failure: the screen and the CPU registers (EIP shows where the
         guest is, e.g. `nm build/kernel.elf | sort`) next to the log."""
@@ -1535,6 +1611,7 @@ class Smoke:
                 self.file_explorer()
             if not self.args.selftest:
                 self.scan_log()
+                self.shutdown()
             if any(not ok for ok, _, _ in self.results):
                 self.save_diagnostics()
         except SmokeError:
@@ -1580,6 +1657,9 @@ def main():
     parser.add_argument("--expect-unchanged", action="append", default=[],
                         choices=("data", "boot"),
                         help="that disk image must be the same afterwards")
+    parser.add_argument("--no-acpi", action="store_true",
+                        help="a machine without ACPI: Shutdown cannot turn "
+                        "it off")
     parser.add_argument("--vga-mem", type=int, default=0, metavar="MB",
                         help="VRAM of the QEMU VGA (default: QEMU's 16)")
     parser.add_argument("--resolution", default="1920x1080",

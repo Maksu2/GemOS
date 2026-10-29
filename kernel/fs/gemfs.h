@@ -86,6 +86,10 @@ typedef void (*gemfs_list_fn_t)(void *ctx, const gemfs_entry_t *entry);
 void gemfs_init(void);
 int gemfs_available(void);
 
+/* Before power off: waits until a call in progress has finished, and no
+ * call after it touches the disk (it waits forever). */
+void gemfs_shutdown(void);
+
 /* Changes with every modification, so a view knows when to reread. */
 uint32_t gemfs_generation(void);
 

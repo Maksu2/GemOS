@@ -18,6 +18,7 @@
 
 /* Line status register bits */
 #define LSR_TX_EMPTY 0x20 /* Transmitter holding register empty */
+#define LSR_TX_IDLE 0x40  /* Holding and shift register empty: all sent */
 
 #include "../include/io.h"
 
@@ -128,6 +129,14 @@ void serial_putc(char c) {
   serial_wait_tx_ready();
   outb(COM1 + DATA_REG, c);
   klog_putc(c); /* Also store in ring buffer */
+}
+
+/* Wait until the last byte has left the UART (a missing UART reads 0xFF,
+ * which has the bit set) */
+void serial_drain(void) {
+  while ((inb(COM1 + LINE_STATUS_REG) & LSR_TX_IDLE) == 0) {
+    /* Spin */
+  }
 }
 
 /* Write a null-terminated string */

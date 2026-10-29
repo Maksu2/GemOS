@@ -788,6 +788,15 @@ void gemfs_init(void) {
 
 int gemfs_available(void) { return fs_device >= 0; }
 
+void gemfs_shutdown(void) {
+  /* Waits for a call in progress, then never gives the lock back. Every
+   * disk write ends with FLUSH CACHE (drivers/ata.c), so the disk then
+   * holds everything written. */
+  if (fs_lock() == GEMFS_OK && fs_device >= 0) {
+    serial_print("[GemFS] Stopped: no more writes\n");
+  }
+}
+
 uint32_t gemfs_generation(void) { return generation; }
 
 /* -- files ------------------------------------------------------------------- */
