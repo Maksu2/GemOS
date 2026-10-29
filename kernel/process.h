@@ -55,7 +55,11 @@ int process_spawn_user_with_arg(const char *name, const char *arg);
 /* Start a program from an ELF image in memory. */
 int process_spawn_user_image(const char *name, const uint8_t *image,
                              size_t size);
+/* The scheduler task of a process that has not been reaped, -1 if none. */
+int process_task_id(uint32_t pid);
 #endif
+/* 1 if the process ends: at once, or when it is inside a syscall, as soon
+ * as the syscall returns (the reaper logs it then). */
 int process_kill_pid(uint32_t pid, int32_t exit_code);
 /* Make the process runnable if it is blocked (e.g. waiting for an event). */
 void process_wake(uint32_t pid);

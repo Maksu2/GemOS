@@ -32,8 +32,9 @@ variant also checks log lines that show which path the kernel took.
 
 With --selftest it boots the self-test image (make selftest) instead, with
 a second disk without GemFS: kernel/selftest.c checks the heap, the pool,
-the ELF loader, GemFS and the file syscalls, the FPU state and every
-exception a Ring 3 program can raise, logs "[SELFTEST] RESULT", then
+the ELF loader, GemFS and the file syscalls (also long ones, on a disk it
+slows down), the FPU state and every exception a Ring 3 program can raise,
+logs "[SELFTEST] RESULT", then
 overflows its kernel stack on purpose; the log must end in the double
 fault panic that names the overflow. The self-test boots twice on the same
 disks: between the boots the harness checks the GemFS disk and the files

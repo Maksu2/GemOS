@@ -438,6 +438,12 @@ int process_spawn_user_image(const char *name, const uint8_t *image,
   return process_spawn_loaded(name, NULL, image, size,
                               PROCESS_IMAGE_SOURCE_EMBEDDED);
 }
+
+int process_task_id(uint32_t pid) {
+  process_t *process = process_find_by_pid(pid);
+
+  return process != NULL ? (int)process->task_id : -1;
+}
 #endif
 
 int process_kill_pid(uint32_t pid, int32_t exit_code) {
@@ -449,13 +455,18 @@ int process_kill_pid(uint32_t pid, int32_t exit_code) {
   if (process->state == PROC_ZOMBIE || process->state == PROC_FAULTED) {
     return 1;
   }
-  if (!scheduler_kill_task(process->task_id)) {
+  switch (scheduler_kill_task(process->task_id)) {
+  case SCHEDULER_KILLED:
+    process->state = PROC_ZOMBIE;
+    process->exit_code = exit_code;
+    return 1;
+  case SCHEDULER_KILL_DEFERRED:
+    /* inside a syscall: the reaper gets it once the syscall returns */
+    process->exit_code = exit_code;
+    return 1;
+  default:
     return 0;
   }
-
-  process->state = PROC_ZOMBIE;
-  process->exit_code = exit_code;
-  return 1;
 }
 
 void process_wake(uint32_t pid) {

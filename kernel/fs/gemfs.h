@@ -16,8 +16,10 @@
  * optional), at most GEMFS_PATH_MAX - 1 bytes. Names are 1..GEMFS_NAME_MAX
  * bytes, not "." or "..", case sensitive.
  *
- * Callers are task code (task 0 and syscalls); kernel code is not
- * preempted, so the module needs no lock. Not for interrupt handlers.
+ * Callers are task code (the GUI task, kernel tasks and syscalls), never
+ * interrupt handlers. One task at a time works on the file system: a long
+ * read or write lets other tasks run between blocks, but GemFS stays with
+ * it until it is done, and another task that calls in waits until then.
  */
 #define GEMFS_BLOCK_SIZE 4096U
 #define GEMFS_NAME_MAX 55U
@@ -42,8 +44,9 @@ enum {
   GEMFS_ERR_NAME = -8,     /* bad path or name */
   GEMFS_ERR_IO = -9,       /* the disk failed */
   GEMFS_ERR_CORRUPT = -10, /* metadata that makes no sense */
-  GEMFS_ERR_SOURCE = -11,  /* the data source failed (gemfs_write_from) */
+  GEMFS_ERR_SOURCE = -11,  /* the caller's source or sink failed */
   GEMFS_ERR_DENIED = -12,  /* a process may not change it (gemfs_write_user) */
+  GEMFS_ERR_STOPPED = -13, /* the calling process was killed while it waited */
 };
 
 typedef struct {
@@ -68,9 +71,14 @@ typedef struct {
 } gemfs_usage_t;
 
 /* Fills dst with len bytes of the new contents, starting at offset.
- * Returns 0, or non-zero to abandon the write. */
+ * Returns 0, or non-zero to abandon the write. Must not call into GemFS. */
 typedef int (*gemfs_source_t)(void *ctx, uint32_t offset, void *dst,
                               uint32_t len);
+
+/* Takes len bytes of a file, starting at offset. Returns 0, or non-zero to
+ * stop the read. Must not call into GemFS. */
+typedef int (*gemfs_sink_t)(void *ctx, uint32_t offset, const void *src,
+                            uint32_t len);
 
 /* Called for each directory entry. Must not call into GemFS. */
 typedef void (*gemfs_list_fn_t)(void *ctx, const gemfs_entry_t *entry);
@@ -85,6 +93,12 @@ int gemfs_stat(const char *path, gemfs_stat_t *stat);
 
 /* Up to len bytes of a file from offset; returns the number read. */
 int gemfs_read(uint32_t inode, uint32_t offset, void *buf, uint32_t len);
+
+/* The first limit bytes of a file (all of it if it is shorter), block by
+ * block into sink; returns the number of bytes read. The file cannot
+ * change half way, unlike with gemfs_stat() and then gemfs_read(). */
+int gemfs_read_file(const char *path, uint32_t limit, gemfs_sink_t sink,
+                    void *ctx);
 
 /* Create or replace a file. The old contents stay until the new ones are
  * on the disk. Returns the size written. */

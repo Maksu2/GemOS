@@ -14,6 +14,12 @@
  *     (over 64 KB, started from GemFS) uses the file syscalls and may not
  *     change programs; files written on the first boot of a disk are
  *     checked on the next one (the harness boots twice);
+ *   - long file syscalls (LONGIO.ELF, with disk writes slowed down): the
+ *     clock, other tasks and the GUI loop go on during one, three
+ *     processes use two files at once without seeing half of a write, a
+ *     process killed half way through a write ends at the next block and
+ *     leaves the file as it was, and the GUI task that needs GemFS then
+ *     waits with only the holder running;
  *   - every exception a Ring 3 program can raise ends only that program
  *     (FAULTS.ELF), while two FPUCHECK.ELF copies and this task keep their
  *     own FPU state;
@@ -44,6 +50,8 @@ extern uint8_t _binary_fpucheck_elf_start[];
 extern uint8_t _binary_fpucheck_elf_end[];
 extern uint8_t _binary_filetest_elf_start[];
 extern uint8_t _binary_filetest_elf_end[];
+extern uint8_t _binary_longio_elf_start[];
+extern uint8_t _binary_longio_elf_end[];
 extern uint8_t _binary_uterm_image_bin_start[];
 extern uint8_t _binary_uterm_image_bin_end[];
 
@@ -109,15 +117,22 @@ void selftest_process_exited(const struct process *process) {
   exit_count++;
 }
 
+static int selftest_find_exit(int pid, selftest_exit_t *out) {
+  for (uint32_t i = 0; i < SELFTEST_EXIT_SLOTS && i < exit_count; ++i) {
+    if (exits[i].pid == (uint32_t)pid) {
+      *out = exits[i];
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int selftest_wait_exit(int pid, selftest_exit_t *out) {
   uint64_t deadline = timer_get_ticks() + SELFTEST_WAIT_MS;
 
   for (;;) {
-    for (uint32_t i = 0; i < SELFTEST_EXIT_SLOTS && i < exit_count; ++i) {
-      if (exits[i].pid == (uint32_t)pid) {
-        *out = exits[i];
-        return 1;
-      }
+    if (selftest_find_exit(pid, out)) {
+      return 1;
     }
     if (timer_get_ticks() >= deadline) {
       return 0;
@@ -776,6 +791,305 @@ static void selftest_fs_filetest(void) {
                  "back in the kernel");
 }
 
+/* -- long file syscalls --------------------------------------------------- */
+
+/* Every sector written takes this much longer while LONGIO.ELF runs: a
+ * 128 KB write then takes over half a second. */
+#define LONGIO_DELAY_MS 2U
+#define LONGIO_DISK_MS (GEMOS_LONGIO_SIZE / 512U * LONGIO_DELAY_MS)
+
+static volatile uint32_t gui_iterations;
+/* A GemFS call the GUI task makes when asked (selftest_gui_iteration) */
+static volatile int gui_probe;  /* 1: asked, 2: done */
+static int gui_probe_holder;    /* the task that should hold GemFS then */
+static int gui_probe_result;
+static int gui_probe_waited;    /* the holder finished its write meanwhile */
+static uint32_t gui_probe_others; /* tasks other than the holder that ran */
+
+void selftest_gui_iteration(void) {
+  uint32_t runs[MAX_TASKS];
+  uint32_t generation;
+  gemfs_stat_t stat;
+
+  gui_iterations++;
+  if (gui_probe != 1) {
+    return;
+  }
+  for (uint32_t i = 0; i < MAX_TASKS; ++i) {
+    runs[i] = scheduler_task_runs(i);
+  }
+  generation = gemfs_generation();
+  gui_probe_result = gemfs_stat(GEMOS_LONGIO_FILE_A, &stat);
+  gui_probe_waited = gemfs_generation() != generation;
+  gui_probe_others = 0;
+  for (uint32_t i = 1; i < MAX_TASKS; ++i) {
+    if ((int)i != gui_probe_holder && scheduler_task_runs(i) != runs[i]) {
+      gui_probe_others++;
+    }
+  }
+  gui_probe = 2;
+}
+
+static int selftest_spawn_longio(uint32_t test_number, int *task) {
+  int pid = selftest_spawn("LONGIO.ELF", _binary_longio_elf_start,
+                           _binary_longio_elf_end, test_number);
+
+  *task = pid >= 0 ? process_task_id((uint32_t)pid) : -1;
+  return *task >= 0 ? pid : -1;
+}
+
+/* Wait until the process gives up the CPU inside a syscall. */
+static int selftest_wait_in_kernel(int pid, int task) {
+  uint64_t deadline = timer_get_ticks() + SELFTEST_WAIT_MS;
+  selftest_exit_t exit;
+
+  while (!selftest_find_exit(pid, &exit) && timer_get_ticks() < deadline) {
+    if (scheduler_task_in_kernel((uint32_t)task)) {
+      return 1;
+    }
+    selftest_sleep(1);
+  }
+  return 0;
+}
+
+static int selftest_pattern_source(void *ctx, uint32_t offset, void *dst,
+                                   uint32_t len) {
+  uint32_t pattern = *(const uint32_t *)ctx;
+  uint8_t *out = (uint8_t *)dst;
+
+  for (uint32_t i = 0; i < len; ++i) {
+    out[i] = (uint8_t)GEMOS_LONGIO_BYTE(offset + i, pattern);
+  }
+  return 0;
+}
+
+static int selftest_has_pattern(const char *path, uint32_t pattern) {
+  static uint8_t chunk[GEMFS_BLOCK_SIZE];
+  gemfs_stat_t stat;
+
+  if (gemfs_stat(path, &stat) != GEMFS_OK || stat.type != GEMFS_TYPE_FILE ||
+      stat.size != GEMOS_LONGIO_SIZE) {
+    return 0;
+  }
+  for (uint32_t offset = 0; offset < stat.size; offset += GEMFS_BLOCK_SIZE) {
+    if (gemfs_read(stat.inode, offset, chunk, GEMFS_BLOCK_SIZE) !=
+        (int)GEMFS_BLOCK_SIZE) {
+      return 0;
+    }
+    for (uint32_t i = 0; i < GEMFS_BLOCK_SIZE; ++i) {
+      if (chunk[i] != (uint8_t)GEMOS_LONGIO_BYTE(offset + i, pattern)) {
+        return 0;
+      }
+    }
+  }
+  return 1;
+}
+
+static void selftest_print_exit(int pid, int ended, const selftest_exit_t *exit) {
+  if (pid < 0) {
+    serial_print("did not start");
+  } else if (!ended) {
+    serial_print("did not end");
+    process_kill_pid((uint32_t)pid, -1);
+  } else if (exit->faulted) {
+    serial_print("faulted with vector ");
+    serial_print_dec(exit->vector);
+  } else {
+    serial_print("exit code ");
+    if (exit->exit_code < 0) {
+      serial_print("-");
+      serial_print_dec((uint32_t)-exit->exit_code);
+    } else {
+      serial_print_dec((uint32_t)exit->exit_code);
+    }
+  }
+}
+
+/* One write made slow: the clock, this task and the GUI loop go on. */
+static void selftest_longio_timed(void) {
+  uint32_t inside = 0;
+  uint32_t gui_first = 0;
+  uint32_t gui_last = 0;
+  uint64_t deadline = timer_get_ticks() + SELFTEST_WAIT_MS;
+  selftest_exit_t exit;
+  int ended = 0;
+  int task;
+  int pid = selftest_spawn_longio(GEMOS_LONGIO_TIMED, &task);
+
+  while (pid >= 0 && !(ended = selftest_find_exit(pid, &exit)) &&
+         timer_get_ticks() < deadline) {
+    if (scheduler_task_in_kernel((uint32_t)task)) {
+      if (inside++ == 0) {
+        gui_first = gui_iterations;
+      }
+      gui_last = gui_iterations;
+    }
+    selftest_sleep(2);
+  }
+
+  selftest_begin(ended && !exit.faulted &&
+                     exit.exit_code >= (int32_t)(LONGIO_DISK_MS * 8U / 10U),
+                 "longio: the clock goes on during a long write syscall (");
+  selftest_print_exit(pid, ended, &exit);
+  serial_print(": ms the 128 KB write took, the disk alone at least ");
+  serial_print_dec(LONGIO_DISK_MS);
+  serial_print(")\n");
+  selftest_begin(inside >= 10, "longio: other tasks run while a process is "
+                               "in a long write syscall (this one ");
+  serial_print_dec(inside);
+  serial_print(" times)\n");
+  selftest_begin(gui_last - gui_first >= 5,
+                 "longio: the GUI loop runs during a long write syscall (");
+  serial_print_dec(gui_last - gui_first);
+  serial_print(" iterations)\n");
+}
+
+/* A writer, a reader of the same file and another writer at once */
+static void selftest_longio_together(void) {
+  static const uint32_t tests[3] = {GEMOS_LONGIO_WRITER, GEMOS_LONGIO_READER,
+                                    GEMOS_LONGIO_OTHER};
+  selftest_exit_t exits_seen[3];
+  int ended[3];
+  int pids[3];
+  int task;
+
+  for (int i = 0; i < 3; ++i) {
+    pids[i] = selftest_spawn_longio(tests[i], &task);
+  }
+  for (int i = 0; i < 3; ++i) {
+    ended[i] = pids[i] >= 0 && selftest_wait_exit(pids[i], &exits_seen[i]);
+  }
+  for (int i = 0; i < 3; ++i) {
+    static const char *const what[3] = {
+        "longio: a process writes a.bin four times (",
+        "longio: another one reads it meanwhile, every read one whole "
+        "version (",
+        "longio: a third one writes and reads b.bin meanwhile ("};
+
+    selftest_begin(ended[i] && !exits_seen[i].faulted &&
+                       exits_seen[i].exit_code == GEMOS_LONGIO_OK,
+                   what[i]);
+    selftest_print_exit(pids[i], ended[i], &exits_seen[i]);
+    serial_print(")\n");
+  }
+  selftest_check(selftest_has_pattern(GEMOS_LONGIO_FILE_A, 5) &&
+                     selftest_has_pattern(GEMOS_LONGIO_FILE_B, 6),
+                 "longio: a.bin and b.bin hold the last versions written");
+}
+
+/* A process killed half way through a long write */
+static void selftest_longio_kill(void) {
+  uint32_t old = 7;
+  gemfs_usage_t before;
+  gemfs_usage_t after;
+  selftest_exit_t exit;
+  uint64_t killed_at = 0;
+  uint32_t took = 0;
+  int inside = 0;
+  int killed = 0;
+  int ended = 0;
+  int task;
+  int pid;
+
+  if (!selftest_check(gemfs_write_from(GEMOS_LONGIO_FILE_C,
+                                       GEMOS_LONGIO_SIZE,
+                                       selftest_pattern_source, &old, 0,
+                                       0) == (int)GEMOS_LONGIO_SIZE,
+                      "longio: the kernel wrote c.bin")) {
+    return;
+  }
+  (void)gemfs_usage(&before);
+  pid = selftest_spawn_longio(GEMOS_LONGIO_VICTIM, &task);
+  if (pid >= 0 && selftest_wait_in_kernel(pid, task)) {
+    selftest_sleep(100); /* a few blocks into the write */
+    inside = scheduler_task_in_kernel((uint32_t)task);
+    killed = process_kill_pid((uint32_t)pid, -1);
+    killed_at = timer_get_ticks();
+    ended = selftest_wait_exit(pid, &exit);
+    took = (uint32_t)(timer_get_ticks() - killed_at);
+  } else if (pid >= 0) {
+    ended = selftest_wait_exit(pid, &exit);
+  }
+  (void)gemfs_usage(&after);
+
+  selftest_begin(inside && killed && ended && !exit.faulted &&
+                     exit.exit_code == -1 && took < 500U,
+                 "longio: a process killed in the middle of a long write "
+                 "ends at the next block (");
+  selftest_print_exit(pid, ended, &exit);
+  serial_print(", ");
+  serial_print_dec(took);
+  serial_print(" ms after the kill)\n");
+  selftest_check(selftest_has_pattern(GEMOS_LONGIO_FILE_C, old) &&
+                     after.free_blocks == before.free_blocks &&
+                     after.free_inodes == before.free_inodes,
+                 "longio: the file keeps its old contents and no block or "
+                 "inode is lost");
+}
+
+/* The GUI task needs GemFS while a process is in the middle of a write */
+static void selftest_longio_gui(void) {
+  int busy = selftest_spawn("FPUCHECK.ELF", _binary_fpucheck_elf_start,
+                            _binary_fpucheck_elf_end, 1);
+  selftest_exit_t exit;
+  int attempt;
+
+  gui_probe = 0;
+  for (attempt = 1; attempt <= 3; ++attempt) {
+    uint64_t deadline;
+    int task;
+    int pid = selftest_spawn_longio(GEMOS_LONGIO_TIMED, &task);
+
+    if (pid >= 0 && selftest_wait_in_kernel(pid, task)) {
+      gui_probe_holder = task;
+      gui_probe = 1;
+      deadline = timer_get_ticks() + SELFTEST_WAIT_MS;
+      while (gui_probe != 2 && timer_get_ticks() < deadline) {
+        selftest_sleep(2);
+      }
+    }
+    if (pid >= 0 && !selftest_wait_exit(pid, &exit)) {
+      process_kill_pid((uint32_t)pid, -1);
+    }
+    /* the write can end before the GUI task gets to it: try again */
+    if (gui_probe != 2 || gui_probe_waited) {
+      break;
+    }
+    gui_probe = 0;
+  }
+
+  selftest_begin(gui_probe == 2 && gui_probe_result == GEMFS_OK &&
+                     gui_probe_waited,
+                 "longio: the GUI task waits for a long write in progress "
+                 "before it uses GemFS (attempt ");
+  serial_print_dec((uint32_t)(attempt > 3 ? 3 : attempt));
+  serial_print(")\n");
+  selftest_begin(gui_probe == 2 && gui_probe_others == 0,
+                 "longio: meanwhile only the task holding GemFS runs, not "
+                 "this one or a busy process (");
+  serial_print_dec(gui_probe_others);
+  serial_print(" others ran)\n");
+  gui_probe = 0;
+  if (busy >= 0) {
+    (void)selftest_wait_exit(busy, &exit);
+  }
+}
+
+static void selftest_longio(void) {
+  (void)gemfs_delete(GEMOS_LONGIO_DIR); /* left over from a failed run */
+  if (!selftest_check(gemfs_mkdir(GEMOS_LONGIO_DIR) == GEMFS_OK,
+                      "longio: " GEMOS_LONGIO_DIR " created")) {
+    return;
+  }
+  ata_set_selftest_delay(LONGIO_DELAY_MS);
+  selftest_longio_timed();
+  selftest_longio_together();
+  selftest_longio_kill();
+  selftest_longio_gui();
+  ata_set_selftest_delay(0);
+  (void)gemfs_delete(GEMOS_LONGIO_DIR);
+}
+
 static void selftest_fs(void) {
   if (!selftest_check(gemfs_available(), "fs: a GemFS disk is mounted")) {
     return;
@@ -784,6 +1098,7 @@ static void selftest_fs(void) {
   selftest_fs_api();
   selftest_fs_write_gate();
   selftest_fs_filetest();
+  selftest_longio();
 }
 
 /* -- exceptions in Ring 3 ---------------------------------------------------- */

@@ -23,15 +23,18 @@ void init_pit(void);
 uint64_t timer_get_ticks(void);
 
 /*
- * A clock for busy waits that also works with interrupts off (in syscalls,
- * or before the kernel enables them), when the tick count stands still. It
- * counts the reloads of channel 0, which runs in mode 3 and reloads twice
- * per 1 ms tick, so the caller has to read it at least every half
- * millisecond; a reload it misses only makes the wait longer.
+ * A clock for busy waits that also works with interrupts off (before the
+ * kernel enables them, or inside irq_save()), when the tick count stands
+ * still. It counts the reloads of channel 0, which runs in mode 3 and
+ * reloads twice per 1 ms tick, so the caller has to read it at least every
+ * half millisecond; a reload it misses only makes the wait longer. With
+ * interrupts on it also follows the tick count, which stays exact while an
+ * interrupt handler keeps the caller from reading the counter.
  */
 typedef struct {
   uint16_t last;
   uint32_t reloads;
+  uint64_t start_tick;
 } pit_stopwatch_t;
 
 void pit_stopwatch_start(pit_stopwatch_t *watch);

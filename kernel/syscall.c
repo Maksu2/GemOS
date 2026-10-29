@@ -3,6 +3,7 @@
 #include "console.h"
 #include "gdt.h"
 #include "idt.h"
+#include "include/irq.h"
 #include "memory/paging.h"
 #include "process.h"
 #include "scheduler.h"
@@ -15,12 +16,10 @@
 
 #define SYSCALL_DEBUG_WRITE_MAX 256U
 #define SYSCALL_CONSOLE_WRITE_CHUNK 128U
-/* Longest SYS_file_write. A syscall runs with interrupts off from entry to
- * exit (AGENTS.md), so this also bounds how long the disk keeps them off. */
+/* Longest SYS_file_write: a write keeps the disk until it is done. */
 #define SYSCALL_FILE_WRITE_MAX (1024U * 1024U)
 
 static gemos_console_cell_t console_present_cells[GEMOS_CONSOLE_MAX_CELLS];
-static uint8_t syscall_file_buffer[GEMFS_BLOCK_SIZE]; /* one chunk of a read */
 
 extern void isr128(void);
 
@@ -324,14 +323,24 @@ static uint32_t syscall_file_error(int error) {
   }
 }
 
+/* GemFS hands the file over block by block, straight into the process.
+ * Between blocks other tasks may run, and this process may be killed:
+ * then the read stops at the next block. */
+static int syscall_user_sink(void *ctx, uint32_t offset, const void *src,
+                             uint32_t len) {
+  uintptr_t user_buffer = *(const uintptr_t *)ctx;
+
+  if (scheduler_kill_pending()) {
+    return -1;
+  }
+  return copy_to_user((void *)(user_buffer + offset), src, len) ? 0 : -1;
+}
+
 /* Reads at most capacity - 1 bytes and ends them with a NUL. Returns the
  * number of bytes read. */
 static uint32_t syscall_file_read(uintptr_t user_path, uintptr_t user_buffer,
                                   size_t capacity) {
   char path[GEMFS_PATH_MAX];
-  gemfs_stat_t stat;
-  uint32_t length;
-  uint32_t done = 0;
   uint8_t terminator = 0;
   uint32_t status;
   int result;
@@ -343,42 +352,28 @@ static uint32_t syscall_file_read(uintptr_t user_path, uintptr_t user_buffer,
   if (status != (uint32_t)GEMOS_OK) {
     return status;
   }
-  result = gemfs_stat(path, &stat);
-  if (result != GEMFS_OK) {
+  result = gemfs_read_file(path, (uint32_t)(capacity - 1U), syscall_user_sink,
+                           &user_buffer);
+  if (result < 0) {
     return syscall_file_error(result);
   }
-  if (stat.type != GEMFS_TYPE_FILE) {
-    return (uint32_t)GEMOS_ERR_INVAL;
-  }
-
-  length = stat.size < capacity - 1U ? stat.size : (uint32_t)(capacity - 1U);
-  while (done < length) {
-    uint32_t chunk = length - done < sizeof(syscall_file_buffer)
-                         ? length - done
-                         : (uint32_t)sizeof(syscall_file_buffer);
-
-    result = gemfs_read(stat.inode, done, syscall_file_buffer, chunk);
-    if (result != (int)chunk) {
-      return result < 0 ? syscall_file_error(result)
-                        : (uint32_t)GEMOS_ERR_INVAL;
-    }
-    if (!copy_to_user((void *)(user_buffer + done), syscall_file_buffer,
-                      chunk)) {
-      return (uint32_t)GEMOS_ERR_FAULT;
-    }
-    done += chunk;
-  }
-  if (!copy_to_user((void *)(user_buffer + length), &terminator, 1)) {
+  if (!copy_to_user((void *)(user_buffer + (uint32_t)result), &terminator,
+                    1)) {
     return (uint32_t)GEMOS_ERR_FAULT;
   }
-  return length;
+  return (uint32_t)result;
 }
 
-/* GemFS reads the new contents block by block straight from the process */
+/* GemFS reads the new contents block by block straight from the process. A
+ * process killed in the meantime abandons the write at the next block: the
+ * old contents stay. */
 static int syscall_user_source(void *ctx, uint32_t offset, void *dst,
                                uint32_t len) {
   uintptr_t user_buffer = *(const uintptr_t *)ctx;
 
+  if (scheduler_kill_pending()) {
+    return -1;
+  }
   return copy_from_user(dst, (const void *)(user_buffer + offset), len) ? 0
                                                                         : -1;
 }
@@ -409,7 +404,16 @@ static uint32_t syscall_file_write(uintptr_t user_path,
   return (uint32_t)result;
 }
 
+/*
+ * The gate turns interrupts off; a syscall runs with them on, so the clock
+ * and the input devices keep working during a long one. An IRQ returns to
+ * the syscall (kernel code is never preempted, see kernel/scheduler.c), and
+ * state shared with IRQ handlers is changed only inside irq_save(). The
+ * way out of the interrupt, where the scheduler may switch tasks, runs with
+ * interrupts off again.
+ */
 void syscall_interrupt_handler(registers_t *regs) {
+  irq_enable();
   switch (regs->eax) {
   case SYS_exit:
     /* the task no longer runs: isr_handler switches on the way out */
@@ -461,6 +465,16 @@ void syscall_interrupt_handler(registers_t *regs) {
     regs->eax = (uint32_t)GEMOS_ERR_NOSYS;
     break;
   }
+  if (scheduler_kill_pending()) {
+    /* killed while it was in here (process_kill_pid): it does not go back
+     * to Ring 3 */
+    process_t *process = syscall_current_process();
+
+    if (process != NULL && process->state != PROC_ZOMBIE) {
+      scheduler_mark_current_zombie(process->exit_code);
+    }
+  }
+  irq_disable();
 }
 
 void syscall_init(void) {

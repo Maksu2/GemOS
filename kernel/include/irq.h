@@ -23,4 +23,10 @@ static inline void irq_restore(uint32_t flags) {
   }
 }
 
+/* Unconditionally, for code that knows the state: a syscall turns
+ * interrupts on after the gate turned them off, and off again on its way
+ * out. */
+static inline void irq_enable(void) { __asm__ volatile("sti" : : : "memory"); }
+static inline void irq_disable(void) { __asm__ volatile("cli" : : : "memory"); }
+
 #endif /* IRQ_H */

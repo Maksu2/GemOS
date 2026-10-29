@@ -81,4 +81,35 @@
                                          not return GEMOS_ERR_NOENT */
 #define GEMOS_FILETEST_ARGS 11        /* argc or argv were not as started */
 
+/* LONGIO.ELF: long file syscalls. The kernel slows down every sector it
+ * writes while LONGIO.ELF runs, so a write of GEMOS_LONGIO_SIZE bytes
+ * takes about half a second. Its files hold one pattern each: byte i of
+ * pattern p is GEMOS_LONGIO_BYTE(i, p), and byte 0 tells the patterns
+ * 1..GEMOS_LONGIO_PATTERNS apart. The test number says what it does: */
+#define GEMOS_LONGIO_TIMED 1  /* write pattern 1 to FILE_A; the exit code
+                                 is how many ms the syscall took, -1 if it
+                                 failed */
+#define GEMOS_LONGIO_WRITER 2 /* write patterns 2, 3, 4 and 5 to FILE_A */
+#define GEMOS_LONGIO_READER 3 /* read FILE_A GEMOS_LONGIO_READS times */
+#define GEMOS_LONGIO_OTHER 4  /* write pattern 6 to FILE_B, read it back */
+#define GEMOS_LONGIO_VICTIM 5 /* write pattern 8 to FILE_C; the kernel
+                                 kills it half way */
+#define GEMOS_LONGIO_DIR "/longio"
+#define GEMOS_LONGIO_FILE_A "/longio/a.bin"
+#define GEMOS_LONGIO_FILE_B "/longio/b.bin"
+#define GEMOS_LONGIO_FILE_C "/longio/c.bin"
+#define GEMOS_LONGIO_SIZE (128 * 1024)
+#define GEMOS_LONGIO_PATTERNS 8
+#define GEMOS_LONGIO_BYTE(i, p) \
+  (((uint32_t)(i) * 7U + ((uint32_t)(i) >> 9) + (uint32_t)(p) * 61U) & 0xFFU)
+#define GEMOS_LONGIO_READS 6
+/* Exit codes of the other tests: */
+#define GEMOS_LONGIO_OK 0
+#define GEMOS_LONGIO_BAD_TEST 1    /* unknown test number */
+#define GEMOS_LONGIO_WRITE 2       /* a write failed */
+#define GEMOS_LONGIO_READ 3        /* a read failed or had the wrong size */
+#define GEMOS_LONGIO_TORN 4        /* a read was not one whole pattern */
+#define GEMOS_LONGIO_WRONG 5       /* read back another pattern */
+#define GEMOS_LONGIO_SURVIVED 6    /* VICTIM: the write returned */
+
 #endif /* GEMOS_SELFTEST_ABI_H */

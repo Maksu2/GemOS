@@ -298,6 +298,22 @@ void ata_allow_writes(int index) {
   }
 }
 
+#ifdef GEMOS_SELFTEST
+static uint32_t selftest_delay_ms; /* per sector written */
+
+void ata_set_selftest_delay(uint32_t ms_per_sector) {
+  selftest_delay_ms = ms_per_sector;
+}
+
+static void ata_selftest_delay(uint32_t sectors) {
+  pit_stopwatch_t watch;
+
+  pit_stopwatch_start(&watch);
+  while (pit_stopwatch_ms(&watch) < sectors * selftest_delay_ms) {
+  }
+}
+#endif
+
 int ata_write(int index, uint32_t lba, uint32_t count, const void *buf) {
   const ata_device_t *dev;
   const uint16_t *words = (const uint16_t *)buf;
@@ -339,5 +355,8 @@ int ata_write(int index, uint32_t lba, uint32_t count, const void *buf) {
   if (result != ATA_OK) {
     return ata_fail(dev, "cache flush", lba, result);
   }
+#ifdef GEMOS_SELFTEST
+  ata_selftest_delay(count);
+#endif
   return ATA_OK;
 }

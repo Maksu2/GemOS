@@ -154,9 +154,10 @@ ABOUT_OBJS := $(call obj,$(ABOUT_SOURCES))
 UTEXTEDIT_OBJS := $(call obj,$(UTEXTEDIT_SOURCES))
 FILETEST_OBJS := $(call obj,$(USERLAND_DIR)/selftest/filetest.c \
                             $(USERLAND_DIR)/selftest/filetest_data.S)
+LONGIO_OBJS := $(call obj,$(USERLAND_DIR)/selftest/longio.c)
 SELFTEST_USER_OBJS := $(call obj,$(USERLAND_DIR)/selftest/faults.S \
                                  $(USERLAND_DIR)/selftest/fpucheck.S) \
-                      $(FILETEST_OBJS)
+                      $(FILETEST_OBJS) $(LONGIO_OBJS)
 USER_OBJS := $(USER_CRT0_OBJ) $(USRSMOKE_OBJ) $(UTERM_OBJS) $(ABOUT_OBJS) \
              $(UTEXTEDIT_OBJS)
 ifeq ($(SELFTEST),1)
@@ -173,7 +174,7 @@ USER_BLOBS := $(OBJ_DIR)/blobs/usrsmoke.elf.o \
               $(OBJ_DIR)/blobs/utextedit_image.bin.o
 ifeq ($(SELFTEST),1)
     USER_BLOBS += $(OBJ_DIR)/blobs/faults.elf.o $(OBJ_DIR)/blobs/fpucheck.elf.o \
-                  $(OBJ_DIR)/blobs/filetest.elf.o
+                  $(OBJ_DIR)/blobs/filetest.elf.o $(OBJ_DIR)/blobs/longio.elf.o
 endif
 BLOB_OBJS := $(FONT_BLOB) $(USER_BLOBS)
 
@@ -252,6 +253,9 @@ $(BUILD_DIR)/fpucheck.elf: $(OBJ_DIR)/$(USERLAND_DIR)/selftest/fpucheck.o $(USER
 	$(link-user)
 
 $(BUILD_DIR)/filetest.elf: $(USER_CRT0_OBJ) $(FILETEST_OBJS) $(USER_LDSCRIPT)
+	$(link-user)
+
+$(BUILD_DIR)/longio.elf: $(USER_CRT0_OBJ) $(LONGIO_OBJS) $(USER_LDSCRIPT)
 	$(link-user)
 
 # Blobs. The font is converted from inside assets/ so its symbols stay
