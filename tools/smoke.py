@@ -9,6 +9,9 @@ the monitor:
   * the desktop screendump is a rendered 1920x1080 frame,
   * UTERM.ELF, ABOUT.ELF and UTEXTEDIT.ELF are started from the topbar menus,
     open their console window, close on Esc and are reaped with exit=0,
+  * windows open between the topbar and the dock, a second one moves off
+    the first one's corner, and a dragged window keeps its title bar there,
+  * every character of a hosted console sits in its own cell of the grid,
   * every frame checked must appear on screen by itself: no input is sent
     while waiting for it,
   * the serial log has no PANIC, user fault, allocation failure or refused
@@ -176,6 +179,23 @@ class Window:
     def client(self):
         return (self.x + 4, self.y + 28, self.x + self.w - 4,
                 self.y + self.h - 4)
+
+    def console_cell(self, row, col):
+        """The middle of a hosted console's cell (kernel/console.c: 8x15
+        cells after 8 px of padding), clear of a glyph that sticks out of
+        its neighbour and of the cursor line at the bottom."""
+        x = self.x + 9 + 8 * col
+        y = self.y + 35 + 15 * row
+        return (x + 2, y + 1, x + 6, y + 12)
+
+    def inked_cells(self, image, row, cols):
+        """The columns of a console row whose cell has a pixel other than
+        the background, 0x111111."""
+        def inked(col):
+            area = image.logical_area(self.console_cell(row, col))
+            return any(area[i:i + 3] != b"\x11\x11\x11"
+                       for i in range(0, len(area), 3))
+        return [col for col in cols if inked(col)]
 
     def console_rows(self, first, last):
         """Rows of a hosted console (kernel/console.c: 8 px padding, 15 px
@@ -899,6 +919,31 @@ class Smoke:
                    "outside: %s" % ", ".join(outside[:3]) if outside
                    else "%d windows" % len(placed))
 
+    def console_grid(self):
+        """Every character of a hosted console sits in its own cell: typed
+        text of wide and narrow letters fills exactly as many cells."""
+        typed = "WiWiWiWiWi"
+        row, col = 2, 2  # UTEXTEDIT's body (userland/textedit/textedit_theme.h)
+        pid, window = self.editor_from_menu()
+        if pid is None:
+            return
+        self.type_text(typed)
+        time.sleep(1.0)
+        image = self.screendump("console-grid")
+        inked = window.inked_cells(image, row,
+                                   range(col, col + len(typed) + 8))
+        expected = list(range(col, col + len(typed)))
+        self.check(inked == expected,
+                   "console: %d letters fill exactly %d cells" %
+                   (len(typed), len(typed)),
+                   "console-grid.png, cells with ink in row %d: %s" %
+                   (row, inked))
+        since = len(self.log_text())
+        self.monitor.cmd("sendkey esc")
+        time.sleep(0.5)
+        self.monitor.cmd("sendkey n")
+        self.editor_ended(pid, "the grid test closes it", since)
+
     # -- stress test -----------------------------------------------------------
     def burst(self, keys):
         """Input while programs start or exit: small mouse moves and keys."""
@@ -1370,6 +1415,7 @@ class Smoke:
                     self.run_app(name, menu, item, updates_itself)
                     time.sleep(0.5)
                 self.windows()
+                self.console_grid()
             if not self.args.selftest:
                 self.scan_log()
             if any(not ok for ok, _, _ in self.results):
