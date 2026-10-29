@@ -132,27 +132,60 @@ def menu_item(x, index):
     return (x, 41 + 24 * index)
 
 
-# ABOUT.ELF redraws its uptime once a second through console_present: a
-# redraw requested by a syscall, not by input. Its client area (logical
-# x0, y0, x1, y1) must change on its own. The window is 60x18 cells at
-# (120, 100) (userland/about/about_theme.h, kernel/console.c).
-ABOUT_CLIENT = (124, 128, 612, 408)
-
-# (program, menu to open, item to click, area that updates by itself)
+# (program, menu to open, item to click, whether its client area updates
+# by itself: ABOUT.ELF redraws its uptime once a second through
+# console_present, a redraw requested by a syscall, not by input)
 APPS = [
-    ("UTERM.ELF", MENU_APPS, menu_item(130, 1), None),    # Apps -> Terminal
-    ("ABOUT.ELF", MENU_GEMOS, menu_item(60, 0), ABOUT_CLIENT),  # GemOS -> About
-    ("UTEXTEDIT.ELF", MENU_APPS, menu_item(130, 3), None),  # Apps -> Text Editor
+    ("UTERM.ELF", MENU_APPS, menu_item(130, 1), False),    # Apps -> Terminal
+    ("ABOUT.ELF", MENU_GEMOS, menu_item(60, 0), True),     # GemOS -> About
+    ("UTEXTEDIT.ELF", MENU_APPS, menu_item(130, 3), False),  # Apps -> Text Editor
 ]
 
-# Hosted console windows open at logical (120, 100) (kernel/console.c); this
-# point lies on the title bar of every hosted app, away from text and buttons.
-TITLE_BAR_PROBE = (500, 103)
+
+class Window:
+    """A window as the kernel logs it: "[WM] Placed x= y= w= h=" for every
+    window, "[CONSOLE] Opened PID= handle= x= y= w= h=" for a hosted app
+    (kernel/gui/wm/wm.c places windows between the topbar and the dock)."""
+
+    GEOMETRY = r"x=(\d+) y=(\d+) w=(\d+) h=(\d+)"
+
+    def __init__(self, x, y, w, h):
+        self.x, self.y, self.w, self.h = x, y, w, h
+
+    @classmethod
+    def parse(cls, match):
+        return cls(*(int(v) for v in match.groups()[-4:]))
+
+    def inside(self, area):
+        return (self.x >= area.x and self.y >= area.y and
+                self.x + self.w <= area.x + area.w and
+                self.y + self.h <= area.y + area.h)
+
+    def __str__(self):
+        return "%dx%d at (%d,%d)" % (self.w, self.h, self.x, self.y)
+
+    # Points on the window (kernel/gui/wm/wm.c: 1 px border, 26 px title
+    # bar, 16 px buttons 6 px from the right edge and 5 px below the top).
+    def title_bar(self):
+        """On the title bar, away from the title text and the buttons."""
+        return (self.x + self.w - 100, self.y + 3)
+
+    def close_button(self):
+        return (self.x + self.w - 14, self.y + 13)
+
+    def client(self):
+        return (self.x + 4, self.y + 28, self.x + self.w - 4,
+                self.y + self.h - 4)
+
+    def console_rows(self, first, last):
+        """Rows of a hosted console (kernel/console.c: 8 px padding, 15 px
+        lines), x0, y0, x1, y1 a pixel inside the cells."""
+        return (self.x + 4, self.y + 36 + 15 * first, self.x + 680,
+                self.y + 36 + 15 * (last + 1))
+
 
 # Stress test: what to type into each program (QEMU sendkey names; no Esc
-# and no "q", which close windows) and where its close button is. A hosted
-# window at (120, 100) is cols * 8 + 16 wide; the button is 16 px, 6 px from
-# the right edge and 5 px below the top (kernel/gui/wm/wm.c).
+# and no "q", which close windows).
 STRESS_TYPING = {
     "UTERM.ELF": ["h", "e", "l", "p", "ret", "p", "i", "d", "ret",
                   "t", "i", "c", "k", "s", "ret", "a", "b", "c", "ret"],
@@ -160,33 +193,26 @@ STRESS_TYPING = {
     "UTEXTEDIT.ELF": ["h", "e", "l", "l", "o", "spc", "g", "e", "m", "ret",
                       "x", "y", "z", "backspace", "ret"],
 }
-CLOSE_BUTTON = {
-    "UTERM.ELF": (120 + 80 * 8 + 16 - 14, 113),      # 80x25 cells
-    "ABOUT.ELF": (120 + 60 * 8 + 16 - 14, 113),      # 60x18 cells
-    "UTEXTEDIT.ELF": (120 + 84 * 8 + 16 - 14, 113),  # 84x28 cells
-}
 # Mouse path over the windows, the desktop and the dock (no clicks).
 STRESS_WIGGLE = [(300, 200), (700, 300), (500, 480), (880, 520), (200, 400),
                  (640, 140), (60, 300)]
 
 
-# --editor: UTEXTEDIT.ELF with files. Its console is 84x28 cells at logical
-# (120, 100), and row r starts at y = 136 + 15 * r (kernel/console.c: title
-# bar, padding, 15 px lines). Questions are drawn as a box over rows 8-12
-# (userland/textedit/textedit_theme.h); the status line is row 26, the last
-# one on a 540 px high screen.
-def editor_rows(first, last):
-    return (124, 136 + 15 * first, 800, 136 + 15 * (last + 1))
-
-
-EDITOR_BOX = editor_rows(8, 12)
-EDITOR_STATUS = editor_rows(26, 26)
+# --editor: UTEXTEDIT.ELF with files. Its console is 84x28 cells.
+# Questions are drawn as a box over rows 8-12
+# (userland/textedit/textedit_theme.h); the status line is row 26 and the
+# shortcuts are row 27, the last one.
+EDITOR_BOX_ROWS = (8, 12)
+EDITOR_STATUS_ROWS = (26, 26)
 EDITOR_MENU = (MENU_APPS, menu_item(130, 3))     # Apps -> Text Editor
 EXPLORER_MENU = (MENU_APPS, menu_item(130, 0))   # Apps -> File Explorer
-# The File Explorer (apps/explorer/explorer.c) opens at (100, 100) and shows
-# a grid of 80x70 cells. On a new disk the fifth entry of / is the first
-# file the test saves, after the four programs.
-EXPLORER_FIFTH = (100 + 10 + 4 * 80 + 30, 100 + 28 + 30 + 10 + 20)
+
+
+def explorer_fifth(window):
+    """The File Explorer (apps/explorer/explorer.c) shows a grid of 80x70
+    cells. On a new disk the fifth entry of / is the first file the test
+    saves, after the four programs."""
+    return (window.x + 10 + 4 * 80 + 30, window.y + 28 + 30 + 10 + 20)
 EDITOR_FILE = "/notes.txt"
 EDITOR_SAVED = b"first line +more\nsecond"
 # QEMU sendkey names of the characters the test types
@@ -298,8 +324,8 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def title_bar_problem(image):
-    r, g, b = image.logical_rgb(TITLE_BAR_PROBE)
+def title_bar_problem(image, window):
+    r, g, b = image.logical_rgb(window.title_bar())
     if b > 150 and b > r + 60:
         return None
     return "probe #%02x%02x%02x after %.0f s" % (r, g, b, WINDOW_TIMEOUT)
@@ -699,7 +725,15 @@ class Smoke:
                           "wallpaper and dock",
                           issue or "desktop.png, %.1f s" % seconds)
 
-    def run_app(self, name, menu, item, updating_area):
+    def console_window(self, pid):
+        """The window of a hosted app, from its "[CONSOLE] Opened" line."""
+        match = re.search(r"\[CONSOLE\] Opened PID=%s handle=\d+ " % pid +
+                          Window.GEOMETRY, self.log_text())
+        if not match:
+            raise SmokeError("no window geometry in the log for PID=%s" % pid)
+        return Window.parse(match)
+
+    def run_app(self, name, menu, item, updates_itself):
         spawn_re = re.compile(r"\[PROC\] Spawned PID=(\d+) " + re.escape(name))
 
         def spawned(text):
@@ -730,15 +764,16 @@ class Smoke:
                               "PID=%s" % pid):
                 return False
 
-            self.check_window_drawn(name)
+            window = self.console_window(pid)
+            self.check_window_drawn(name, window)
         finally:
             try:
                 self.pointer.release()
             except (OSError, SmokeError):
                 pass  # QEMU is gone; the original error is reported
 
-        if updating_area:
-            self.check_redraws_by_itself(name, updating_area)
+        if updates_itself:
+            self.check_redraws_by_itself(name, window)
 
         self.monitor.cmd("sendkey esc")
         reap_re = re.compile(r"\[PROC\] Reaped PID=%s exit=(\d+)" % pid)
@@ -751,13 +786,15 @@ class Smoke:
                           "%s: closed with Esc and reaped" % name,
                           "PID=%s exit=%s" % (pid, reaped.group(1)))
 
-    def check_redraws_by_itself(self, name, area):
+    def check_redraws_by_itself(self, name, window):
         # Baseline: a frame that shows the window. The button release causes
         # one more frame, which a kernel that drops syscall redraw requests
         # would draw too, so the baseline must not be older than that frame.
+        area = window.client()
         time.sleep(0.3)
-        issue, _ = self.watch_screen("updating", title_bar_problem,
-                                     WINDOW_TIMEOUT)
+        issue, _ = self.watch_screen(
+            "updating", lambda image: title_bar_problem(image, window),
+            WINDOW_TIMEOUT)
         if issue:
             return self.check(False, "%s: window redraws by itself" % name,
                               "window not on screen: %s" % issue)
@@ -773,15 +810,94 @@ class Smoke:
         return self.check(False, "%s: window redraws by itself" % name,
                           "unchanged for 5 s without input")
 
-    def check_window_drawn(self, name):
+    def check_window_drawn(self, name, window):
         shot = name.split(".")[0].lower()
 
-        issue, seconds = self.watch_screen(shot, title_bar_problem,
-                                           WINDOW_TIMEOUT)
+        issue, seconds = self.watch_screen(
+            shot, lambda image: title_bar_problem(image, window),
+            WINDOW_TIMEOUT)
         return self.check(issue is None,
                           "%s: window title bar on screen" % name,
                           "%s.png, %s" % (shot, issue or
                                           "%.1f s, no input" % seconds))
+
+    # -- window placement ------------------------------------------------------
+    def open_about(self):
+        """ABOUT.ELF from the GemOS menu; its PID and window."""
+        opened_re = re.compile(r"\[CONSOLE\] Opened PID=(\d+) handle=\d+ " +
+                               Window.GEOMETRY)
+        before = len(opened_re.findall(self.log_text()))
+        self.pointer.home()
+        self.pointer.move_to(MENU_GEMOS)
+        self.pointer.click()
+        time.sleep(0.4)
+        self.pointer.move_to(menu_item(60, 0))
+        self.pointer.click()
+        opened = self.wait_for(lambda t: list(opened_re.finditer(t))[before:],
+                               self.args.app_timeout)
+        if not opened:
+            raise SmokeError("windows: ABOUT.ELF opened no window")
+        return opened[0].group(1), Window.parse(opened[0])
+
+    def drag_title_bar(self, window, point):
+        """Drag the window by its title bar until the mouse is at point; the
+        window the kernel logs when the button is released there, None if
+        it logs none."""
+        dropped_re = re.compile(r"\[WM\] Dropped " + Window.GEOMETRY)
+        before = len(dropped_re.findall(self.log_text()))
+        self.pointer.home()
+        self.pointer.move_to(window.title_bar())
+        self.pointer.press()
+        self.pointer.move_to(point)
+        time.sleep(0.3)
+        self.pointer.release()
+        dropped = self.wait_for(lambda t: list(dropped_re.finditer(t))[before:],
+                                5.0)
+        return Window.parse(dropped[0]) if dropped else None
+
+    def windows(self):
+        """Windows stay between the topbar and the dock (kernel/gui/wm)."""
+        area_match = re.search(r"\[WM\] Work area " + Window.GEOMETRY,
+                               self.log_text())
+        if not self.check(area_match is not None, "windows: work area logged"):
+            return
+        area = Window.parse(area_match)
+        self.check(True, "windows: work area", str(area))
+
+        first_pid, first = self.open_about()
+        second_pid, second = self.open_about()
+        self.check(second.x == first.x + 24 and second.y == first.y + 24,
+                   "windows: a second ABOUT.ELF window moves off the first "
+                   "one's corner", "%s, then %s" % (first, second))
+
+        bottom = area.y + area.h - 27  # lowest top: the title bar stays
+        dropped = self.drag_title_bar(second, (second.title_bar()[0],
+                                               area.y + area.h + 40))
+        self.check(dropped is not None and dropped.y == bottom,
+                   "windows: dragged onto the dock, the title bar stays "
+                   "above it", "dropped %s" % dropped)
+        if dropped is not None:
+            # release over the topbar: it takes the click, but the drag ends
+            dropped = self.drag_title_bar(dropped, (dropped.title_bar()[0], 10))
+            self.check(dropped is not None and dropped.y == area.y,
+                       "windows: a drag released over the topbar ends there",
+                       "dropped %s" % dropped)
+
+        for pid in (second_pid, first_pid):  # the focused one closes first
+            self.monitor.cmd("sendkey esc")
+            if not self.wait_for(
+                    lambda t, p=pid: "[PROC] Reaped PID=%s " % p in t,
+                    self.args.app_timeout):
+                raise SmokeError("windows: ABOUT.ELF (PID=%s) did not close"
+                                 % pid)
+
+        placed = [Window.parse(m) for m in re.finditer(
+            r"\[WM\] Placed " + Window.GEOMETRY, self.log_text())]
+        outside = [str(w) for w in placed if not w.inside(area)]
+        self.check(bool(placed) and not outside,
+                   "windows: every window placed inside the work area",
+                   "outside: %s" % ", ".join(outside[:3]) if outside
+                   else "%d windows" % len(placed))
 
     # -- stress test -----------------------------------------------------------
     def burst(self, keys):
@@ -823,15 +939,17 @@ class Smoke:
                                  % cycle)
             pids = [self.stress_open(name, menu, item)
                     for name, menu, item, _ in APPS]
+            windows = [self.console_window(pid) for pid in pids]
             for point in STRESS_WIGGLE:
                 self.pointer.move_to(point)
             # close from the top window down, alternating Esc and the button
-            for (name, _, _, _), pid in reversed(list(zip(APPS, pids))):
+            for (name, _, _, _), pid, window in reversed(
+                    list(zip(APPS, pids, windows))):
                 if cycle % 2 == 0:
                     self.monitor.cmd("sendkey esc")
                 else:
                     self.pointer.home()
-                    self.pointer.move_to(CLOSE_BUTTON[name])
+                    self.pointer.move_to(window.close_button())
                     self.pointer.click()
                 if name == "UTEXTEDIT.ELF":
                     # it asks about the text typed into it: discard
@@ -865,8 +983,9 @@ class Smoke:
                    if missing or bad_exit else "%d reaped" % len(pids))
 
         def no_window(image):
-            if title_bar_problem(image) is None:
-                return "a window is still open"
+            for window in windows:
+                if title_bar_problem(image, window) is None:
+                    return "a window is still open at %s" % window
             return None
 
         time.sleep(1.0)
@@ -883,26 +1002,28 @@ class Smoke:
             time.sleep(0.03)
 
     def start_editor(self, start, what):
-        """Start UTEXTEDIT.ELF with start() (a click somewhere); its PID once
-        its window is on the screen, None if it did not get there."""
+        """Start UTEXTEDIT.ELF with start() (a click somewhere); its PID and
+        window once the window is on the screen, (None, None) if it did not
+        get there."""
         spawn_re = re.compile(r"\[PROC\] Spawned PID=(\d+) UTEXTEDIT\.ELF")
         before = len(spawn_re.findall(self.log_text()))
         start()
         pids = self.wait_for(lambda t: spawn_re.findall(t)[before:],
                              self.args.app_timeout)
         if not self.check(bool(pids), "editor: %s starts UTEXTEDIT.ELF" % what):
-            return None
+            return None, None
         pid = pids[0]
         opened = self.wait_for(
             lambda t: "[CONSOLE] Opened PID=%s handle=" % pid in t,
             self.args.app_timeout)
         if not self.check(bool(opened), "editor: its window opened",
                           "PID=%s" % pid):
-            return None
-        if not self.check_window_drawn("UTEXTEDIT.ELF"):
-            return None
+            return None, None
+        window = self.console_window(pid)
+        if not self.check_window_drawn("UTEXTEDIT.ELF", window):
+            return None, None
         time.sleep(0.5)  # the first frame of the editor itself
-        return pid
+        return pid, window
 
     def editor_from_menu(self):
         def click():
@@ -933,15 +1054,16 @@ class Smoke:
         return self.check(not self.editor_exited(pid), "editor: %s" % what,
                           "PID=%s still running" % pid)
 
-    def editor_box(self, shot, pid, reference, shown, what):
+    def editor_box(self, shot, pid, window, reference, shown, what):
         """Wait, without input, until the question box is on the screen
         (the box area differs from reference) or gone again. A window that
         closed changes the area too, so the editor must still run."""
+        box = window.console_rows(*EDITOR_BOX_ROWS)
+
         def problem(image):
             if self.editor_exited(pid):
                 return "UTEXTEDIT.ELF (PID=%s) has exited" % pid
-            changed = pixels_changed(reference,
-                                     image.logical_area(EDITOR_BOX))
+            changed = pixels_changed(reference, image.logical_area(box))
             if shown and changed < 400:
                 return "box area unchanged (%d pixels)" % changed
             if not shown and changed > 50:
@@ -956,23 +1078,24 @@ class Smoke:
         start = time.monotonic()
 
         # a new document: Esc and the close button ask before closing
-        pid = self.editor_from_menu()
+        pid, window = self.editor_from_menu()
         if pid is None:
             return
+        box = window.console_rows(*EDITOR_BOX_ROWS)
         self.type_text("first line\nsecond")
         time.sleep(1.0)
-        before = self.screendump("editor-typed").logical_area(EDITOR_BOX)
+        before = self.screendump("editor-typed").logical_area(box)
         self.monitor.cmd("sendkey esc")
-        self.editor_box("editor-question", pid, before, True,
+        self.editor_box("editor-question", pid, window, before, True,
                         "Esc with unsaved text asks first")
         self.editor_running(pid, "the window stays while it asks")
         self.monitor.cmd("sendkey esc")
-        self.editor_box("editor-cancelled", pid, before, False,
+        self.editor_box("editor-cancelled", pid, window, before, False,
                         "Esc in the question cancels it")
         self.pointer.home()
-        self.pointer.move_to(CLOSE_BUTTON["UTEXTEDIT.ELF"])
+        self.pointer.move_to(window.close_button())
         self.pointer.click()
-        self.editor_box("editor-close-button", pid, before, True,
+        self.editor_box("editor-close-button", pid, window, before, True,
                         "the close button asks as well")
         self.editor_running(pid, "the close button did not close it yet")
 
@@ -987,19 +1110,28 @@ class Smoke:
             return
 
         # the File Explorer opens the file in the editor
+        placed_re = re.compile(r"\[WM\] Placed " + Window.GEOMETRY)
+
         def open_from_explorer():
+            before = len(placed_re.findall(self.log_text()))
             self.pointer.home()
             self.pointer.move_to(EXPLORER_MENU[0])
             self.pointer.click()
             time.sleep(0.4)
             self.pointer.move_to(EXPLORER_MENU[1])
             self.pointer.click()
+            placed = self.wait_for(
+                lambda t: list(placed_re.finditer(t))[before:],
+                self.args.app_timeout)
+            if not placed:
+                raise SmokeError("editor: the File Explorer opened no window")
             time.sleep(1.5)
-            self.pointer.move_to(EXPLORER_FIFTH)
+            self.pointer.move_to(explorer_fifth(Window.parse(placed[0])))
             self.pointer.click()           # select
             time.sleep(0.5)
             self.pointer.click()           # open
-        pid = self.start_editor(open_from_explorer, "the File Explorer")
+        pid, window = self.start_editor(open_from_explorer,
+                                        "the File Explorer")
         if pid is None:
             return
         self.check("[UTEXTEDIT] Spawned PID=%s for %s" % (pid, EDITOR_FILE)
@@ -1016,25 +1148,27 @@ class Smoke:
             return
 
         # N discards the changes
-        pid = self.editor_from_menu()
+        pid, window = self.editor_from_menu()
         if pid is None:
             return
+        box = window.console_rows(*EDITOR_BOX_ROWS)
         self.type_text("scratch")
         time.sleep(1.0)
-        before = self.screendump("editor-scratch").logical_area(EDITOR_BOX)
+        before = self.screendump("editor-scratch").logical_area(box)
         self.pointer.home()
-        self.pointer.move_to(CLOSE_BUTTON["UTEXTEDIT.ELF"])
+        self.pointer.move_to(window.close_button())
         self.pointer.click()
-        self.editor_box("editor-discard", pid, before, True,
+        self.editor_box("editor-discard", pid, window, before, True,
                         "the close button asks about the scratch text")
         since = len(self.log_text())
         self.monitor.cmd("sendkey n")
         self.editor_ended(pid, "N discards the text and closes", since)
 
         # a program cannot be saved over
-        pid = self.editor_from_menu()
+        pid, window = self.editor_from_menu()
         if pid is None:
             return
+        status = window.console_rows(*EDITOR_STATUS_ROWS)
         self.type_text("x")
         self.monitor.cmd("sendkey ctrl-shift-s")
         time.sleep(0.5)
@@ -1044,7 +1178,7 @@ class Smoke:
         def no_error(image):
             if self.editor_exited(pid):
                 return "UTEXTEDIT.ELF (PID=%s) has exited" % pid
-            red = reddish_pixels(image.logical_area(EDITOR_STATUS))
+            red = reddish_pixels(image.logical_area(status))
             return None if red > 20 else "no error in the status line"
 
         issue, seconds = self.watch_screen("editor-readonly", no_error,
@@ -1232,9 +1366,10 @@ class Smoke:
             elif self.args.editor:
                 self.editor()
             else:
-                for name, menu, item, updating_area in APPS:
-                    self.run_app(name, menu, item, updating_area)
+                for name, menu, item, updates_itself in APPS:
+                    self.run_app(name, menu, item, updates_itself)
                     time.sleep(0.5)
+                self.windows()
             if not self.args.selftest:
                 self.scan_log()
             if any(not ok for ok, _, _ in self.results):

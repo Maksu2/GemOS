@@ -330,6 +330,11 @@ void kernel_main(const boot_info_t *loader_info) {
         pending_redraw = true;
       } else if (ev.type == EVENT_MOUSE_CLICK ||
                  ev.type == EVENT_MOUSE_RELEASE) {
+        /* A release ends a window drag wherever it happens, also over
+         * the topbar or the dock, which take the event below. */
+        if (ev.type == EVENT_MOUSE_RELEASE) {
+          wm_handle_event(&ev);
+        }
 
         /* 1. Menu Handling */
         if (menu_handle_event(&ev)) {
@@ -342,7 +347,7 @@ void kernel_main(const boot_info_t *loader_info) {
         /* 2. Top Bar */
         else if (topbar_handle_event(&ev)) {
           /* Handled by Top Bar */
-        } else {
+        } else if (ev.type == EVENT_MOUSE_CLICK) {
           /* 3. WM */
           wm_handle_event(&ev);
         }

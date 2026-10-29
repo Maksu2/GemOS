@@ -527,6 +527,14 @@ int console_open(uint32_t owner_pid, const char *title, uint32_t cols,
   serial_print_dec(owner_pid);
   serial_print(" handle=");
   serial_print_dec(session->handle);
+  serial_print(" x=");
+  serial_print_dec((uint32_t)win->x);
+  serial_print(" y=");
+  serial_print_dec((uint32_t)win->y);
+  serial_print(" w=");
+  serial_print_dec((uint32_t)win->width);
+  serial_print(" h=");
+  serial_print_dec((uint32_t)win->height);
   serial_print("\n");
   return (int)session->handle;
 }
