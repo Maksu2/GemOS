@@ -8,13 +8,15 @@
  * them), never a pointer to a free block.
  *
  * The scratch buffers below are shared by all calls: a function that
- * fills one never calls another function that uses the same buffer.
+ * fills one never calls another function that uses the same buffer, and
+ * the lock keeps other tasks out while a call is not done.
  */
 #include "gemfs.h"
 
 #include "../../drivers/ata.h"
 #include "../../drivers/serial.h"
 #include "../include/heap.h"
+#include "../scheduler.h"
 #include "crc32.h"
 #include <string.h>
 
@@ -93,6 +95,72 @@ static uint8_t dir_buf[GEMFS_BLOCK_SIZE];   /* directory blocks */
 static uint32_t map_buf[POINTERS];          /* an indirect block */
 static uint32_t map_block;                  /* block in map_buf, 0 = none */
 static uint8_t sector_buf[SECTOR_SIZE];     /* superblock, inode sectors */
+
+/* -- lock -------------------------------------------------------------------- */
+
+/*
+ * Every public call that touches the disk holds the lock from start to end.
+ * A long read or write gives up the CPU between blocks (fs_pause), and a
+ * task that calls in meanwhile sleeps until the holder is done. The GUI
+ * task must not sleep that way: while it waits, a process could change
+ * what it is in the middle of (open a window, say). It hands the CPU to
+ * the holder instead, which then runs alone until it is done and hands
+ * the CPU straight back.
+ */
+_Static_assert(MAX_TASKS <= 32, "one bit per task in lock_waiters");
+
+static int lock_owner = -1;   /* task that holds the lock, -1 = none */
+static uint32_t lock_waiters; /* tasks asleep in fs_lock, one bit each */
+static uint8_t gui_waiting;   /* the GUI task waits for the lock */
+
+static int fs_lock(void) {
+  uint32_t me = scheduler_current_task();
+
+  while (lock_owner >= 0) {
+    if (scheduler_kill_pending()) {
+      lock_waiters &= ~(1U << me);
+      return GEMFS_ERR_STOPPED;
+    }
+    scheduler_block_current(0);
+    if (me == TASK_GUI) {
+      gui_waiting = 1;
+      scheduler_yield_to((uint32_t)lock_owner);
+    } else {
+      lock_waiters |= 1U << me;
+      scheduler_yield();
+    }
+  }
+  lock_owner = (int)me;
+  lock_waiters &= ~(1U << me);
+  return GEMFS_OK;
+}
+
+static void fs_unlock(void) {
+  uint32_t waiters = lock_waiters;
+
+  lock_owner = -1;
+  lock_waiters = 0;
+  for (uint32_t task = 0; waiters != 0; ++task, waiters >>= 1) {
+    if (waiters & 1U) {
+      scheduler_wake(task);
+    }
+  }
+  if (gui_waiting) {
+    gui_waiting = 0;
+    scheduler_wake(TASK_GUI);
+    scheduler_yield_to(TASK_GUI);
+  } else {
+    scheduler_preempt_point(); /* a task just woken may want the lock */
+  }
+}
+
+/* Between two blocks of a long read or write: other tasks may run, except
+ * while the GUI task waits for the lock. */
+static void fs_pause(void) {
+  if (!gui_waiting) {
+    scheduler_preempt_point();
+  }
+}
 
 /* -- disk ------------------------------------------------------------------ */
 
@@ -724,7 +792,7 @@ uint32_t gemfs_generation(void) { return generation; }
 
 /* -- files ------------------------------------------------------------------- */
 
-int gemfs_stat(const char *path, gemfs_stat_t *stat) {
+static int stat_path(const char *path, gemfs_stat_t *stat) {
   gemfs_inode_t inode;
   uint32_t number;
   int result;
@@ -751,7 +819,18 @@ int gemfs_stat(const char *path, gemfs_stat_t *stat) {
   return GEMFS_OK;
 }
 
-int gemfs_read(uint32_t number, uint32_t offset, void *buf, uint32_t len) {
+int gemfs_stat(const char *path, gemfs_stat_t *stat) {
+  int result = fs_lock();
+
+  if (result == GEMFS_OK) {
+    result = stat_path(path, stat);
+    fs_unlock();
+  }
+  return result;
+}
+
+static int read_inode(uint32_t number, uint32_t offset, void *buf,
+                      uint32_t len) {
   gemfs_inode_t inode;
   uint8_t *out = (uint8_t *)buf;
   uint32_t done = 0;
@@ -786,6 +865,9 @@ int gemfs_read(uint32_t number, uint32_t offset, void *buf, uint32_t len) {
     if (chunk > len - done) {
       chunk = len - done;
     }
+    if (done > 0) {
+      fs_pause();
+    }
     result = inode_map(&inode, position / GEMFS_BLOCK_SIZE, &block);
     if (result == GEMFS_OK) {
       result = block_read(block, data_buf);
@@ -797,6 +879,75 @@ int gemfs_read(uint32_t number, uint32_t offset, void *buf, uint32_t len) {
     done += chunk;
   }
   return (int)len;
+}
+
+int gemfs_read(uint32_t number, uint32_t offset, void *buf, uint32_t len) {
+  int result = fs_lock();
+
+  if (result == GEMFS_OK) {
+    result = read_inode(number, offset, buf, len);
+    fs_unlock();
+  }
+  return result;
+}
+
+static int read_file(const char *path, uint32_t limit, gemfs_sink_t sink,
+                     void *ctx) {
+  gemfs_inode_t inode;
+  uint32_t number;
+  uint32_t length;
+  int result;
+
+  if (fs_device < 0) {
+    return GEMFS_ERR_NOFS;
+  }
+  map_block = 0;
+  result = path_walk(path, 0, &number, NULL);
+  if (result == GEMFS_OK) {
+    result = inode_read(number, &inode);
+  }
+  if (result != GEMFS_OK) {
+    return result;
+  }
+  if (inode.type != GEMFS_TYPE_FILE) {
+    return inode.type == GEMFS_TYPE_DIR ? GEMFS_ERR_ISDIR : GEMFS_ERR_CORRUPT;
+  }
+  if (inode.size > GEMFS_MAX_FILE_SIZE) {
+    return GEMFS_ERR_CORRUPT;
+  }
+  length = inode.size < limit ? inode.size : limit;
+  for (uint32_t done = 0; done < length;) {
+    uint32_t chunk = length - done < GEMFS_BLOCK_SIZE ? length - done
+                                                      : GEMFS_BLOCK_SIZE;
+    uint32_t block;
+
+    if (done > 0) {
+      fs_pause();
+    }
+    result = inode_map(&inode, done / GEMFS_BLOCK_SIZE, &block);
+    if (result == GEMFS_OK) {
+      result = block_read(block, data_buf);
+    }
+    if (result != GEMFS_OK) {
+      return result;
+    }
+    if (sink(ctx, done, data_buf, chunk) != 0) {
+      return GEMFS_ERR_SOURCE;
+    }
+    done += chunk;
+  }
+  return (int)length;
+}
+
+int gemfs_read_file(const char *path, uint32_t limit, gemfs_sink_t sink,
+                    void *ctx) {
+  int result = fs_lock();
+
+  if (result == GEMFS_OK) {
+    result = read_file(path, limit, sink, ctx);
+    fs_unlock();
+  }
+  return result;
 }
 
 static int gemfs_memory_source(void *ctx, uint32_t offset, void *dst,
@@ -923,6 +1074,9 @@ static int gemfs_write_file(const char *path, uint32_t size,
     uint32_t chunk = size - offset < GEMFS_BLOCK_SIZE ? size - offset
                                                        : GEMFS_BLOCK_SIZE;
 
+    if (i > 0) {
+      fs_pause();
+    }
     memset(data_buf + chunk, 0, GEMFS_BLOCK_SIZE - chunk);
     if (source(ctx, offset, data_buf, chunk) != 0) {
       result = GEMFS_ERR_SOURCE;
@@ -971,17 +1125,29 @@ static int gemfs_write_file(const char *path, uint32_t size,
   return result == GEMFS_OK ? (int)size : result;
 }
 
+static int write_locked(const char *path, uint32_t size,
+                        gemfs_source_t source, void *ctx, uint32_t flags,
+                        uint32_t version, int user) {
+  int result = fs_lock();
+
+  if (result == GEMFS_OK) {
+    result = gemfs_write_file(path, size, source, ctx, flags, version, user);
+    fs_unlock();
+  }
+  return result;
+}
+
 int gemfs_write_from(const char *path, uint32_t size, gemfs_source_t source,
                      void *ctx, uint32_t flags, uint32_t version) {
-  return gemfs_write_file(path, size, source, ctx, flags, version, 0);
+  return write_locked(path, size, source, ctx, flags, version, 0);
 }
 
 int gemfs_write_user(const char *path, uint32_t size, gemfs_source_t source,
                      void *ctx) {
-  return gemfs_write_file(path, size, source, ctx, 0, 0, 1);
+  return write_locked(path, size, source, ctx, 0, 0, 1);
 }
 
-int gemfs_mkdir(const char *path) {
+static int mkdir_path(const char *path) {
   char name[GEMFS_NAME_MAX + 1];
   gemfs_inode_t dir;
   uint32_t parent;
@@ -1028,6 +1194,16 @@ int gemfs_mkdir(const char *path) {
   return GEMFS_OK;
 }
 
+int gemfs_mkdir(const char *path) {
+  int result = fs_lock();
+
+  if (result == GEMFS_OK) {
+    result = mkdir_path(path);
+    fs_unlock();
+  }
+  return result;
+}
+
 /* Unlink one inode that is a file or an empty directory, then free it. */
 static int gemfs_remove_one(uint32_t number) {
   gemfs_inode_t inode;
@@ -1053,7 +1229,7 @@ static int gemfs_remove_one(uint32_t number) {
   return result;
 }
 
-int gemfs_delete(const char *path) {
+static int delete_path(const char *path) {
   uint32_t stack[MAX_DEPTH];
   uint32_t depth = 0;
   uint32_t target;
@@ -1104,7 +1280,17 @@ int gemfs_delete(const char *path) {
   return result;
 }
 
-int gemfs_list(const char *path, gemfs_list_fn_t fn, void *ctx) {
+int gemfs_delete(const char *path) {
+  int result = fs_lock();
+
+  if (result == GEMFS_OK) {
+    result = delete_path(path);
+    fs_unlock();
+  }
+  return result;
+}
+
+static int list_path(const char *path, gemfs_list_fn_t fn, void *ctx) {
   gemfs_inode_t dir;
   uint32_t number;
   uint32_t blocks;
@@ -1157,15 +1343,31 @@ int gemfs_list(const char *path, gemfs_list_fn_t fn, void *ctx) {
   return count;
 }
 
+int gemfs_list(const char *path, gemfs_list_fn_t fn, void *ctx) {
+  int result = fs_lock();
+
+  if (result == GEMFS_OK) {
+    result = list_path(path, fn, ctx);
+    fs_unlock();
+  }
+  return result;
+}
+
 int gemfs_usage(gemfs_usage_t *usage) {
+  int result;
+
   if (fs_device < 0) {
     return GEMFS_ERR_NOFS;
   }
-  usage->total_blocks = sb.total_blocks;
-  usage->free_blocks = free_blocks;
-  usage->total_inodes = sb.inode_count - 1U;
-  usage->free_inodes = free_inodes;
-  return GEMFS_OK;
+  result = fs_lock(); /* not half way through a write */
+  if (result == GEMFS_OK) {
+    usage->total_blocks = sb.total_blocks;
+    usage->free_blocks = free_blocks;
+    usage->total_inodes = sb.inode_count - 1U;
+    usage->free_inodes = free_inodes;
+    fs_unlock();
+  }
+  return result;
 }
 
 const char *gemfs_error(int error) {
@@ -1181,8 +1383,9 @@ const char *gemfs_error(int error) {
   case GEMFS_ERR_NAME: return "bad name";
   case GEMFS_ERR_IO: return "disk error";
   case GEMFS_ERR_CORRUPT: return "corrupted file system";
-  case GEMFS_ERR_SOURCE: return "cannot read the data";
+  case GEMFS_ERR_SOURCE: return "the data could not be copied";
   case GEMFS_ERR_DENIED: return "protected file";
+  case GEMFS_ERR_STOPPED: return "the process was killed";
   default: return "unknown error";
   }
 }
