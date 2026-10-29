@@ -63,8 +63,10 @@ void     scheduler_yield(void);
 void     scheduler_block_current(uint64_t wake_tick);
 /* Make a blocked task runnable. Safe from IRQ handlers. */
 void     scheduler_wake(uint32_t task_id);
-/* Called on every interrupt exit except IRQ0: returns the ESP of the task to
- * resume, or 0 to resume the interrupted one. */
+/* Called when an exception, a syscall, a kernel yield or an IRQ that
+ * interrupted Ring 3 returns (IRQ0 has its own stub, and an IRQ that
+ * interrupted kernel code always returns to it): returns the ESP of the
+ * task to resume, or 0 to resume the interrupted one. */
 uint32_t scheduler_interrupt_exit(uint32_t current_esp);
 
 void     scheduler_mark_current_zombie(int32_t exit_code);

@@ -9,8 +9,9 @@
  *     or blocks, a fault that kills a process, or a kernel task calling
  *     scheduler_yield().
  * Kernel code therefore runs to its next yield point without interference
- * from other tasks; only interrupt handlers can interleave with it, so state
- * shared with an IRQ handler needs irq_save()/irq_restore().
+ * from other tasks; only interrupt handlers can interleave with it, and they
+ * always return to it (isr_handler, scheduler_tick). State shared with an
+ * IRQ handler needs irq_save()/irq_restore().
  *
  * Task 0 is the GUI loop in kernel_main. The idle task runs only when no
  * other task is runnable and is the only place that executes hlt.

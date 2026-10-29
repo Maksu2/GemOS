@@ -295,6 +295,7 @@ void isr_double_fault_task(void) {
 
 uint32_t isr_handler(registers_t *regs) {
   int from_user = ((regs->cs & 0x3U) == 0x3U);
+  int irq = regs->int_no >= PIC1_OFFSET && regs->int_no <= PIC2_OFFSET + 7;
 
   if (regs->int_no < 32) {
     /* read CR2 first: a later page fault would overwrite it */
@@ -333,18 +334,24 @@ uint32_t isr_handler(registers_t *regs) {
   }
 
   /* Handle IRQ EOI */
-  if (regs->int_no >= PIC1_OFFSET && regs->int_no <= PIC2_OFFSET + 7) {
+  if (irq) {
     pic_send_eoi(regs->int_no - PIC1_OFFSET);
   }
 
   if (interrupt_handlers[regs->int_no] != 0) {
     isr_t handler = interrupt_handlers[regs->int_no];
     handler(regs);
-  } else if (regs->int_no < PIC1_OFFSET || regs->int_no > PIC2_OFFSET + 7) {
+  } else if (!irq) {
     serial_print("[ISR] Unhandled vector ");
     serial_print_dec(regs->int_no);
     serial_print("\n");
   }
 
+  /* Kernel code is never preempted (kernel/scheduler.c): an IRQ returns to
+   * it even when the task has just blocked itself, and the task gives up
+   * the CPU with scheduler_yield() at a point it chooses. */
+  if (irq && !from_user) {
+    return 0;
+  }
   return scheduler_interrupt_exit((uint32_t)(uintptr_t)regs);
 }
