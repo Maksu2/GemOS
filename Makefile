@@ -98,8 +98,7 @@ KERNEL_C_SOURCES := kernel/kernel.c kernel/console.c kernel/gdt.c kernel/idt.c \
                     kernel/app/app_manager.c apps/testapp/testapp.c \
                     apps/about/uabout_launcher.c \
                     apps/terminal/terminal.c apps/terminal/uterm_launcher.c \
-                    apps/textedit/textedit.c apps/textedit/inputbox.c \
-                    apps/textedit/filepicker.c apps/textedit/utextedit_launcher.c \
+                    apps/textedit/utextedit_launcher.c \
                     apps/explorer/explorer.c \
                     kernel/fs/gemfs.c kernel/fs/crc32.c \
                     kernel/font/aa.c kernel/font/truetype.c kernel/font/scanline.c \

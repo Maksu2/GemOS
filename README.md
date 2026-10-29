@@ -17,7 +17,7 @@ From-scratch 32-bit desktop operating system for x86, written in C and assembly.
   <tr>
     <td><strong>UTERM.ELF</strong><br>Hosted userland terminal</td>
     <td><strong>ABOUT.ELF</strong><br>Small informational userland app</td>
-    <td><strong>UTEXTEDIT.ELF</strong><br>Userland text editor in active bring-up</td>
+    <td><strong>UTEXTEDIT.ELF</strong><br>Userland text editor with open and save</td>
   </tr>
 </table>
 
@@ -108,9 +108,7 @@ userland apps: UTERM.ELF, ABOUT.ELF, UTEXTEDIT.ELF
 | --- | --- | --- |
 | `UTERM.ELF` | Usable | Real Ring 3 terminal with input, output and hosted-window lifecycle |
 | `ABOUT.ELF` | Stable | Small polished userland app with timed updates and clean close flow |
-| `UTEXTEDIT.ELF` | Active bring-up | Hosted editor with document state, multiline render, caret movement and dirty state |
-
-The current text editor is intentionally in progress. Basic document editing is in place; file open/save and the unsaved-close flow come after the kernel concurrency work (see [Roadmap](#roadmap)).
+| `UTEXTEDIT.ELF` | Usable | Hosted editor that opens and saves text files (up to 8 KB) on GemFS, asks before unsaved changes are lost, and opens the file the File Explorer hands it |
 
 ## Build / Run / Debug
 
@@ -138,6 +136,8 @@ Build, test and run:
 ```bash
 make all          # build/gemos.img (floppy) and build/gemos-hdd.img
 tools/smoke.sh    # build, boot headless in QEMU, start UTERM/ABOUT/UTEXTEDIT
+tools/smoke.sh --editor   # UTEXTEDIT with files: save as, reopen from the File Explorer,
+                          # the unsaved-changes question, a refused save over a program
 tools/smoke.sh --stress   # 25 cycles of opening, typing into and closing them
 tools/smoke.sh --matrix   # smoke test on 32/64/256 MB, no data disk, 4 MB VRAM, hard disk boot,
                           # disks without GemFS that must stay unchanged, a second boot
@@ -189,7 +189,7 @@ The work follows the stages of the [September 2026 code audit](docs/AUDIT-2026-0
 2. Boot and memory: zeroed BSS, boot info with the E820 map, memory detection, a new loader, an ATA driver with timeouts (done)
 3. Concurrency and isolation: kernel code is not preempted and waits block; FPU state, a fault in ring 3 kills only the process, a hardened ELF loader and heap, guarded kernel stacks (done)
 4. Storage: GemFS v3 with a superblock, a block bitmap, inodes and directories; no writes to a disk without it; programs larger than 8 KB, written to disk only when they change and read-only for processes (done)
-5. GUI and apps: clipping, window placement, `UTEXTEDIT.ELF` open/save, then retiring the kernel text editor
+5. GUI and apps: clipping, window placement, `UTEXTEDIT.ELF` open/save, then retiring the kernel text editor (open/save and retiring the kernel editor: done)
 
 ## Out of scope right now
 

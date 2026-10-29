@@ -25,6 +25,7 @@ typedef struct process {
   process_state_t state;
   address_space_t as;
   uintptr_t entry_eip;
+  uintptr_t entry_esp; /* first ESP in Ring 3: argc, argv (crt0.S) */
   uintptr_t image_base;
   uintptr_t image_end;
   uintptr_t user_stack_top;
@@ -47,6 +48,9 @@ void process_init(void);
  * out of date; 1 if all of them are there afterwards. */
 int process_seed_userland(void);
 int process_spawn_user_from_file(const char *name);
+/* The same, with arg (a path of at most GEMFS_PATH_MAX - 1 bytes) as
+ * argv[1]: the file the program should open. NULL for none. */
+int process_spawn_user_with_arg(const char *name, const char *arg);
 #ifdef GEMOS_SELFTEST
 /* Start a program from an ELF image in memory. */
 int process_spawn_user_image(const char *name, const uint8_t *image,

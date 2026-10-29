@@ -1,6 +1,15 @@
 #ifndef GEMOS_USER_API_H
 #define GEMOS_USER_API_H
 
+/*
+ * Program start (userland/crt0.S): int main(int argc, char **argv).
+ * argv[0] is the name the program was started by, such as "UTERM.ELF". A
+ * program started to open a file, as the File Explorer does with text
+ * files, gets the file's path in argv[1] (at most 127 bytes). argv[argc]
+ * is NULL; the strings are on the program's stack. The value main returns
+ * is the exit code.
+ */
+
 #include "console_abi.h"
 #include "syscall_abi.h"
 

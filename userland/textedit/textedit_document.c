@@ -10,9 +10,9 @@ static void utextedit_document_reset_preferred_col(
   }
 }
 
-static void utextedit_document_mark_dirty(utextedit_document_t *document) {
+static void utextedit_document_mark_modified(utextedit_document_t *document) {
   if (document != NULL) {
-    document->dirty = 1U;
+    document->modified = 1U;
   }
 }
 
@@ -115,7 +115,7 @@ static int utextedit_document_insert_raw(utextedit_document_t *document,
   document->cursor++;
   document->length++;
   utextedit_document_reset_preferred_col(document);
-  utextedit_document_mark_dirty(document);
+  utextedit_document_mark_modified(document);
   return 1;
 }
 
@@ -133,7 +133,25 @@ void utextedit_document_reset(utextedit_document_t *document) {
   document->cursor = 0U;
   document->preferred_visual_col = 0U;
   document->preferred_visual_col_valid = 0U;
-  document->dirty = 0U;
+  document->modified = 0U;
+}
+
+void utextedit_document_load(utextedit_document_t *document, const char *text,
+                             uint32_t length) {
+  uint32_t index;
+
+  utextedit_document_reset(document);
+  if (document == NULL || text == NULL) {
+    return;
+  }
+  if (length > UTEXTEDIT_DOC_MAX) {
+    length = UTEXTEDIT_DOC_MAX;
+  }
+  for (index = 0U; index < length; ++index) {
+    document->text[index] = text[index];
+  }
+  document->text[length] = '\0';
+  document->length = length;
 }
 
 int utextedit_document_insert_char(utextedit_document_t *document, char ch) {
@@ -162,7 +180,7 @@ int utextedit_document_backspace(utextedit_document_t *document) {
   document->cursor--;
   document->length--;
   utextedit_document_reset_preferred_col(document);
-  utextedit_document_mark_dirty(document);
+  utextedit_document_mark_modified(document);
   return 1;
 }
 

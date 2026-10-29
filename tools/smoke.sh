@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # GemOS smoke test: build the image and boot it in headless QEMU.
 #
-# Usage:  tools/smoke.sh [--no-build] [--stress [CYCLES] | --matrix | --selftest]
+# Usage:  tools/smoke.sh [--no-build]
+#                        [--stress [CYCLES] | --matrix | --selftest | --editor]
 #
 #   --stress   load test instead of the smoke test: CYCLES (default 25)
 #              rounds of opening, typing into and closing all programs
@@ -11,6 +12,10 @@
 #              or with a damaged superblock (must stay unchanged), a
 #              second boot of the same disk (must write nothing), and a
 #              disk that writes slowly
+#   --editor   the text editor with files: type, Esc and the close button
+#              ask about unsaved text, save as, reopen from the File
+#              Explorer, save again, discard, and a refused save over a
+#              program; the saved file is checked on the host
 #   --selftest build and boot the self-test image (make selftest):
 #              heap, pool, ELF loader, GemFS and the file syscalls, FPU
 #              state, every exception from Ring 3, and a kernel stack
@@ -22,7 +27,7 @@
 #   SMOKE_TIMEOUT  hard limit for the QEMU part in seconds
 #                  (default: 600, with --stress or --matrix 1800)
 #   SMOKE_OUT      artifacts directory (default: build/smoke, build/stress,
-#                  build/matrix, build/selftest-run)
+#                  build/matrix, build/selftest-run, build/editor)
 #
 # The QEMU part lives in tools/smoke.py (Python 3, standard library only).
 # Prints one PASS/FAIL line per check and ends with "SMOKE: PASS" or
@@ -34,6 +39,7 @@ build=1
 stress=0
 matrix=0
 selftest=0
+editor=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -44,6 +50,7 @@ while [ $# -gt 0 ]; do
       ;;
     --matrix) matrix=1 ;;
     --selftest) selftest=1 ;;
+    --editor) editor=1 ;;
     -h|--help) awk 'NR == 1 { next } /^#/ { print; next } { exit }' "$0"
                exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -61,6 +68,9 @@ if [ "$selftest" -eq 1 ]; then
 elif [ "$matrix" -eq 1 ]; then
   out="${SMOKE_OUT:-$root/build/matrix}"
   limit="${SMOKE_TIMEOUT:-1800}"
+elif [ "$editor" -eq 1 ]; then
+  out="${SMOKE_OUT:-$root/build/editor}"
+  limit="${SMOKE_TIMEOUT:-600}"
 elif [ "$stress" -gt 0 ]; then
   out="${SMOKE_OUT:-$root/build/stress}"
   limit="${SMOKE_TIMEOUT:-1800}"
@@ -87,6 +97,9 @@ if [ "$matrix" -eq 1 ]; then
 fi
 if [ "$selftest" -eq 1 ]; then
   cmd+=(--selftest)
+fi
+if [ "$editor" -eq 1 ]; then
+  cmd+=(--editor)
 fi
 status=0
 if command -v timeout >/dev/null 2>&1; then
