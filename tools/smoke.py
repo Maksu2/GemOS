@@ -12,8 +12,8 @@ the monitor:
   * windows open between the topbar and the dock, a second one moves off
     the first one's corner, and a dragged window keeps its title bar there,
   * every character of a hosted console sits in its own cell of the grid,
-  * a click on an entry in the File Explorer selects it and leaves no drag
-    outline behind,
+  * the File Explorer starts ABOUT.ELF and USRSMOKE.ELF from GemFS, and a
+    click on an entry leaves no drag outline behind,
   * every frame checked must appear on screen by itself: no input is sent
     while waiting for it,
   * the serial log has no PANIC, user fault, allocation failure or refused
@@ -245,6 +245,7 @@ def explorer_entry(window, index):
     return (x + 40, y + 18)
 
 
+EXPLORER_USRSMOKE = 0
 EXPLORER_ABOUT = 2
 EXPLORER_FIRST_FILE = 4
 EXPLORER_SELECTION = (0xCC, 0xE5, 0xFF)  # COL_SELECTION
@@ -781,21 +782,30 @@ class Smoke:
         return Window.parse(match)
 
     def run_app(self, name, menu, item, updates_itself):
+        def press():
+            self.pointer.home()
+            self.pointer.move_to(menu)
+            self.pointer.click()
+            time.sleep(0.4)
+            self.pointer.move_to(item)
+            self.pointer.press()
+        return self.run_program(name, press, updates_itself)
+
+    def run_program(self, name, press, updates_itself, shot=None):
+        """press() presses the mouse button where it starts the program
+        name; then the program opens its window, closes on Esc and is
+        reaped with exit=0."""
         spawn_re = re.compile(r"\[PROC\] Spawned PID=(\d+) " + re.escape(name))
 
         def spawned(text):
             return spawn_re.findall(text)
 
         before = len(spawned(self.log_text()))
-        self.pointer.home()
-        self.pointer.move_to(menu)
-        self.pointer.click()
-        time.sleep(0.4)
-        self.pointer.move_to(item)
-        # The menu starts the program on the button press. The button stays
-        # down until the window check is done, so no input event can make
-        # the kernel redraw while the test waits for the window.
-        self.pointer.press()
+        # The menu and the File Explorer start the program on the button
+        # press. The button stays down until the window check is done, so
+        # no input event can make the kernel redraw while the test waits
+        # for the window.
+        press()
         try:
             pids = self.wait_for(
                 lambda t: spawned(t) if len(spawned(t)) > before else None,
@@ -812,7 +822,7 @@ class Smoke:
                 return False
 
             window = self.console_window(pid)
-            self.check_window_drawn(name, window)
+            self.check_window_drawn(name, window, shot)
         finally:
             try:
                 self.pointer.release()
@@ -857,8 +867,8 @@ class Smoke:
         return self.check(False, "%s: window redraws by itself" % name,
                           "unchanged for 5 s without input")
 
-    def check_window_drawn(self, name, window):
-        shot = name.split(".")[0].lower()
+    def check_window_drawn(self, name, window, shot=None):
+        shot = shot or name.split(".")[0].lower()
 
         issue, seconds = self.watch_screen(
             shot, lambda image: title_bar_problem(image, window),
@@ -991,10 +1001,11 @@ class Smoke:
         return Window.parse(placed[0])
 
     def file_explorer(self):
-        """A click in the File Explorer selects an entry and, once the
-        button is up, leaves no drag outline on the screen."""
+        """The File Explorer starts the programs on GemFS: a click selects
+        an entry and, once the button is up, leaves no drag outline on the
+        screen; a click on the selected entry starts the program."""
         if "[GemFS] Mounted" not in self.log_text():
-            print("SKIP  explorer: no file system, nothing to select",
+            print("SKIP  explorer: no file system, no programs to start",
                   flush=True)
             return
         explorer = self.open_explorer()
@@ -1019,6 +1030,30 @@ class Smoke:
                    "outline", "explorer-selected.png, cell #%02x%02x%02x, "
                    "%d black pixels where an outline would be"
                    % (cell + (black,)))
+
+        def open_about():
+            self.pointer.move_to(about)
+            self.pointer.press()               # the second click opens it
+        self.run_program("/ABOUT.ELF", open_about, False,
+                         shot="explorer-about")
+
+        # a program without a window
+        spawn_re = re.compile(r"\[PROC\] Spawned PID=(\d+) /USRSMOKE\.ELF")
+        before = len(spawn_re.findall(self.log_text()))
+        self.pointer.move_to(explorer_entry(explorer, EXPLORER_USRSMOKE))
+        self.pointer.click()                   # select
+        time.sleep(0.5)
+        self.pointer.click()                   # start
+        pids = self.wait_for(lambda t: spawn_re.findall(t)[before:],
+                             self.args.app_timeout)
+        reaped = pids and self.wait_for(
+            lambda t: re.search(r"\[PROC\] Reaped PID=%s exit=(-?\d+)"
+                                % pids[0], t), self.args.app_timeout)
+        self.check(bool(reaped) and reaped.group(1) == "42",
+                   "explorer: /USRSMOKE.ELF, a program without a window, "
+                   "runs and exits", "PID=%s exit=%s"
+                   % (pids[0] if pids else "none",
+                      reaped.group(1) if reaped else "none"))
 
     # -- stress test -----------------------------------------------------------
     def burst(self, keys):

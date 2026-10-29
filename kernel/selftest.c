@@ -14,7 +14,9 @@
  *     driver refuses writes to a disk GemFS did not mount; FILETEST.ELF
  *     (over 64 KB, started from GemFS) uses the file syscalls and may not
  *     change programs; files written on the first boot of a disk are
- *     checked on the next one (the harness boots twice);
+ *     checked on the next one (the harness boots twice); a program the
+ *     loader rejects on GemFS runs from the kernel image, also when it
+ *     is named with its path, as the File Explorer names it;
  *   - long file syscalls (LONGIO.ELF, with disk writes slowed down): the
  *     clock, other tasks and the GUI loop go on during one, three
  *     processes use two files at once without seeing half of a write, a
@@ -57,6 +59,8 @@ extern uint8_t _binary_longio_elf_start[];
 extern uint8_t _binary_longio_elf_end[];
 extern uint8_t _binary_uterm_image_bin_start[];
 extern uint8_t _binary_uterm_image_bin_end[];
+extern uint8_t _binary_usrsmoke_elf_start[];
+extern uint8_t _binary_usrsmoke_elf_end[];
 
 /* More than the self-test starts processes (about 20), so no record is
  * overwritten before the test waiting for it reads it. */
@@ -840,6 +844,44 @@ static void selftest_fs_filetest(void) {
                  "back in the kernel");
 }
 
+/* The loader takes the copy in the kernel image when it rejects the one on
+ * GemFS, also for "/USRSMOKE.ELF" (the File Explorer passes paths). The
+ * test damages USRSMOKE.ELF on GemFS and then puts it back as it was:
+ * the same bytes, flags and version, so the next boot leaves it alone. */
+static void selftest_fs_fallback(void) {
+  uint32_t size =
+      (uint32_t)(_binary_usrsmoke_elf_end - _binary_usrsmoke_elf_start);
+  uint8_t junk[64];
+  gemfs_stat_t stat;
+  selftest_exit_t exit;
+  int damaged;
+  int ended = 0;
+  int pid;
+
+  memset(junk, 0xA5, sizeof(junk)); /* no ELF header */
+  memset(&exit, 0, sizeof(exit));
+  damaged = selftest_file_is("/USRSMOKE.ELF", _binary_usrsmoke_elf_start,
+                             size) &&
+            gemfs_stat("/USRSMOKE.ELF", &stat) == GEMFS_OK &&
+            gemfs_write("/USRSMOKE.ELF", junk, sizeof(junk), stat.flags,
+                        stat.version) == (int)sizeof(junk);
+  if (!selftest_check(damaged, "process: USRSMOKE.ELF damaged on GemFS for "
+                               "the fallback test")) {
+    return;
+  }
+  pid = process_spawn_user_from_file("/USRSMOKE.ELF");
+  ended = pid >= 0 && selftest_wait_exit(pid, &exit);
+  selftest_check(ended && !exit.faulted &&
+                     exit.exit_code == 42, /* userland/usrsmoke.S */
+                 "process: /USRSMOKE.ELF, rejected on GemFS, runs from the "
+                 "kernel image");
+  selftest_check(gemfs_write("/USRSMOKE.ELF", _binary_usrsmoke_elf_start,
+                             size, stat.flags, stat.version) == (int)size &&
+                     selftest_file_is("/USRSMOKE.ELF",
+                                      _binary_usrsmoke_elf_start, size),
+                 "process: USRSMOKE.ELF put back on GemFS");
+}
+
 /* -- long file syscalls --------------------------------------------------- */
 
 /* Every sector written takes this much longer while LONGIO.ELF runs: a
@@ -1147,6 +1189,7 @@ static void selftest_fs(void) {
   selftest_fs_api();
   selftest_fs_write_gate();
   selftest_fs_filetest();
+  selftest_fs_fallback();
   selftest_longio();
 }
 

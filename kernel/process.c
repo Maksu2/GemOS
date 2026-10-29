@@ -69,6 +69,9 @@ static const embedded_user_program_t *process_find_embedded_program(
   if (name == NULL) {
     return NULL;
   }
+  if (name[0] == '/') {
+    name++; /* "/UTERM.ELF" (the File Explorer's path) is UTERM.ELF */
+  }
 
   for (size_t i = 0; i < EMBEDDED_PROGRAM_COUNT; ++i) {
     if (strcmp(name, embedded_user_programs[i].name) == 0) {
