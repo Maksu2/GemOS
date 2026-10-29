@@ -25,9 +25,9 @@ static int wm_drag_offset_y = 0;
  * Window Decoration Constants
  * =========================================================================*/
 
-/* Title Bar */
-#define TITLE_BAR_H 26
-#define BORDER_W 1
+/* Title Bar (kernel/gui/window/window.h) */
+#define TITLE_BAR_H WINDOW_TITLE_BAR_H
+#define BORDER_W WINDOW_BORDER_W
 
 /* Shadow */
 #define SHADOW_OFFSET_X 5

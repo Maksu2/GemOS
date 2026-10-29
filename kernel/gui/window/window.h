@@ -10,6 +10,11 @@
 #define WINDOW_FLAG_NO_RESIZE 0x02
 #define WINDOW_FLAG_NO_DOCK 0x04
 
+/* Window chrome in logical pixels: a border around the whole window and a
+ * title bar below the top border. The client area is what is left. */
+#define WINDOW_BORDER_W 1
+#define WINDOW_TITLE_BAR_H 26
+
 typedef struct window {
   char title[32];
   uint32_t flags;

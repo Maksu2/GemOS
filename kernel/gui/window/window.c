@@ -2,10 +2,6 @@
 #include "../../gfx/context.h"
 #include <string.h>
 
-// Hardcoded style constants
-#define BORDER_WIDTH 1
-#define TITLE_BAR_HEIGHT 26
-
 void window_update_rects(window_t *win) {
   // Frame rect is the total external area
   win->frame_rect.x = win->x;
@@ -16,10 +12,10 @@ void window_update_rects(window_t *win) {
   // Client rect is inside the border and below the title bar:
   // Client = [x+1, y+1+Title, w-2, h-2-Title]
 
-  win->client_rect.x = win->x + BORDER_WIDTH;
-  win->client_rect.y = win->y + BORDER_WIDTH + TITLE_BAR_HEIGHT;
-  win->client_rect.w = win->width - (2 * BORDER_WIDTH);
-  win->client_rect.h = win->height - (2 * BORDER_WIDTH) - TITLE_BAR_HEIGHT;
+  win->client_rect.x = win->x + WINDOW_BORDER_W;
+  win->client_rect.y = win->y + WINDOW_BORDER_W + WINDOW_TITLE_BAR_H;
+  win->client_rect.w = win->width - (2 * WINDOW_BORDER_W);
+  win->client_rect.h = win->height - (2 * WINDOW_BORDER_W) - WINDOW_TITLE_BAR_H;
 
   // Safety clamp
   if (win->client_rect.w < 0)
