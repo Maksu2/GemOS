@@ -3,6 +3,7 @@
 #include "console.h"
 #include "gdt.h"
 #include "idt.h"
+#include "include/irq.h"
 #include "memory/paging.h"
 #include "process.h"
 #include "scheduler.h"
@@ -15,8 +16,7 @@
 
 #define SYSCALL_DEBUG_WRITE_MAX 256U
 #define SYSCALL_CONSOLE_WRITE_CHUNK 128U
-/* Longest SYS_file_write. A syscall runs with interrupts off from entry to
- * exit (AGENTS.md), so this also bounds how long the disk keeps them off. */
+/* Longest SYS_file_write: a write keeps the disk until it is done. */
 #define SYSCALL_FILE_WRITE_MAX (1024U * 1024U)
 
 static gemos_console_cell_t console_present_cells[GEMOS_CONSOLE_MAX_CELLS];
@@ -409,7 +409,16 @@ static uint32_t syscall_file_write(uintptr_t user_path,
   return (uint32_t)result;
 }
 
+/*
+ * The gate turns interrupts off; a syscall runs with them on, so the clock
+ * and the input devices keep working during a long one. An IRQ returns to
+ * the syscall (kernel code is never preempted, see kernel/scheduler.c), and
+ * state shared with IRQ handlers is changed only inside irq_save(). The
+ * way out of the interrupt, where the scheduler may switch tasks, runs with
+ * interrupts off again.
+ */
 void syscall_interrupt_handler(registers_t *regs) {
+  irq_enable();
   switch (regs->eax) {
   case SYS_exit:
     /* the task no longer runs: isr_handler switches on the way out */
@@ -461,6 +470,7 @@ void syscall_interrupt_handler(registers_t *regs) {
     regs->eax = (uint32_t)GEMOS_ERR_NOSYS;
     break;
   }
+  irq_disable();
 }
 
 void syscall_init(void) {

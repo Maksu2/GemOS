@@ -402,12 +402,15 @@ void scheduler_wake(uint32_t task_id) {
 }
 
 void scheduler_mark_current_zombie(int32_t exit_code) {
+    uint32_t flags = irq_save();  /* SYS_exit runs with interrupts on */
+
     if (tasks[current_task].process != NULL) {
         tasks[current_task].process->state = PROC_ZOMBIE;
         tasks[current_task].process->exit_code = exit_code;
     }
     tasks[current_task].state = TASK_ZOMBIE;
-    scheduler_wake(TASK_GUI);  /* the GUI task reaps processes */
+    scheduler_wake_locked(TASK_GUI);  /* the GUI task reaps processes */
+    irq_restore(flags);
 }
 
 void scheduler_mark_current_fault(uint32_t vector, uint32_t error,
