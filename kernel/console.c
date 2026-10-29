@@ -509,8 +509,11 @@ int console_open(uint32_t owner_pid, const char *title, uint32_t cols,
     strcpy(session->title, "User Terminal");
   }
 
-  width = (int)(session->cols * CONSOLE_CHAR_WIDTH + (CONSOLE_PADDING * 2));
-  height = (int)(session->rows * CONSOLE_LINE_HEIGHT + (CONSOLE_PADDING * 2) + 26);
+  /* the padding goes all round the cells, inside the window's chrome */
+  width = (int)(session->cols * CONSOLE_CHAR_WIDTH + (CONSOLE_PADDING * 2) +
+                2 * WINDOW_BORDER_W);
+  height = (int)(session->rows * CONSOLE_LINE_HEIGHT + (CONSOLE_PADDING * 2) +
+                 WINDOW_TITLE_BAR_H + 2 * WINDOW_BORDER_W);
 
   window_init(win, 120, 100, width, height);
   window_set_title(win, session->title);
@@ -524,6 +527,14 @@ int console_open(uint32_t owner_pid, const char *title, uint32_t cols,
   serial_print_dec(owner_pid);
   serial_print(" handle=");
   serial_print_dec(session->handle);
+  serial_print(" x=");
+  serial_print_dec((uint32_t)win->x);
+  serial_print(" y=");
+  serial_print_dec((uint32_t)win->y);
+  serial_print(" w=");
+  serial_print_dec((uint32_t)win->width);
+  serial_print(" h=");
+  serial_print_dec((uint32_t)win->height);
   serial_print("\n");
   return (int)session->handle;
 }

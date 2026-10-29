@@ -7,7 +7,13 @@
 /* Initialize the Window Manager with the main screen context */
 void wm_init(gfx_context_t *ctx);
 
+/* The part of the screen windows use, in logical pixels: between the
+ * topbar and the dock. */
+rect_t wm_work_area(void);
+
 /* Window Management */
+/* Puts the window inside the work area where it fits, and moves it off
+ * another window's corner (cascade), then logs "[WM] Placed ...". */
 void wm_add_window(window_t *win);
 void wm_remove_window(window_t *win);
 

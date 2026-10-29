@@ -21,13 +21,19 @@ static bool wm_is_dragging = false;
 static int wm_drag_offset_x = 0;
 static int wm_drag_offset_y = 0;
 
+/* Placement */
+#define WM_CASCADE_STEP 24  /* a new window on another one's corner moves */
+#define WM_CASCADE_TRIES 8
+#define WM_CORNER_NEAR 8    /* corners closer than this are the same */
+#define WM_KEEP_VISIBLE 64  /* a dragged window keeps this much on screen */
+
 /* ===========================================================================
  * Window Decoration Constants
  * =========================================================================*/
 
-/* Title Bar */
-#define TITLE_BAR_H 26
-#define BORDER_W 1
+/* Title Bar (kernel/gui/window/window.h) */
+#define TITLE_BAR_H WINDOW_TITLE_BAR_H
+#define BORDER_W WINDOW_BORDER_W
 
 /* Shadow */
 #define SHADOW_OFFSET_X 5
@@ -61,6 +67,20 @@ static int wm_drag_offset_y = 0;
 #define COLOR_BTN_NORMAL 0xC0C0C0  /* Light gray bg */
 #define COLOR_BTN_ICON 0x404040    /* Dark icon */
 
+/* "[WM] <what> x= y= w= h=", read by tools/smoke.py */
+static void wm_log_rect(const char *what, rect_t rect) {
+  serial_print(what);
+  serial_print(" x=");
+  serial_print_dec((uint32_t)rect.x);
+  serial_print(" y=");
+  serial_print_dec((uint32_t)rect.y);
+  serial_print(" w=");
+  serial_print_dec((uint32_t)rect.w);
+  serial_print(" h=");
+  serial_print_dec((uint32_t)rect.h);
+  serial_print("\n");
+}
+
 void wm_init(gfx_context_t *ctx) {
   if (!ctx)
     return;
@@ -69,6 +89,7 @@ void wm_init(gfx_context_t *ctx) {
   windows_tail = NULL;
   focused_window = NULL;
   serial_print("[WM] Initialized with graphics context\n");
+  wm_log_rect("[WM] Work area", wm_work_area());
 }
 
 static void wm_emit_focus_event(window_t *win) {
@@ -144,11 +165,68 @@ static void wm_append(window_t *win) {
   }
 }
 
+rect_t wm_work_area(void) {
+  int width = (int)(vbe_get_width() / ui_scale);
+  int height = (int)(vbe_get_height() / ui_scale);
+
+  return (rect_t){0, TOPBAR_HEIGHT, width,
+                  height - TOPBAR_HEIGHT - DOCK_HEIGHT};
+}
+
+/* Inside the area where the window fits; one larger than the area keeps
+ * its top left corner in it, so its title bar can be reached. */
+static void wm_clamp_to(window_t *win, const rect_t *area, int x, int y) {
+  if (x + win->width > area->x + area->w) {
+    x = area->x + area->w - win->width;
+  }
+  if (y + win->height > area->y + area->h) {
+    y = area->y + area->h - win->height;
+  }
+  win->x = x < area->x ? area->x : x;
+  win->y = y < area->y ? area->y : y;
+}
+
+static bool wm_corner_taken(const window_t *win) {
+  for (window_t *other = windows_head; other; other = other->next) {
+    int dx = other->x - win->x;
+    int dy = other->y - win->y;
+
+    if (other != win && other->visible && dx > -WM_CORNER_NEAR &&
+        dx < WM_CORNER_NEAR && dy > -WM_CORNER_NEAR && dy < WM_CORNER_NEAR) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/* The place the window asked for, moved into the work area, then down and
+ * right in steps while another window's corner is there. If every step is
+ * taken the window stays at the first one. */
+static void wm_place_window(window_t *win) {
+  rect_t area = wm_work_area();
+  int want_x = win->x;
+  int want_y = win->y;
+
+  for (int step = 0; step < WM_CASCADE_TRIES; ++step) {
+    wm_clamp_to(win, &area, want_x + step * WM_CASCADE_STEP,
+                want_y + step * WM_CASCADE_STEP);
+    if (!wm_corner_taken(win)) {
+      break;
+    }
+    if (step == WM_CASCADE_TRIES - 1) {
+      wm_clamp_to(win, &area, want_x, want_y);
+    }
+  }
+  window_update_rects(win);
+  wm_log_rect("[WM] Placed", win->frame_rect);
+}
+
 void wm_add_window(window_t *win) {
   if (!win || !wm_screen_ctx)
     return;
 
   win->ctx = *wm_screen_ctx;
+  wm_place_window(win);
   win->minimized = false;
   win->maximized = false;
 
@@ -385,14 +463,14 @@ void wm_handle_event(event_t *event) {
               curr->height = curr->restore_rect.h;
               curr->maximized = false;
             } else {
+              rect_t area = wm_work_area();
+
               curr->restore_rect =
                   (rect_t){curr->x, curr->y, curr->width, curr->height};
-              curr->x = 0;
-              curr->y = TOPBAR_HEIGHT;
-              int logical_w = (int)(vbe_get_width() / ui_scale);
-              int logical_h = (int)(vbe_get_height() / ui_scale);
-              curr->width = logical_w;
-              curr->height = logical_h - TOPBAR_HEIGHT;
+              curr->x = area.x;
+              curr->y = area.y;
+              curr->width = area.w;
+              curr->height = area.h;
               curr->maximized = true;
             }
             window_update_rects(curr);
@@ -431,16 +509,24 @@ void wm_handle_event(event_t *event) {
       int mx = event->data.mouse.x;
       int my = event->data.mouse.y;
 
-      focused_window->x = mx + wm_drag_offset_x;
-      focused_window->y = my + wm_drag_offset_y;
+      rect_t area = wm_work_area();
+      int x = mx + wm_drag_offset_x;
+      int y = my + wm_drag_offset_y;
+      /* the title bar stays where it can be grabbed again: below the
+       * topbar, above the dock, partly on screen */
+      int min_x = area.x + WM_KEEP_VISIBLE - focused_window->width;
+      int max_x = area.x + area.w - WM_KEEP_VISIBLE;
+      int max_y = area.y + area.h - (BORDER_W + TITLE_BAR_H);
 
-      if (focused_window->y < TOPBAR_HEIGHT) {
-        focused_window->y = TOPBAR_HEIGHT;
-      }
+      focused_window->x = x < min_x ? min_x : (x > max_x ? max_x : x);
+      focused_window->y = y < area.y ? area.y : (y > max_y ? max_y : y);
 
       window_update_rects(focused_window);
     }
   } else if (event->type == EVENT_MOUSE_RELEASE) {
+    if (wm_is_dragging && focused_window) {
+      wm_log_rect("[WM] Dropped", focused_window->frame_rect);
+    }
     wm_is_dragging = false;
   } else if (event->type == EVENT_KEY_PRESS ||
              event->type == EVENT_KEY_RELEASE) {
