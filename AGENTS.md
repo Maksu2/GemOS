@@ -36,7 +36,7 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
   - `SYS_file_read`/`SYS_file_write` oddają CPU między blokami dysku (GemFS niżej).
   - Proces zabity w środku syscalla (`process_kill_pid()`) kończy syscall najszybciej, jak może (zapis się wycofuje), i zamiast wrócić do Ring 3 staje się zombie.
 - **Userland:**
-  - `UTERM.ELF`, `ABOUT.ELF` i `UTEXTEDIT.ELF` (plus `USRSMOKE.ELF` do debugowania) są wbudowane w obraz jądra. Przy starcie jądro zapisuje do GemFS, jako pliki systemowe, tylko te, których brakuje, które mają inną wersję (CRC-32 obrazu) albo nie zgadzają się z obrazem; kolejny start z tym samym jądrem nic nie zapisuje (`[PROC] Programs on GemFS: N seeded, M up to date`). Loader woli kopię z GemFS, a gdy jej nie przyjmie, bierze wbudowaną.
+  - `UTERM.ELF`, `ABOUT.ELF` i `UTEXTEDIT.ELF` (plus `USRSMOKE.ELF` do debugowania) są wbudowane w obraz jądra. Przy starcie jądro zapisuje do GemFS, jako pliki systemowe, tylko te, których brakuje, które mają inną wersję (CRC-32 obrazu) albo nie zgadzają się z obrazem; kolejny start z tym samym jądrem nic nie zapisuje (`[PROC] Programs on GemFS: N seeded, M up to date`). Loader woli kopię z GemFS, a gdy jej nie przyjmie, bierze wbudowaną (także dla nazwy ze ścieżką, np. `/ABOUT.ELF` z File Explorera).
   - Procesy nie zmieniają programów: `SYS_file_write` zwraca `GEMOS_ERR_DENIED` dla nazw `*.ELF` (dowolna wielkość liter) i plików z flagą systemową. Sprawdza to `gemfs_write_user()` na sparsowanej nazwie i na inode, który zapis by zastąpił. Jądro (seeding, File Explorer) pisze bez tych ograniczeń.
   - Model „hosted app”: aplikacja wysyła siatkę komórek tekstowych (maks. 96×32), jądro rysuje okno. Działa najwyżej 8 takich okien naraz. Aplikacje śpią w `SYS_console_wait_event` (ABOUT z timeoutem do pełnej sekundy).
   - `UTEXTEDIT` otwiera i zapisuje pliki tekstowe do 8 KB przez `SYS_file_read`/`SYS_file_write` (Ctrl+O, Ctrl+S, Ctrl+Shift+S; nazwa bez rozszerzenia dostaje `.txt`) i otwiera plik z `argv[1]`. Zanim straci niezapisane zmiany (Esc, Ctrl+Q, przycisk X, Ctrl+N, Ctrl+O), pyta: Y zapisz, N porzuć, Esc anuluj. Pytania rysuje w ramce nad tekstem.
@@ -48,10 +48,16 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
     - okno na rogu innego (w promieniu 8 px) przesuwa się o 24 px w dół i w prawo,
     - przeciągane okno trzyma pasek tytułu pod topbarem i nad dockiem, a co najmniej 64 px okna zostaje na ekranie; puszczenie przycisku kończy przeciąganie także nad topbarem i dockiem (wcześniej one je połykały i okno dalej jechało za myszą),
     - maksymalizacja wypełnia obszar roboczy,
+    - aplikacja okna, które dostało wciśnięcie przycisku, dostaje też jego puszczenie (gdziekolwiek nastąpi), a okno z fokusem ruchy myszy, gdy żadne okno nie jest przeciągane,
     - log: `[WM] Work area`, `[WM] Placed`, `[WM] Dropped` i położenie okna w `[CONSOLE] Opened` (z nich korzysta smoke).
   - Tekst jest przycięty do `clip_rect`, jak inne prymitywy (`aa_blend_pixel`), więc nie wychodzi poza okno.
   - Okno aplikacji hostowanej rysuje każdy znak w jego komórce 8×15 (`font_draw_cell`: glif wyśrodkowany w pikselach fizycznych), więc kolumny się zgadzają mimo proporcjonalnego fontu. Znaków spoza 0x21–0x7E nie rysuje.
   - Skala UI (całkowita, `int ui_scale`) 2 przy 1920×1080 (współrzędne logiczne 960×540), 1 w mniejszych trybach.
+  - **Shutdown** (menu GemOS) obsługuje pętla GUI:
+    - `gemfs_shutdown()` czeka na trwające wywołanie GemFS i już nie oddaje blokady (każdy zapis kończy się FLUSH CACHE),
+    - ekran pokazuje „It is now safe to turn off the computer.”,
+    - `power_off()` (`drivers/power.c`) pisze polecenie uśpienia ACPI do PM1a_CNT pod `0x604` (QEMU) i `0xB004` (Bochs); gdzie to nie działa, jądro loguje `[POWER] Still running` i staje (`hlt` z IF=0),
+    - od wywołania żaden proces już nie działa, a tekst niezapisany w edytorze przepada.
   - Każda klatka przerysowuje cały ekran. Page flip przez BGA tylko po wykryciu adaptera (ID `0xB0C0`–`0xB0C5`) i przy VRAM na dwie strony; inaczej `memcpy` do framebuffera.
 - **ATA:** PIO LBA28 (`drivers/ata.c`). IDENTIFY na 4 pozycjach, każde oczekiwanie z limitem, kody błędów zamiast pętli bez końca. Limity są czasowe, mierzone stoperem na liczniku PIT (`pit_stopwatch_*`: liczy przeładowania licznika, więc działa też z IF=0, a z IF=1 bierze też ticki): 5 s na IDENTIFY, 30 s na odczyt, zapis i FLUSH CACHE. Po timeoutcie sterownik resetuje kanał (SRST), żeby następne polecenie nie przesłało złych bajtów. Każdy dysk jest tylko do odczytu, dopóki GemFS go nie zamontuje (`ata_allow_writes()`); zapis na inny dysk kończy się `ATA_ERR_READ_ONLY` i linią `[ATA] Refused …` w logu.
 - **GemFS v3** (`kernel/fs/`, format w `docs/GEMFS.md`):
@@ -62,7 +68,11 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
   - jedno zadanie naraz: każde publiczne wywołanie trzyma blokadę od początku do końca. Długi odczyt albo zapis oddaje CPU między blokami (`scheduler_preempt_point()`), a inne zadanie, które wtedy wywoła GemFS, śpi do końca tej operacji (zabity proces przestaje czekać). `gemfs_read_file()` czyta cały plik pod jedną blokadą; tak czyta `SYS_file_read`;
   - zadanie GUI nie śpi na blokadzie: oddaje CPU jej właścicielowi (`scheduler_yield_to()`), który działa sam do końca operacji i od razu oddaje CPU z powrotem. Nic innego nie działa w tym czasie, więc nikt nie zmienia stanu GUI w środku iteracji.
 - **Aplikacje jądra (`apps/`):**
-  - File Explorer (foldery, UP, New Folder; plik `.txt`/`.gemtext` otwiera w UTEXTEDIT z pełną ścieżką) i Log Viewer oraz launchery trzech programów userlandu.
+  - File Explorer (foldery, UP, New Folder). Kliknięcie zaznacza, kliknięcie zaznaczonego otwiera:
+    - plik `.txt`/`.gemtext` w UTEXTEDIT z pełną ścieżką,
+    - `.ELF` uruchamia z GemFS,
+    - rozszerzenia działają w dowolnej wielkości liter, a plik, którego nie da się otworzyć, albo program, który nie wystartował, zamienia ścieżkę w pasku na czerwony komunikat.
+  - Log Viewer oraz launchery trzech programów userlandu.
   - Test App jest zarejestrowana, ale niedostępna z menu.
 
 ## Znane problemy
@@ -73,6 +83,7 @@ Nie obchodzić ich po cichu; plan naprawy jest w §8.2 audytu.
 - **Render całej klatki (1080p) w task 0 nie jest przerywany:** procesy czekają na koniec iteracji.
 - **GemFS bez księgowania:** awaria w trakcie zapisu albo usuwania nie psuje istniejących plików, ale może zostawić zajęte bloki i inode'y bez właściciela. Jądro ich nie odzyskuje; `tools/mkgemfs check` je pokazuje.
 - **RAM powyżej 32 MB nie jest używany** (okno identity map, patrz wyżej).
+- **Shutdown nie pyta programów o niezapisane zmiany:** tekst niezapisany w UTEXTEDIT przepada.
 
 ## Mapa repo
 
@@ -84,7 +95,7 @@ kernel/     kernel.c (kernel_main + pętla GUI), gdt/idt/isr, scheduler, process
             selftest.c (autotest, tylko w `make selftest`),
             gui/ (WM, okna, topbar, pulpit), ui/ (dock, menu, kursor, fokus),
             app/ (rejestr aplikacji), font/ (TrueType, rasteryzer, cache, AA)
-drivers/    serial, VBE/BGA, PIC, PIT, klawiatura, mysz, ATA PIO, RTC
+drivers/    serial, VBE/BGA, PIC, PIT, klawiatura, mysz, ATA PIO, RTC, wyłączanie (ACPI)
 lib/        string.c (implementacja include/string.h)
 include/    freestanding stdint/stddef/stdbool/string/io + gemos/ (ABI userlandu)
 apps/       aplikacje jądra i launchery programów userlandu
@@ -98,9 +109,9 @@ docs/       strona GitHub Pages, audyt kodu, GEMFS.md (format dysku)
 ## Budowanie i testy
 
 - `make all` tworzy `build/gemos.img` (dyskietka) i `build/gemos-hdd.img` (dysk twardy). Wymaga `nasm` oraz `i686-elf-gcc` albo `x86_64-elf-gcc`; bez nich Makefile używa hostowego `gcc -m32`, tak jak CI.
-- `tools/smoke.sh` buduje obraz, bootuje go w QEMU bez okna, uruchamia UTERM, ABOUT i UTEXTEDIT, sprawdza log i zrzuty ekranu oraz rozmieszczenie okien (obszar roboczy, kaskada drugiego okna, przeciąganie na dock i puszczenie nad topbarem; położenie okien bierze z logu) i siatkę konsoli (10 liter różnej szerokości zajmuje dokładnie 10 komórek), a po zamknięciu QEMU sprawdza dysk danych przez `tools/mkgemfs check`. Musi skończyć się `SMOKE: PASS` przed każdym commitem. Test nie wysyła żadnego wejścia, gdy czeka na klatkę: okno ma się pojawić samo.
+- `tools/smoke.sh` buduje obraz, bootuje go w QEMU bez okna, uruchamia UTERM, ABOUT i UTEXTEDIT, sprawdza log i zrzuty ekranu oraz rozmieszczenie okien (obszar roboczy, kaskada drugiego okna, przeciąganie na dock i puszczenie nad topbarem; położenie okien bierze z logu) i siatkę konsoli (10 liter różnej szerokości zajmuje dokładnie 10 komórek), uruchamia ABOUT i USRSMOKE z File Explorera (kliknięcie nie zostawia prostokąta przeciągania), kończy się Shutdown z menu GemOS (QEMU musi zamknąć się samo z kodem 0, a log pokazać zatrzymanie GemFS przed wyłączeniem), a potem sprawdza dysk danych przez `tools/mkgemfs check`. Shutdown kończy też test edytora i stress. Musi skończyć się `SMOKE: PASS` przed każdym commitem. Test nie wysyła żadnego wejścia, gdy czeka na klatkę: okno ma się pojawić samo.
 - `tools/smoke.sh --stress [N]` (domyślnie 25 cykli) otwiera, obsługuje klawiaturą i myszą i zamyka wszystkie programy; każdy proces musi skończyć z `exit=0`, a log nie może mieć przeplecionych linii. Uruchom go po każdej zmianie schedulera, syscalli, konsoli albo pętli GUI.
-- `tools/smoke.sh --matrix` uruchamia smoke na 32/64/256 MB, bez dysku danych, z 4 MB VRAM (1280×800, `memcpy`), przy starcie z dysku twardego (dysk rozruchowy musi zostać bez zmian), z dyskiem danych bez GemFS i z uszkodzonym superblokiem (SHA-256 obrazu przed i po musi być ten sam) przy drugim starcie tego samego dysku (nic nie może się zapisać) oraz z dyskiem, który zapisuje wolno (QEMU przepuszcza 12 zapisów na sekundę). Uruchom go po każdej zmianie bootloadera, pamięci, VBE, ATA albo GemFS.
+- `tools/smoke.sh --matrix` uruchamia smoke na 32/64/256 MB, bez dysku danych, z 4 MB VRAM (1280×800, `memcpy`), przy starcie z dysku twardego (dysk rozruchowy musi zostać bez zmian), z dyskiem danych bez GemFS i z uszkodzonym superblokiem (SHA-256 obrazu przed i po musi być ten sam), przy drugim starcie tego samego dysku (nic nie może się zapisać), z dyskiem, który zapisuje wolno (QEMU przepuszcza 12 zapisów na sekundę), oraz na maszynie bez ACPI (`-machine pc,acpi=off`: Shutdown nie wyłącza QEMU, jądro staje, a ekran mówi, że można wyłączyć komputer). Uruchom go po każdej zmianie bootloadera, pamięci, VBE, ATA albo GemFS.
 - `tools/smoke.sh --selftest` buduje obraz autotestu (`make selftest`, `build/selftest/gemos.img`, jądro z `-DGEMOS_SELFTEST`) i sprawdza jego raport. `kernel/selftest.c` działa jako zadanie jądra obok GUI i sprawdza:
   - stertę i pulę: double free, nadpisany nagłówek, zapis za koniec bloku, scalanie w obie strony, brak wycieków;
   - tekst rysowany z `clip_rect` nie zmienia żadnego piksela poza nim;
@@ -110,6 +121,7 @@ docs/       strona GitHub Pages, audyt kodu, GEMFS.md (format dysku)
   - GemFS przez API jądra: katalogi, plik 100 KB z blokiem pośrednim, zastępowanie, zapis przerwany w połowie, błędy, 70 wpisów w jednym katalogu z usuwaniem, rekurencyjne usuwanie bez wycieku bloków i inode'ów;
   - odmowę zapisu ATA na drugi dysk bez GemFS (harness sprawdza potem, że się nie zmienił);
   - `FILETEST.ELF` (83 KB, uruchamiany z GemFS): plik 80 KB i plik w podkatalogu przez syscalle, odczyt `UTERM.ELF`, odmowa nadpisania programów;
+  - `/USRSMOKE.ELF` zepsuty na GemFS uruchamia się z obrazu jądra, a potem wraca na dysk bez zmian;
   - długie syscalle plikowe (`LONGIO.ELF`; autotest spowalnia wtedy każdy zapisany sektor o 2 ms, więc zapis 128 KB trwa ponad pół sekundy):
     - w trakcie zapisu zegar idzie dalej, a inne zadania i pętla GUI dostają CPU,
     - trzy procesy na dwóch plikach naraz nie widzą połowy zapisu,

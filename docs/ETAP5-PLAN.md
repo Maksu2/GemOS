@@ -109,7 +109,10 @@ Dziś każdy ruch myszy to pełna klatka: gradient tła 8,3 MB, wszystkie okna i
   - Test „ducha” kursora na drugiej stronie BGA: ruch z A do B, potem uszkodzenie gdzie indziej (menu) i dwa zrzuty.
   - Powtórzyć na wariancie macierzy `vga-4M` (ścieżka `memcpy`).
 
-## 5. Explorer i Shutdown
+## 5. Explorer i Shutdown — zrobione
+
+Explorer uruchamia `.ELF` (rozszerzenia w dowolnej wielkości liter, czerwony komunikat, gdy się nie da), a loader znajduje kopię z obrazu jądra także dla `/NAZWA.ELF`. Przy okazji: WM daje aplikacji puszczenie przycisku i ruchy myszy, więc po kliknięciu w Explorerze nie zostaje prostokąt przeciągania. Shutdown zatrzymuje GemFS i wyłącza maszynę przez ACPI (0x604, 0xB004), a bez ACPI staje z komunikatem na ekranie. `power_off()` jest w `drivers/power.c`, a nie w `kernel/power.c`, jak w planie. Testy: smoke (Explorer, Shutdown na końcu każdego trybu poza autotestem), wariant macierzy `acpi=off` (QEMU 8.2 nie reaguje wtedy na żaden z portów) i autotest (kopia z obrazu dla `/USRSMOKE.ELF`). Trwałość zapisu tuż przed Shutdown sprawdza tylko pośrednio: test edytora kończy się Shutdown i dopiero potem czyta plik na hoście.
+
 
 ### Explorer uruchamia programy
 
