@@ -392,6 +392,9 @@ void kernel_main(const boot_info_t *loader_info) {
       }
     }
 
+#ifdef GEMOS_SELFTEST
+    selftest_gui_iteration();
+#endif
     gui_wait();
   }
 }

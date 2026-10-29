@@ -438,6 +438,12 @@ int process_spawn_user_image(const char *name, const uint8_t *image,
   return process_spawn_loaded(name, NULL, image, size,
                               PROCESS_IMAGE_SOURCE_EMBEDDED);
 }
+
+int process_task_id(uint32_t pid) {
+  process_t *process = process_find_by_pid(pid);
+
+  return process != NULL ? (int)process->task_id : -1;
+}
 #endif
 
 int process_kill_pid(uint32_t pid, int32_t exit_code) {

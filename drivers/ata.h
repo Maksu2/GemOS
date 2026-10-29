@@ -50,4 +50,11 @@ int ata_write(int index, uint32_t lba, uint32_t count, const void *buf);
 /* Let ata_write() change a disk (see above). Until the next ata_init(). */
 void ata_allow_writes(int index);
 
+#ifdef GEMOS_SELFTEST
+/* Self-test: a slow disk. Every sector written takes this many more
+ * milliseconds (busy waiting, like a disk that is slow to answer); 0 ends
+ * it. */
+void ata_set_selftest_delay(uint32_t ms_per_sector);
+#endif
+
 #endif
