@@ -10,13 +10,19 @@ Plan reszty etapu 5 z [AUDIT-2026-09.md](AUDIT-2026-09.md) §8.2. Powstał z ana
 4. Render bez pełnej klatki przy ruchu myszy, potem lista uszkodzonych prostokątów.
 5. Explorer uruchamia `.ELF`; „Shutdown” działa albo znika.
 
-## 1. Przycinanie tekstu
+## 1. Przycinanie tekstu — zrobione
+
+Tekst respektuje `clip_rect` (`aa_blend_pixel`), test w autoteście. Zewnętrzny `bound_rect` przyjdzie z punktem 4.
+
 
 - `aa_blend_pixel` sprawdza tylko granice ekranu (`kernel/font/aa.c:64`), a nie `clip_rect`. Tekst może więc wyjść poza okno i zostać zamalowany przez okno wyżej dopiero przy pełnej klatce.
 - `gfx_set_clip`/`gfx_reset_clip` nadpisują przycięcie (`kernel/gfx/context.c:17-36`), a WM woła je dla każdego okna (`kernel/gui/wm/wm.c:227,243,303`). Potrzebny jest zewnętrzny `bound_rect` w kontekście, z którym obie funkcje robią część wspólną. Ten sam mechanizm posłuży potem za prostokąt uszkodzenia.
 - Test: tekst przy krawędzi okna nie zmienia pikseli poza oknem (zrzut ekranu, obszar tuż za ramką).
 
-## 2. Okna na ekranie
+## 2. Okna na ekranie — zrobione
+
+Rozmieszczanie, kaskada, ograniczenia przeciągania, puszczenie nad topbarem i maksymalizacja jak niżej; testy w smoke. Bez syscalla rozmiaru konsoli (zmiana ABI do decyzji): przy 1080p UTEXTEDIT mieści się w (120,28).
+
 
 Dziś nie ma żadnego rozmieszczania: okno otwiera się tam, gdzie wskaże wołający (`kernel/gui/window/window.c:9-31`, `kernel/gui/wm/wm.c:147-162`). Każda konsola otwiera się w (120,100) (`kernel/console.c:515`), więc kolejne leżą dokładnie na sobie.
 

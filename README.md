@@ -64,7 +64,7 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 - page flipping on the Bochs/QEMU adapter (BGA), memcpy to the framebuffer elsewhere
 - PS/2 keyboard and mouse
 - TrueType font rendering
-- window manager
+- window manager: new windows open between the topbar and the dock and cascade, dragging keeps the title bar reachable, text is clipped to its window
 - topbar, dock, menus and focus model
 - ATA PIO with IDENTIFY, timeouts and error checks; without a data disk the system runs without a file system
 - GemFS v3 on a whole disk: a superblock with a checksum, a block bitmap, inodes and directories, files up to about 4 MB. The kernel mounts only a disk with a valid superblock, never formats one and never writes to a disk it has not mounted; `tools/mkgemfs` makes and inspects disks on the host

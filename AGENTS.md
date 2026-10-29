@@ -39,10 +39,17 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
   - `UTERM.ELF`, `ABOUT.ELF` i `UTEXTEDIT.ELF` (plus `USRSMOKE.ELF` do debugowania) są wbudowane w obraz jądra. Przy starcie jądro zapisuje do GemFS, jako pliki systemowe, tylko te, których brakuje, które mają inną wersję (CRC-32 obrazu) albo nie zgadzają się z obrazem; kolejny start z tym samym jądrem nic nie zapisuje (`[PROC] Programs on GemFS: N seeded, M up to date`). Loader woli kopię z GemFS, a gdy jej nie przyjmie, bierze wbudowaną.
   - Procesy nie zmieniają programów: `SYS_file_write` zwraca `GEMOS_ERR_DENIED` dla nazw `*.ELF` (dowolna wielkość liter) i plików z flagą systemową. Sprawdza to `gemfs_write_user()` na sparsowanej nazwie i na inode, który zapis by zastąpił. Jądro (seeding, File Explorer) pisze bez tych ograniczeń.
   - Model „hosted app”: aplikacja wysyła siatkę komórek tekstowych (maks. 96×32), jądro rysuje okno. Działa najwyżej 8 takich okien naraz. Aplikacje śpią w `SYS_console_wait_event` (ABOUT z timeoutem do pełnej sekundy).
-  - `UTEXTEDIT` otwiera i zapisuje pliki tekstowe do 8 KB przez `SYS_file_read`/`SYS_file_write` (Ctrl+O, Ctrl+S, Ctrl+Shift+S; nazwa bez rozszerzenia dostaje `.txt`) i otwiera plik z `argv[1]`. Zanim straci niezapisane zmiany (Esc, Ctrl+Q, przycisk X, Ctrl+N, Ctrl+O), pyta: Y zapisz, N porzuć, Esc anuluj. Pytania rysuje w ramce nad tekstem, bo dolny wiersz okna jest poza ekranem 1080p.
+  - `UTEXTEDIT` otwiera i zapisuje pliki tekstowe do 8 KB przez `SYS_file_read`/`SYS_file_write` (Ctrl+O, Ctrl+S, Ctrl+Shift+S; nazwa bez rozszerzenia dostaje `.txt`) i otwiera plik z `argv[1]`. Zanim straci niezapisane zmiany (Esc, Ctrl+Q, przycisk X, Ctrl+N, Ctrl+O), pyta: Y zapisz, N porzuć, Esc anuluj. Pytania rysuje w ramce nad tekstem.
   - `FAULTS.ELF`, `FPUCHECK.ELF`, `FILETEST.ELF` i `LONGIO.ELF` (`userland/selftest/`) są tylko w obrazie autotestu (`make selftest`).
 - **GUI (w jądrze):**
   - Menedżer okien, topbar, dock, menu, font TrueType (Inter) z antyaliasingiem.
+  - Okna (`kernel/gui/wm/wm.c`):
+    - `wm_add_window` stawia każde nowe okno w obszarze roboczym (`wm_work_area()`: między topbarem a dockiem); za duże trzyma tam lewy górny róg,
+    - okno na rogu innego (w promieniu 8 px) przesuwa się o 24 px w dół i w prawo,
+    - przeciągane okno trzyma pasek tytułu pod topbarem i nad dockiem, a co najmniej 64 px okna zostaje na ekranie; puszczenie przycisku kończy przeciąganie także nad topbarem i dockiem (wcześniej one je połykały i okno dalej jechało za myszą),
+    - maksymalizacja wypełnia obszar roboczy,
+    - log: `[WM] Work area`, `[WM] Placed`, `[WM] Dropped` i położenie okna w `[CONSOLE] Opened` (z nich korzysta smoke).
+  - Tekst jest przycięty do `clip_rect`, jak inne prymitywy (`aa_blend_pixel`), więc nie wychodzi poza okno.
   - Skala UI (całkowita, `int ui_scale`) 2 przy 1920×1080 (współrzędne logiczne 960×540), 1 w mniejszych trybach.
   - Każda klatka przerysowuje cały ekran. Page flip przez BGA tylko po wykryciu adaptera (ID `0xB0C0`–`0xB0C5`) i przy VRAM na dwie strony; inaczej `memcpy` do framebuffera.
 - **ATA:** PIO LBA28 (`drivers/ata.c`). IDENTIFY na 4 pozycjach, każde oczekiwanie z limitem, kody błędów zamiast pętli bez końca. Limity są czasowe, mierzone stoperem na liczniku PIT (`pit_stopwatch_*`: liczy przeładowania licznika, więc działa też z IF=0, a z IF=1 bierze też ticki): 5 s na IDENTIFY, 30 s na odczyt, zapis i FLUSH CACHE. Po timeoutcie sterownik resetuje kanał (SRST), żeby następne polecenie nie przesłało złych bajtów. Każdy dysk jest tylko do odczytu, dopóki GemFS go nie zamontuje (`ata_allow_writes()`); zapis na inny dysk kończy się `ATA_ERR_READ_ONLY` i linią `[ATA] Refused …` w logu.
@@ -90,11 +97,12 @@ docs/       strona GitHub Pages, audyt kodu, GEMFS.md (format dysku)
 ## Budowanie i testy
 
 - `make all` tworzy `build/gemos.img` (dyskietka) i `build/gemos-hdd.img` (dysk twardy). Wymaga `nasm` oraz `i686-elf-gcc` albo `x86_64-elf-gcc`; bez nich Makefile używa hostowego `gcc -m32`, tak jak CI.
-- `tools/smoke.sh` buduje obraz, bootuje go w QEMU bez okna, uruchamia UTERM, ABOUT i UTEXTEDIT, sprawdza log i zrzuty ekranu, a po zamknięciu QEMU sprawdza dysk danych przez `tools/mkgemfs check`. Musi skończyć się `SMOKE: PASS` przed każdym commitem. Test nie wysyła żadnego wejścia, gdy czeka na klatkę: okno ma się pojawić samo.
+- `tools/smoke.sh` buduje obraz, bootuje go w QEMU bez okna, uruchamia UTERM, ABOUT i UTEXTEDIT, sprawdza log i zrzuty ekranu oraz rozmieszczenie okien (obszar roboczy, kaskada drugiego okna, przeciąganie na dock i puszczenie nad topbarem; położenie okien bierze z logu), a po zamknięciu QEMU sprawdza dysk danych przez `tools/mkgemfs check`. Musi skończyć się `SMOKE: PASS` przed każdym commitem. Test nie wysyła żadnego wejścia, gdy czeka na klatkę: okno ma się pojawić samo.
 - `tools/smoke.sh --stress [N]` (domyślnie 25 cykli) otwiera, obsługuje klawiaturą i myszą i zamyka wszystkie programy; każdy proces musi skończyć z `exit=0`, a log nie może mieć przeplecionych linii. Uruchom go po każdej zmianie schedulera, syscalli, konsoli albo pętli GUI.
 - `tools/smoke.sh --matrix` uruchamia smoke na 32/64/256 MB, bez dysku danych, z 4 MB VRAM (1280×800, `memcpy`), przy starcie z dysku twardego (dysk rozruchowy musi zostać bez zmian), z dyskiem danych bez GemFS i z uszkodzonym superblokiem (SHA-256 obrazu przed i po musi być ten sam) przy drugim starcie tego samego dysku (nic nie może się zapisać) oraz z dyskiem, który zapisuje wolno (QEMU przepuszcza 12 zapisów na sekundę). Uruchom go po każdej zmianie bootloadera, pamięci, VBE, ATA albo GemFS.
 - `tools/smoke.sh --selftest` buduje obraz autotestu (`make selftest`, `build/selftest/gemos.img`, jądro z `-DGEMOS_SELFTEST`) i sprawdza jego raport. `kernel/selftest.c` działa jako zadanie jądra obok GUI i sprawdza:
   - stertę i pulę: double free, nadpisany nagłówek, zapis za koniec bloku, scalanie w obie strony, brak wycieków;
+  - tekst rysowany z `clip_rect` nie zmienia żadnego piksela poza nim;
   - odrzucanie 14 zepsutych ELF-ów bez wycieku pamięci i ramek;
   - każdy wyjątek osiągalny z Ring 3 (`FAULTS.ELF`, jeden proces na wyjątek): ginie tylko ten proces;
   - stan x87/SSE dwóch kopii `FPUCHECK.ELF` i zadania jądra przez przełączenia;
