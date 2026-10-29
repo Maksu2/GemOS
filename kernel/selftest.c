@@ -7,6 +7,7 @@
  *   - the heap and the small-object pool detect a double free, an
  *     overwritten block header and a write past the end of a block, and
  *     freed heap blocks merge with their free neighbours on both sides;
+ *   - text drawn with a clip rectangle changes no pixel outside it;
  *   - malformed ELF images are rejected without leaking memory;
  *   - GemFS: directories, a 100 KB file, replacing and deleting, errors, a
  *     write that fails part way, many entries in one directory; the ATA
@@ -32,6 +33,8 @@
 #include "selftest.h"
 
 #include "fs/gemfs.h"
+#include "gfx/context.h"
+#include "gfx/font/font.h"
 #include "include/heap.h"
 #include "memory/kstack.h"
 #include "memory/paging.h"
@@ -296,6 +299,52 @@ static void selftest_pool(void) {
 
   heap_set_report_mode(0);
   kfree(memory);
+}
+
+/* -- graphics --------------------------------------------------------------- */
+
+/* Text drawn with a clip rectangle changes no pixel outside it: a window's
+ * text must not spill over its frame or other windows. */
+static void selftest_text_clip(void) {
+  enum { WIDTH = 200, HEIGHT = 60 };
+  const uint32_t background = 0x00123456;
+  uint32_t *pixels = (uint32_t *)kalloc(WIDTH * HEIGHT * sizeof(uint32_t));
+  uint32_t inside = 0;
+  uint32_t outside = 0;
+  gfx_context_t ctx;
+  rect_t clip;
+
+  if (pixels == NULL) {
+    selftest_check(0, "gfx: text stays inside the clip rectangle (no memory)");
+    return;
+  }
+  for (uint32_t i = 0; i < WIDTH * HEIGHT; ++i) {
+    pixels[i] = background;
+  }
+  gfx_init_context(&ctx, pixels, WIDTH, HEIGHT, WIDTH * 4, 32);
+  gfx_set_clip(&ctx, 10, 5, 40, 15); /* logical, scaled by ui_scale */
+  clip = ctx.clip_rect;
+  /* far wider and taller than the clip, starting above and left of it */
+  font_draw_text(&ctx, 0, 0, "WWWWWWWWWWWWWWWW", 14, 0xFFFFFF);
+  for (int y = 0; y < HEIGHT; ++y) {
+    for (int x = 0; x < WIDTH; ++x) {
+      if (pixels[y * WIDTH + x] == background) {
+        continue;
+      }
+      if (rect_contains(&clip, x, y)) {
+        inside++;
+      } else {
+        outside++;
+      }
+    }
+  }
+  kfree(pixels);
+  selftest_begin(inside > 0 && outside == 0,
+                 "gfx: text stays inside the clip rectangle (");
+  serial_print_dec(inside);
+  serial_print(" pixels inside, ");
+  serial_print_dec(outside);
+  serial_print(" outside)\n");
 }
 
 /* -- ELF loader --------------------------------------------------------------- */
@@ -1247,6 +1296,7 @@ static void selftest_main(void) {
   serial_print("[SELFTEST] Start\n");
   selftest_heap();
   selftest_pool();
+  selftest_text_clip();
   selftest_elf();
   selftest_fs();
 

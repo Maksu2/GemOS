@@ -60,8 +60,12 @@ static inline uint8_t mix_channel_gamma(uint8_t bg, uint8_t fg, uint8_t a) {
 
 void aa_blend_pixel(gfx_context_t *ctx, int x, int y, uint32_t color,
                     uint8_t alpha) {
-  /* Clipping */
-  if (x < 0 || y < 0 || (uint32_t)x >= ctx->width || (uint32_t)y >= ctx->height)
+  const rect_t *clip = &ctx->clip_rect;
+
+  /* Text stays inside the clip rectangle, like every other primitive; it
+   * is never larger than the screen (gfx_set_clip). */
+  if (x < clip->x || y < clip->y || x >= clip->x + clip->w ||
+      y >= clip->y + clip->h)
     return;
 
   /* Optimized cases */
