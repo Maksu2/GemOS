@@ -37,15 +37,22 @@ static uint16_t pit_read_count(void) {
 void pit_stopwatch_start(pit_stopwatch_t *watch) {
   watch->last = pit_read_count();
   watch->reloads = 0;
+  watch->start_tick = timer_get_ticks();
 }
 
 uint32_t pit_stopwatch_ms(pit_stopwatch_t *watch) {
   uint16_t now = pit_read_count();
+  uint64_t ticks = timer_get_ticks() - watch->start_tick;
 
   if (now > watch->last) {
     watch->reloads++; /* it counts down, so it went up: a reload */
   }
   watch->last = now;
+  /* the ticks stand still with interrupts off, the reloads miss some when
+   * an interrupt handler keeps the caller away from the counter */
+  if (ticks > watch->reloads / 2U) {
+    return (uint32_t)ticks;
+  }
   return watch->reloads / 2U;
 }
 
