@@ -101,7 +101,7 @@ KERNEL_C_SOURCES := kernel/kernel.c kernel/console.c kernel/gdt.c kernel/idt.c \
                     apps/textedit/textedit.c apps/textedit/inputbox.c \
                     apps/textedit/filepicker.c apps/textedit/utextedit_launcher.c \
                     apps/explorer/explorer.c \
-                    kernel/fs/gemfs.c \
+                    kernel/fs/gemfs.c kernel/fs/crc32.c \
                     kernel/font/aa.c kernel/font/truetype.c kernel/font/scanline.c \
                     kernel/font/font_cache.c kernel/font/font_mem.c
 
@@ -153,8 +153,11 @@ USRSMOKE_OBJ := $(call obj,$(USRSMOKE_SOURCE))
 UTERM_OBJS := $(call obj,$(UTERM_SOURCES))
 ABOUT_OBJS := $(call obj,$(ABOUT_SOURCES))
 UTEXTEDIT_OBJS := $(call obj,$(UTEXTEDIT_SOURCES))
+FILETEST_OBJS := $(call obj,$(USERLAND_DIR)/selftest/filetest.c \
+                            $(USERLAND_DIR)/selftest/filetest_data.S)
 SELFTEST_USER_OBJS := $(call obj,$(USERLAND_DIR)/selftest/faults.S \
-                                 $(USERLAND_DIR)/selftest/fpucheck.S)
+                                 $(USERLAND_DIR)/selftest/fpucheck.S) \
+                      $(FILETEST_OBJS)
 USER_OBJS := $(USER_CRT0_OBJ) $(USRSMOKE_OBJ) $(UTERM_OBJS) $(ABOUT_OBJS) \
              $(UTEXTEDIT_OBJS)
 ifeq ($(SELFTEST),1)
@@ -170,7 +173,8 @@ USER_BLOBS := $(OBJ_DIR)/blobs/usrsmoke.elf.o \
               $(OBJ_DIR)/blobs/about_image.bin.o \
               $(OBJ_DIR)/blobs/utextedit_image.bin.o
 ifeq ($(SELFTEST),1)
-    USER_BLOBS += $(OBJ_DIR)/blobs/faults.elf.o $(OBJ_DIR)/blobs/fpucheck.elf.o
+    USER_BLOBS += $(OBJ_DIR)/blobs/faults.elf.o $(OBJ_DIR)/blobs/fpucheck.elf.o \
+                  $(OBJ_DIR)/blobs/filetest.elf.o
 endif
 BLOB_OBJS := $(FONT_BLOB) $(USER_BLOBS)
 
@@ -220,8 +224,8 @@ $(OBJ_DIR)/%.o: %.S Makefile
 
 # Userland programs. -n: no page padding in the file. The data segment
 # starts on its own page in memory, but in the file it follows the code
-# directly (the loader copies each segment to its address), so programs
-# stay within the 8 KB limit.
+# directly (the loader copies each segment to its address), which keeps
+# programs small.
 define link-user
 	$(LD) -m elf_i386 -n -T $(USER_LDSCRIPT) -nostdlib $(filter %.o,$^) -o $@
 	$(OBJCOPY) --strip-all $@
@@ -246,6 +250,9 @@ $(BUILD_DIR)/faults.elf: $(OBJ_DIR)/$(USERLAND_DIR)/selftest/faults.o $(USER_LDS
 	$(link-user)
 
 $(BUILD_DIR)/fpucheck.elf: $(OBJ_DIR)/$(USERLAND_DIR)/selftest/fpucheck.o $(USER_LDSCRIPT)
+	$(link-user)
+
+$(BUILD_DIR)/filetest.elf: $(USER_CRT0_OBJ) $(FILETEST_OBJS) $(USER_LDSCRIPT)
 	$(link-user)
 
 # Blobs. The font is converted from inside assets/ so its symbols stay
@@ -311,8 +318,8 @@ $(OS_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
 
 # Bootable hard disk image (16 MB) with the floppy's layout: stage 1 in the
 # MBR, stage 2 in sectors 1-32, the kernel from sector 33. Both stages read
-# it with the INT 13h extensions (LBA). GemFS never uses a disk with a boot
-# signature, so the data disk goes second.
+# it with the INT 13h extensions (LBA). GemFS mounts only a disk with its
+# own superblock, so it never writes to this one; the data disk goes second.
 HDD_SECTORS := 32768
 
 $(HDD_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
@@ -325,10 +332,11 @@ $(HDD_IMAGE): $(BOOT_STAGE1) $(BOOT_STAGE2) $(KERNEL_BIN)
 	@mv $@.tmp $@
 	@echo "Hard disk image created: $@"
 
-# GemFS data disk (10MB). Created once and kept between runs.
+# GemFS data disk (10 MB), made by tools/mkgemfs when it does not exist and
+# kept between runs. The kernel never formats a disk: an old or foreign
+# data.img is not mounted until "tools/mkgemfs format --force" remakes it.
 $(DATA_IMAGE): | $(BUILD_DIR)
-	@echo "Creating data image..."
-	dd if=/dev/zero of=$@ bs=1M count=10 2>/dev/null
+	tools/mkgemfs format $@ --size 10M
 
 # Run in QEMU
 run: $(OS_IMAGE) $(DATA_IMAGE)

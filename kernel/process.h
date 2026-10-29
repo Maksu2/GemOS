@@ -43,10 +43,12 @@ typedef struct process {
 } process_t;
 
 void process_init(void);
+/* Put the programs of the kernel image on GemFS where they are missing or
+ * out of date; 1 if all of them are there afterwards. */
 int process_seed_userland(void);
 int process_spawn_user_from_file(const char *name);
 #ifdef GEMOS_SELFTEST
-/* Start a program from an ELF image in memory (at most 8 KB). */
+/* Start a program from an ELF image in memory. */
 int process_spawn_user_image(const char *name, const uint8_t *image,
                              size_t size);
 #endif

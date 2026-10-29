@@ -6,8 +6,13 @@
 /*
  * ATA PIO driver (LBA28). ata_init() probes the four legacy positions
  * (primary/secondary channel, master/slave) with IDENTIFY. Every wait on
- * the controller is bounded, so a missing or broken disk returns an error
- * instead of hanging the kernel.
+ * the controller is bounded (5 s for IDENTIFY, 30 s for a read, a write or
+ * a cache flush, timed with the PIT), so a missing or broken disk returns
+ * an error instead of hanging the kernel.
+ *
+ * Every disk starts read-only. Writes to a disk are refused until
+ * ata_allow_writes() is called for it, which only GemFS does, for the disk
+ * it has mounted: a disk without a GemFS signature is never written.
  */
 
 #define ATA_MAX_DEVICES 4
@@ -18,6 +23,7 @@ enum {
   ATA_ERR_RANGE = -2,     /* LBA or count outside the disk */
   ATA_ERR_TIMEOUT = -3,   /* the controller stayed busy */
   ATA_ERR_DEVICE = -4,    /* the disk reported ERR or DF */
+  ATA_ERR_READ_ONLY = -5, /* writes to that disk are not allowed */
 };
 
 typedef struct {
@@ -40,5 +46,8 @@ const ata_device_t *ata_get_device(int index);
  * code. */
 int ata_read(int index, uint32_t lba, uint32_t count, void *buf);
 int ata_write(int index, uint32_t lba, uint32_t count, const void *buf);
+
+/* Let ata_write() change a disk (see above). Until the next ata_init(). */
+void ata_allow_writes(int index);
 
 #endif

@@ -8,6 +8,7 @@
 #include "../../kernel/include/heap.h"
 #include "../../kernel/gfx/icons.h"
 #include <stddef.h>
+#include <string.h>
 
 #define GRID_COLS 5
 #define GRID_CELL_W 80
@@ -15,10 +16,19 @@
 #define ICON_SIZE 32
 #define TOP_BAR_H 30
 
+#define EXPLORER_MAX_ENTRIES 60
+
 static app_t explorer_app;
-static int current_folder_id = -1; /* -1 = Root */
-static int selected_id = -1;
+static char current_path[GEMFS_PATH_MAX] = "/";
+static int selected_id = -1; /* index into entries[] */
 static int hover_id = -1;
+
+/* The shown folder, reread when the file system changes */
+static gemfs_entry_t entries[EXPLORER_MAX_ENTRIES];
+static int entry_count;
+static char listed_path[GEMFS_PATH_MAX];
+static uint32_t listed_generation;
+static bool listed;
 
 /* Drag State */
 static int drag_src_id = -1;
@@ -56,6 +66,53 @@ static bool strends(const char *str, const char *suffix) {
   return true;
 }
 
+/* dir + "/" + name into out; 0 if it does not fit */
+static bool explorer_join(char out[GEMFS_PATH_MAX], const char *dir,
+                          const char *name) {
+  size_t dir_length = strlen(dir);
+  size_t name_length = strlen(name);
+  bool root = dir_length == 1 && dir[0] == '/';
+
+  if (dir_length + name_length + (root ? 0 : 1) >= GEMFS_PATH_MAX) {
+    return false;
+  }
+  strcpy(out, dir);
+  if (!root) {
+    strcat(out, "/");
+  }
+  strcat(out, name);
+  return true;
+}
+
+static void explorer_collect(void *ctx, const gemfs_entry_t *entry) {
+  (void)ctx;
+  if (entry_count < EXPLORER_MAX_ENTRIES) {
+    entries[entry_count++] = *entry;
+  }
+}
+
+static void explorer_refresh(void) {
+  if (listed && listed_generation == gemfs_generation() &&
+      strcmp(listed_path, current_path) == 0) {
+    return;
+  }
+  entry_count = 0;
+  if (gemfs_list(current_path, explorer_collect, NULL) < 0 &&
+      strcmp(current_path, "/") != 0) {
+    /* the folder is gone: back to the root */
+    strcpy(current_path, "/");
+    entry_count = 0;
+    (void)gemfs_list(current_path, explorer_collect, NULL);
+  }
+  if (!listed || strcmp(listed_path, current_path) != 0) {
+    selected_id = -1;
+    hover_id = -1;
+  }
+  strcpy(listed_path, current_path);
+  listed_generation = gemfs_generation();
+  listed = true;
+}
+
 static void explorer_render(window_t *win) {
   int ox = win->client_rect.x;
   int oy = win->client_rect.y;
@@ -76,33 +133,21 @@ static void explorer_render(window_t *win) {
   font_draw_text(&win->ctx, ox + 60, oy + 8, "New Folder", 12, COL_TEXT);
 
   /* Path/Status */
-  if (current_folder_id == -1) {
-    font_draw_text(&win->ctx, ox + 150, oy + 8, "Root", 12, 0x404040);
-  } else {
-    // Show parent name? Simplify for now
-    font_draw_text(&win->ctx, ox + 150, oy + 8, "Folder...", 12, 0x404040);
-  }
+  explorer_refresh();
+  font_draw_text(&win->ctx, ox + 150, oy + 8,
+                 gemfs_available() ? current_path : "No file system", 12,
+                 0x404040);
 
   /* Grid Area */
   int start_y = oy + TOP_BAR_H + 10;
   int start_x = ox + 10;
 
-  /* int count = gemfs_count(); */
-  int grid_idx = 0;
-
-  for (int i = 0; i < 64; i++) { /* using raw max constant */
-    const char *name = gemfs_get_name(i);
-    if (!name)
-      continue;
-
-    /* Filter by Parent */
-    int8_t pid = gemfs_get_parent(i);
-    if (pid != (int8_t)current_folder_id)
-      continue;
+  for (int i = 0; i < entry_count; i++) {
+    const char *name = entries[i].name;
 
     /* Calculate Grid Pos */
-    int col = grid_idx % GRID_COLS;
-    int row = grid_idx / GRID_COLS;
+    int col = i % GRID_COLS;
+    int row = i / GRID_COLS;
     int x = start_x + col * GRID_CELL_W;
     int y = start_y + row * GRID_CELL_H;
 
@@ -114,7 +159,7 @@ static void explorer_render(window_t *win) {
 
     /* Icon - select based on type and extension */
     const icon_t *file_icon;
-    if (gemfs_get_type(i) == GEMFS_TYPE_DIR) {
+    if (entries[i].type == GEMFS_TYPE_DIR) {
       file_icon = &icon_folder;
     } else if (strends(name, ".gemtext") || strends(name, ".txt")) {
       file_icon = &icon_textfile;
@@ -125,8 +170,6 @@ static void explorer_render(window_t *win) {
 
     /* Name (Turncate to fit?) */
     font_draw_text(&win->ctx, x + 5, y + 42, name, 10, COL_TEXT);
-
-    grid_idx++;
   }
 
   /* Drag Overlay */
@@ -149,17 +192,10 @@ static int explorer_hit_test(window_t *win, int mx, int my) {
   int start_y = win->client_rect.y + TOP_BAR_H + 10;
   int start_x = win->client_rect.x + 10;
 
-  int grid_idx = 0;
-  for (int i = 0; i < 64; i++) {
-    const char *name = gemfs_get_name(i);
-    if (!name)
-      continue;
-    int8_t pid = gemfs_get_parent(i);
-    if (pid != (int8_t)current_folder_id)
-      continue;
-
-    int col = grid_idx % GRID_COLS;
-    int row = grid_idx / GRID_COLS;
+  explorer_refresh();
+  for (int i = 0; i < entry_count; i++) {
+    int col = i % GRID_COLS;
+    int row = i / GRID_COLS;
     int x = start_x + col * GRID_CELL_W;
     int y = start_y + row * GRID_CELL_H;
 
@@ -167,7 +203,6 @@ static int explorer_hit_test(window_t *win, int mx, int my) {
         my < y + GRID_CELL_H - 5) {
       return i;
     }
-    grid_idx++;
   }
   return -1;
 }
@@ -193,13 +228,19 @@ static void explorer_handle_event(window_t *win, event_t *ev) {
     int ry = my - win->client_rect.y;
     if (ry < TOP_BAR_H && ry > 0) {
       if (rx > 5 && rx < 45) { /* UP */
-        if (current_folder_id != -1) {
-          /* Go to the parent of the current folder */
-          current_folder_id = gemfs_get_parent(current_folder_id);
-          selected_id = -1;
+        char *slash = strrchr(current_path, '/');
+
+        if (slash != NULL && slash != current_path) {
+          *slash = '\0'; /* "/a/b" -> "/a" */
+        } else {
+          strcpy(current_path, "/");
         }
       } else if (rx > 55 && rx < 135) { /* New Folder */
-        gemfs_create_dir(current_folder_id, "New Folder");
+        char path[GEMFS_PATH_MAX];
+
+        if (explorer_join(path, current_path, "New Folder")) {
+          (void)gemfs_mkdir(path);
+        }
       }
       return;
     }
@@ -212,18 +253,17 @@ static void explorer_handle_event(window_t *win, event_t *ev) {
     if (id >= 0) {
       if (selected_id == id) {
         /* OPEN */
-        uint8_t type = gemfs_get_type(id);
-        if (type == GEMFS_TYPE_DIR) {
-          current_folder_id = id;
-          selected_id = -1;
-        } else {
+        char path[GEMFS_PATH_MAX];
+        const char *name = entries[id].name;
+
+        if (!explorer_join(path, current_path, name)) {
+          return;
+        }
+        if (entries[id].type == GEMFS_TYPE_DIR) {
+          strcpy(current_path, path);
+        } else if (strends(name, ".gemtext") || strends(name, ".txt")) {
           /* FILE ASSOCIATION */
-          const char *name = gemfs_get_name(id);
-          if (strends(name, ".gemtext")) {
-            app_open_with_file("Text Editor", name);
-          } else if (strends(name, ".txt")) {
-            app_open_with_file("Text Editor", name);
-          }
+          app_open_with_file("Text Editor", path);
         }
       } else {
         selected_id = id;
@@ -241,7 +281,7 @@ static void explorer_handle_event(window_t *win, event_t *ev) {
     if (is_dragging) {
       int target_id =
           explorer_hit_test(win, ev->data.mouse.x, ev->data.mouse.y);
-      if (target_id >= 0 && gemfs_get_type(target_id) == GEMFS_TYPE_DIR &&
+      if (target_id >= 0 && entries[target_id].type == GEMFS_TYPE_DIR &&
           target_id != drag_src_id) {
         /* MOVE drag_src_id to target_id */
         /* Need gemfs_move(src, dest_parent) - NOT IMPLEMENTED API yet.

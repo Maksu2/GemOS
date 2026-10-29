@@ -8,6 +8,12 @@
  *     overwritten block header and a write past the end of a block, and
  *     freed heap blocks merge with their free neighbours on both sides;
  *   - malformed ELF images are rejected without leaking memory;
+ *   - GemFS: directories, a 100 KB file, replacing and deleting, errors, a
+ *     write that fails part way, many entries in one directory; the ATA
+ *     driver refuses writes to a disk GemFS did not mount; FILETEST.ELF
+ *     (over 64 KB, started from GemFS) uses the file syscalls and may not
+ *     change programs; files written on the first boot of a disk are
+ *     checked on the next one (the harness boots twice);
  *   - every exception a Ring 3 program can raise ends only that program
  *     (FAULTS.ELF), while two FPUCHECK.ELF copies and this task keep their
  *     own FPU state;
@@ -19,12 +25,14 @@
  */
 #include "selftest.h"
 
+#include "fs/gemfs.h"
 #include "include/heap.h"
 #include "memory/kstack.h"
 #include "memory/paging.h"
 #include "memory/pool.h"
 #include "process.h"
 #include "scheduler.h"
+#include "../drivers/ata.h"
 #include "../drivers/pit.h"
 #include "../drivers/serial.h"
 #include <gemos/selftest_abi.h>
@@ -34,6 +42,10 @@ extern uint8_t _binary_faults_elf_start[];
 extern uint8_t _binary_faults_elf_end[];
 extern uint8_t _binary_fpucheck_elf_start[];
 extern uint8_t _binary_fpucheck_elf_end[];
+extern uint8_t _binary_filetest_elf_start[];
+extern uint8_t _binary_filetest_elf_end[];
+extern uint8_t _binary_uterm_image_bin_start[];
+extern uint8_t _binary_uterm_image_bin_end[];
 
 /* More than the self-test starts processes (about 20), so no record is
  * overwritten before the test waiting for it reads it. */
@@ -379,6 +391,400 @@ static void selftest_elf(void) {
                  "elf: the unmodified image loads and runs");
 }
 
+/* -- GemFS --------------------------------------------------------------------- */
+
+#define FS_BIG_SIZE (100U * 1024U) /* 25 blocks: 12 direct, 13 indirect */
+#define FS_MANY 70U                /* two directory blocks of 64 entries */
+#define PERSIST_NOTE "/persist/a/b/note.txt"
+#define PERSIST_TEXT "Written by the GemOS self-test; the next boot reads it.\n"
+
+static gemfs_entry_t listed_entry;
+
+static void selftest_keep_entry(void *ctx, const gemfs_entry_t *entry) {
+  (void)ctx;
+  listed_entry = *entry;
+}
+
+static int selftest_memory_source(void *ctx, uint32_t offset, void *dst,
+                                  uint32_t len) {
+  memcpy(dst, (const uint8_t *)ctx + offset, len);
+  return 0;
+}
+
+/* Gives up on the third block of a write. */
+static int selftest_failing_source(void *ctx, uint32_t offset, void *dst,
+                                   uint32_t len) {
+  (void)ctx;
+  memset(dst, 0xEE, len);
+  return offset >= 2U * GEMFS_BLOCK_SIZE;
+}
+
+/* Every directory of path, like mkdir -p. */
+static int selftest_mkdirs(const char *path) {
+  char partial[GEMFS_PATH_MAX];
+  size_t length = strlen(path);
+
+  if (length >= sizeof(partial)) {
+    return 0;
+  }
+  for (size_t i = 1; i <= length; ++i) {
+    if (path[i] == '/' || path[i] == '\0') {
+      int result;
+
+      memcpy(partial, path, i);
+      partial[i] = '\0';
+      result = gemfs_mkdir(partial);
+      if (result != GEMFS_OK && result != GEMFS_ERR_EXIST) {
+        return 0;
+      }
+    }
+  }
+  return 1;
+}
+
+/* The file is exactly size bytes of data (NULL: the FILETEST table). */
+static int selftest_file_is(const char *path, const uint8_t *data,
+                            uint32_t size) {
+  static uint8_t chunk[GEMFS_BLOCK_SIZE];
+  gemfs_stat_t stat;
+
+  if (gemfs_stat(path, &stat) != GEMFS_OK || stat.type != GEMFS_TYPE_FILE ||
+      stat.size != size) {
+    return 0;
+  }
+  for (uint32_t offset = 0; offset < size; offset += GEMFS_BLOCK_SIZE) {
+    uint32_t length = size - offset < GEMFS_BLOCK_SIZE ? size - offset
+                                                        : GEMFS_BLOCK_SIZE;
+
+    if (gemfs_read(stat.inode, offset, chunk, length) != (int)length) {
+      return 0;
+    }
+    for (uint32_t i = 0; i < length; ++i) {
+      uint32_t at = offset + i;
+
+      if (chunk[i] != (data != NULL ? data[at]
+                                    : (uint8_t)GEMOS_FILETEST_BYTE(at))) {
+        return 0;
+      }
+    }
+  }
+  return 1;
+}
+
+/* The first boot of a disk writes a file; the harness boots it again and
+ * this checks that file and the ones FILETEST.ELF wrote. */
+static void selftest_fs_persist(void) {
+  static const char text[] = PERSIST_TEXT;
+  static const char note[] = GEMOS_FILETEST_NOTE_TEXT;
+  gemfs_stat_t stat;
+
+  if (gemfs_stat(PERSIST_NOTE, &stat) == GEMFS_OK) {
+    selftest_check(selftest_file_is(PERSIST_NOTE, (const uint8_t *)text,
+                                    sizeof(text) - 1U),
+                   "fs: after a reboot, " PERSIST_NOTE " (from the kernel) "
+                   "is intact");
+    selftest_check(selftest_file_is(GEMOS_FILETEST_BIG, NULL,
+                                    GEMOS_FILETEST_SIZE) &&
+                       selftest_file_is(GEMOS_FILETEST_NOTE,
+                                        (const uint8_t *)note,
+                                        sizeof(note) - 1U),
+                   "fs: after a reboot, the files FILETEST.ELF wrote are "
+                   "intact");
+    return;
+  }
+  selftest_check(selftest_mkdirs("/persist/a/b") &&
+                     gemfs_write(PERSIST_NOTE, text, sizeof(text) - 1U, 0,
+                                 0) == (int)(sizeof(text) - 1U),
+                 "fs: wrote " PERSIST_NOTE " for the next boot to check");
+}
+
+static int selftest_fs_names(uint8_t *big, uint8_t *back) {
+  char path[GEMFS_PATH_MAX + 8];
+  gemfs_stat_t stat;
+
+  /* a 56-byte name, and a path of GEMFS_PATH_MAX bytes */
+  strcpy(path, "/selftest/");
+  memset(path + 10, 'n', 56);
+  path[66] = '\0';
+  if (gemfs_write(path, big, 10, 0, 0) != GEMFS_ERR_NAME) {
+    return 0;
+  }
+  memset(path, 'p', GEMFS_PATH_MAX);
+  path[0] = '/';
+  path[GEMFS_PATH_MAX] = '\0';
+  if (gemfs_stat(path, &stat) != GEMFS_ERR_NAME) {
+    return 0;
+  }
+  return gemfs_write("/selftest/a", big, 10, 0, 0) == GEMFS_ERR_ISDIR &&
+         gemfs_stat("/selftest/a", &stat) == GEMFS_OK &&
+         gemfs_read(stat.inode, 0, back, 10) == GEMFS_ERR_ISDIR &&
+         gemfs_stat("/selftest/none", &stat) == GEMFS_ERR_NOENT &&
+         gemfs_write("/selftest/a/b/big.bin/x", big, 10, 0, 0) ==
+             GEMFS_ERR_NOTDIR &&
+         gemfs_stat("/selftest/../selftest", &stat) == GEMFS_ERR_NAME &&
+         gemfs_write("/selftest//x", big, 10, 0, 0) == GEMFS_ERR_NAME &&
+         gemfs_write("/selftest/huge", big, GEMFS_MAX_FILE_SIZE + 1U, 0, 0) ==
+             GEMFS_ERR_TOOBIG &&
+         gemfs_delete("/") == GEMFS_ERR_NAME;
+}
+
+/* FS_MANY files, three deleted and two written again into the gaps: the
+ * others must all still be there. */
+static int selftest_fs_many(void) {
+  char path[32];
+  uint32_t value;
+  gemfs_stat_t stat;
+  int ok = gemfs_mkdir("/selftest/many") == GEMFS_OK;
+
+  for (uint32_t i = 0; i < FS_MANY && ok; ++i) {
+    strcpy(path, "/selftest/many/f00");
+    path[16] = (char)('0' + i / 10U);
+    path[17] = (char)('0' + i % 10U);
+    ok = gemfs_write(path, &i, sizeof(i), 0, 0) == (int)sizeof(i);
+  }
+  ok = ok && gemfs_list("/selftest/many", NULL, NULL) == (int)FS_MANY &&
+       gemfs_delete("/selftest/many/f03") == GEMFS_OK &&
+       gemfs_delete("/selftest/many/f63") == GEMFS_OK &&
+       gemfs_delete("/selftest/many/f64") == GEMFS_OK &&
+       gemfs_list("/selftest/many", NULL, NULL) == (int)FS_MANY - 3 &&
+       gemfs_write("/selftest/many/f03", "\x03\0\0\0", 4, 0, 0) == 4 &&
+       gemfs_write("/selftest/many/f63", "\x3F\0\0\0", 4, 0, 0) == 4;
+  for (uint32_t i = 0; i < FS_MANY && ok; ++i) {
+    strcpy(path, "/selftest/many/f00");
+    path[16] = (char)('0' + i / 10U);
+    path[17] = (char)('0' + i % 10U);
+    if (i == 64U) {
+      ok = gemfs_stat(path, &stat) == GEMFS_ERR_NOENT;
+      continue;
+    }
+    ok = gemfs_stat(path, &stat) == GEMFS_OK &&
+         gemfs_read(stat.inode, 0, &value, sizeof(value)) ==
+             (int)sizeof(value) &&
+         value == i;
+  }
+  return ok && gemfs_list("/selftest/many", NULL, NULL) == (int)FS_MANY - 1;
+}
+
+static void selftest_fs_api(void) {
+  gemfs_usage_t before, with_dirs, after, now;
+  gemfs_stat_t stat;
+  uint8_t *big = (uint8_t *)kalloc(FS_BIG_SIZE);
+  uint8_t *back = (uint8_t *)kalloc(FS_BIG_SIZE);
+  int ok;
+
+  if (!selftest_check(big != NULL && back != NULL,
+                      "fs: memory for the file tests")) {
+    kfree(big);
+    kfree(back);
+    return;
+  }
+  for (uint32_t i = 0; i < FS_BIG_SIZE; ++i) {
+    big[i] = (uint8_t)(i * 7U + (i >> 12));
+  }
+  (void)gemfs_delete("/selftest"); /* left over from a failed run */
+  (void)gemfs_usage(&before);
+
+  ok = gemfs_mkdir("/selftest") == GEMFS_OK &&
+       gemfs_mkdir("/selftest/a") == GEMFS_OK &&
+       gemfs_mkdir("/selftest/a/b") == GEMFS_OK &&
+       gemfs_stat("/selftest/a/b", &stat) == GEMFS_OK &&
+       stat.type == GEMFS_TYPE_DIR;
+  selftest_check(ok, "fs: mkdir /selftest, /selftest/a, /selftest/a/b");
+  selftest_check(gemfs_mkdir("/selftest/a") == GEMFS_ERR_EXIST &&
+                     gemfs_mkdir("/selftest/x/y") == GEMFS_ERR_NOENT,
+                 "fs: mkdir of a taken name or in a missing directory fails");
+  (void)gemfs_usage(&with_dirs);
+
+  ok = gemfs_write("/selftest/a/b/big.bin", big, FS_BIG_SIZE, 0, 0) ==
+           (int)FS_BIG_SIZE &&
+       gemfs_stat("/selftest/a/b/big.bin", &stat) == GEMFS_OK &&
+       stat.size == FS_BIG_SIZE &&
+       gemfs_read(stat.inode, 0, back, FS_BIG_SIZE) == (int)FS_BIG_SIZE &&
+       memcmp(big, back, FS_BIG_SIZE) == 0;
+  /* reads across a block, across the last direct block, past the end */
+  ok = ok && gemfs_read(stat.inode, 4090U, back, 20) == 20 &&
+       memcmp(big + 4090U, back, 20) == 0 &&
+       gemfs_read(stat.inode, 12U * GEMFS_BLOCK_SIZE - 5U, back, 10) == 10 &&
+       memcmp(big + 12U * GEMFS_BLOCK_SIZE - 5U, back, 10) == 0 &&
+       gemfs_read(stat.inode, FS_BIG_SIZE - 3U, back, 10) == 3 &&
+       gemfs_read(stat.inode, FS_BIG_SIZE, back, 10) == 0;
+  (void)gemfs_usage(&after);
+  /* 25 data blocks, the indirect block, and the first block of the empty
+   * directory /selftest/a/b */
+  selftest_check(ok && with_dirs.free_blocks - after.free_blocks == 27U &&
+                     with_dirs.free_inodes - after.free_inodes == 1U,
+                 "fs: a 100 KB file in /selftest/a/b reads back and takes 25 "
+                 "data blocks, the indirect one and a directory block");
+
+  ok = gemfs_write("/selftest/a/b/big.bin", big + 1, 5000, 0, 0) == 5000 &&
+       gemfs_stat("/selftest/a/b/big.bin", &stat) == GEMFS_OK &&
+       stat.size == 5000 &&
+       gemfs_read(stat.inode, 0, back, FS_BIG_SIZE) == 5000 &&
+       memcmp(big + 1, back, 5000) == 0;
+  (void)gemfs_usage(&after);
+  selftest_check(ok && with_dirs.free_blocks - after.free_blocks == 3U &&
+                     with_dirs.free_inodes - after.free_inodes == 1U,
+                 "fs: replacing it with 5000 bytes frees the old blocks");
+
+  ok = gemfs_write_from("/selftest/a/b/big.bin", 10000,
+                        selftest_failing_source, NULL, 0, 0) ==
+           GEMFS_ERR_SOURCE &&
+       gemfs_stat("/selftest/a/b/big.bin", &stat) == GEMFS_OK &&
+       stat.size == 5000 &&
+       gemfs_read(stat.inode, 0, back, FS_BIG_SIZE) == 5000 &&
+       memcmp(big + 1, back, 5000) == 0;
+  (void)gemfs_usage(&now);
+  selftest_check(ok && now.free_blocks == after.free_blocks &&
+                     now.free_inodes == after.free_inodes,
+                 "fs: a write that fails part way keeps the old contents "
+                 "and gives its blocks back");
+
+  ok = gemfs_list("/selftest/a", selftest_keep_entry, NULL) == 1 &&
+       strcmp(listed_entry.name, "b") == 0 &&
+       listed_entry.type == GEMFS_TYPE_DIR &&
+       gemfs_list("/selftest/a/b", selftest_keep_entry, NULL) == 1 &&
+       strcmp(listed_entry.name, "big.bin") == 0 &&
+       listed_entry.type == GEMFS_TYPE_FILE;
+  selftest_check(ok, "fs: listing /selftest/a and /selftest/a/b");
+
+  selftest_check(selftest_fs_names(big, back),
+                 "fs: errors for a directory, a missing file, a file used as "
+                 "a directory, bad names, a file over 4 MB, the root");
+  selftest_check(selftest_fs_many(),
+                 "fs: 70 files in one directory (two blocks); with three "
+                 "deleted and two written again all others are found");
+
+  ok = gemfs_write_user("/selftest/X.ELF", 10, selftest_memory_source, big) ==
+           GEMFS_ERR_DENIED &&
+       gemfs_write_user("/selftest/y.eLf", 10, selftest_memory_source, big) ==
+           GEMFS_ERR_DENIED &&
+       gemfs_write("/selftest/system.txt", big, 10, GEMFS_FLAG_SYSTEM, 1) ==
+           10 &&
+       gemfs_write_user("/selftest/system.txt", 10, selftest_memory_source,
+                        big + 1) == GEMFS_ERR_DENIED &&
+       gemfs_write_user("/selftest/system.txt/", 10, selftest_memory_source,
+                        big + 1) == GEMFS_ERR_DENIED &&
+       selftest_file_is("/selftest/system.txt", big, 10) &&
+       gemfs_stat("/selftest/X.ELF", &stat) == GEMFS_ERR_NOENT &&
+       gemfs_write_user("/selftest/user.txt", 10, selftest_memory_source,
+                        big) == 10;
+  selftest_check(ok, "fs: process writes to *.ELF names and system files "
+                     "are refused, others go through");
+
+  ok = gemfs_delete("/selftest") == GEMFS_OK &&
+       gemfs_stat("/selftest", &stat) == GEMFS_ERR_NOENT &&
+       gemfs_stat("/selftest/a/b/big.bin", &stat) == GEMFS_ERR_NOENT;
+  (void)gemfs_usage(&after);
+  selftest_check(ok && after.free_blocks == before.free_blocks &&
+                     after.free_inodes == before.free_inodes,
+                 "fs: deleting /selftest removes the whole tree and frees "
+                 "every block and inode");
+  kfree(big);
+  kfree(back);
+}
+
+/* Disks other than the mounted one are read-only. The harness attaches one
+ * without GemFS; writing its first sector back unchanged must fail. */
+static void selftest_fs_write_gate(void) {
+  static uint8_t sector[512];
+  int tested = 0;
+  int refused = 1;
+
+  for (int device = 0; device < ATA_MAX_DEVICES; ++device) {
+    if (ata_get_device(device) == NULL ||
+        ata_read(device, 0, 1, sector) != ATA_OK ||
+        memcmp(sector, "GEMOS-FS", 8) == 0) {
+      continue; /* absent, unreadable or the GemFS disk */
+    }
+    tested++;
+    if (ata_write(device, 0, 1, sector) != ATA_ERR_READ_ONLY) {
+      refused = 0;
+    }
+  }
+  selftest_check(tested > 0 && refused,
+                 "fs: the ATA driver refuses writes to a disk GemFS did not "
+                 "mount");
+}
+
+static const char *const filetest_steps[] = {
+    "passed every step",
+    "found its table damaged",
+    "could not write " GEMOS_FILETEST_BIG,
+    "read " GEMOS_FILETEST_BIG " back wrong",
+    "failed on " GEMOS_FILETEST_NOTE,
+    "could not read UTERM.ELF",
+    "was allowed to overwrite UTERM.ELF",
+    "was allowed to create uterm.elf",
+    "was allowed to write \"UTERM.ELF/\"",
+    "was allowed to create /fstest/NEW.ELF",
+    "got no GEMOS_ERR_NOENT for a missing directory",
+};
+
+static void selftest_fs_filetest(void) {
+  uint32_t size =
+      (uint32_t)(_binary_filetest_elf_end - _binary_filetest_elf_start);
+  uint32_t uterm_size = (uint32_t)(_binary_uterm_image_bin_end -
+                                   _binary_uterm_image_bin_start);
+  gemfs_stat_t stat;
+  selftest_exit_t exit;
+  int ended;
+  int pid;
+
+  selftest_check(size > 64U * 1024U &&
+                     selftest_mkdirs(GEMOS_FILETEST_SUBDIR) &&
+                     gemfs_write("/fstest/FILETEST.ELF",
+                                 _binary_filetest_elf_start, size, 0,
+                                 0) == (int)size,
+                 "fs: the kernel wrote FILETEST.ELF (over 64 KB) to /fstest");
+  pid = process_spawn_user_from_file("/fstest/FILETEST.ELF");
+  ended = pid >= 0 && selftest_wait_exit(pid, &exit);
+  selftest_begin(ended && !exit.faulted && exit.exit_code == GEMOS_FILETEST_OK,
+                 "fs: FILETEST.ELF started from GemFS ");
+  if (pid < 0) {
+    serial_print("did not start\n");
+  } else if (!ended) {
+    serial_print("did not end\n");
+    process_kill_pid((uint32_t)pid, -1);
+  } else if (exit.faulted) {
+    serial_print("faulted with vector ");
+    serial_print_dec(exit.vector);
+    serial_print("\n");
+  } else if (exit.exit_code >= 0 &&
+             (uint32_t)exit.exit_code <
+                 sizeof(filetest_steps) / sizeof(filetest_steps[0])) {
+    serial_print(filetest_steps[exit.exit_code]);
+    serial_print("\n");
+  } else {
+    serial_print("exited with code ");
+    serial_print_dec((uint32_t)exit.exit_code);
+    serial_print("\n");
+  }
+
+  selftest_check(selftest_file_is("UTERM.ELF", _binary_uterm_image_bin_start,
+                                  uterm_size) &&
+                     gemfs_stat("UTERM.ELF", &stat) == GEMFS_OK &&
+                     (stat.flags & GEMFS_FLAG_SYSTEM),
+                 "fs: UTERM.ELF is unchanged after the process tried to "
+                 "overwrite it");
+  selftest_check(gemfs_stat("uterm.elf", &stat) == GEMFS_ERR_NOENT &&
+                     gemfs_stat("/fstest/NEW.ELF", &stat) == GEMFS_ERR_NOENT,
+                 "fs: the refused writes created no files");
+  selftest_check(selftest_file_is(GEMOS_FILETEST_BIG, NULL,
+                                  GEMOS_FILETEST_SIZE),
+                 "fs: " GEMOS_FILETEST_BIG " written by FILETEST.ELF reads "
+                 "back in the kernel");
+}
+
+static void selftest_fs(void) {
+  if (!selftest_check(gemfs_available(), "fs: a GemFS disk is mounted")) {
+    return;
+  }
+  selftest_fs_persist(); /* before FILETEST.ELF writes its files again */
+  selftest_fs_api();
+  selftest_fs_write_gate();
+  selftest_fs_filetest();
+}
+
 /* -- exceptions in Ring 3 ---------------------------------------------------- */
 
 typedef struct {
@@ -526,6 +932,7 @@ static void selftest_main(void) {
   selftest_heap();
   selftest_pool();
   selftest_elf();
+  selftest_fs();
 
   fpu_a = selftest_spawn("FPUCHECK.ELF", _binary_fpucheck_elf_start,
                          _binary_fpucheck_elf_end, 1);

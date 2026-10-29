@@ -1,0 +1,563 @@
+#!/usr/bin/env python3
+"""GemFS v3 host tool: create and inspect GemOS data disks (docs/GEMFS.md).
+
+  mkgemfs format IMAGE [--size SIZE] [--inodes N] [--label TEXT] [--force]
+  mkgemfs info   IMAGE
+  mkgemfs ls     IMAGE [PATH]
+  mkgemfs cat    IMAGE PATH
+  mkgemfs put    IMAGE HOSTFILE PATH [--system] [--version N]
+  mkgemfs mkdir  IMAGE PATH
+  mkgemfs rm     IMAGE PATH
+  mkgemfs check  IMAGE
+
+format is the only way to make a GemFS disk (the kernel never formats); it
+refuses to overwrite an existing file without --force. check verifies the
+whole file system and exits with status 1 if anything is wrong, so tests can
+run it on a disk the kernel wrote. Standard library only.
+"""
+
+import argparse
+import os
+import struct
+import sys
+import zlib
+
+BLOCK = 4096
+MAGIC = b"GEMOS-FS"
+VERSION = 3
+ROOT = 1
+INODES_PER_BLOCK = BLOCK // 128
+ENTRIES_PER_BLOCK = BLOCK // 64
+NAME_MAX = 55
+PATH_MAX = 127
+DIRECT = 12
+POINTERS = BLOCK // 4
+MAX_FILE_BLOCKS = DIRECT + POINTERS
+MAX_FILE_SIZE = MAX_FILE_BLOCKS * BLOCK
+MAX_FS_BLOCKS = 1 << 20
+MIN_INODES, MAX_INODES = 64, 8192
+TYPE_FREE, TYPE_FILE, TYPE_DIR = 0, 1, 2
+FLAG_SYSTEM = 1
+
+SUPER = struct.Struct("<8s10I16s")      # 64 bytes, then reserved and CRC
+INODE = struct.Struct("<HHIII12II60s")  # 128 bytes
+DIRENT = struct.Struct("<IB3s56s")      # 64 bytes
+
+
+class FsError(Exception):
+    pass
+
+
+def layout(total_blocks, inode_count):
+    """bitmap_blocks, inode_start, inode_blocks, data_start"""
+    bitmap_blocks = -(-total_blocks // (BLOCK * 8))
+    inode_start = 1 + bitmap_blocks
+    inode_blocks = inode_count // INODES_PER_BLOCK
+    return bitmap_blocks, inode_start, inode_blocks, inode_start + inode_blocks
+
+
+def parse_size(text):
+    units = {"K": 1 << 10, "M": 1 << 20, "G": 1 << 30}
+    text = text.strip().upper().rstrip("B")
+    if text and text[-1] in units:
+        return int(text[:-1]) * units[text[-1]]
+    return int(text)
+
+
+def split_path(path):
+    if len(path.encode()) > PATH_MAX:
+        raise FsError("path longer than %d bytes: %s" % (PATH_MAX, path))
+    parts = [p for p in path.split("/")]
+    if parts and parts[0] == "":
+        parts = parts[1:]
+    if parts and parts[-1] == "":
+        parts = parts[:-1]
+    for part in parts:
+        check_name(part)
+    return parts
+
+
+def check_name(name):
+    raw = name.encode()
+    if not raw or len(raw) > NAME_MAX or name in (".", "..") or "\0" in name:
+        raise FsError("bad name: %r" % name)
+
+
+class Inode:
+    def __init__(self, raw=None):
+        if raw is None:
+            raw = bytes(INODE.size)
+        (self.type, self.flags, self.size, self.parent, self.version,
+         *rest) = INODE.unpack(raw)
+        self.direct = list(rest[:DIRECT])
+        self.indirect = rest[DIRECT]
+        self.reserved = rest[DIRECT + 1]
+
+    def pack(self):
+        return INODE.pack(self.type, self.flags, self.size, self.parent,
+                          self.version, *self.direct, self.indirect,
+                          self.reserved)
+
+
+class GemFS:
+    def __init__(self, path, writable=False):
+        self.f = open(path, "r+b" if writable else "rb")
+        self.disk_blocks = os.fstat(self.f.fileno()).st_size // BLOCK
+        raw = self.read_block(0)
+        (magic, version, block_size, total, bitmap_start, bitmap_blocks,
+         inode_start, inode_blocks, inode_count, data_start, root,
+         label) = SUPER.unpack(raw[:SUPER.size])
+        if magic != MAGIC:
+            raise FsError("not a GemFS disk (no GEMOS-FS signature)")
+        if version != VERSION or block_size != BLOCK:
+            raise FsError("GemFS version %d, block size %d: not supported"
+                          % (version, block_size))
+        crc = struct.unpack_from("<I", raw, 508)[0]
+        if zlib.crc32(raw[:508]) != crc:
+            raise FsError("superblock checksum mismatch")
+        if not (MIN_INODES <= inode_count <= MAX_INODES and
+                inode_count % INODES_PER_BLOCK == 0):
+            raise FsError("bad inode count %d" % inode_count)
+        expected = layout(total, inode_count)
+        if (bitmap_start, bitmap_blocks, inode_start, inode_blocks,
+                data_start) != (1,) + expected or root != ROOT:
+            raise FsError("inconsistent layout in the superblock")
+        if not data_start < total <= min(self.disk_blocks, MAX_FS_BLOCKS):
+            raise FsError("file system size %d blocks does not fit the "
+                          "disk (%d blocks)" % (total, self.disk_blocks))
+        self.total = total
+        self.bitmap_blocks = bitmap_blocks
+        self.inode_start = inode_start
+        self.inode_count = inode_count
+        self.data_start = data_start
+        self.label = label.rstrip(b"\0").decode(errors="replace")
+        self.bitmap = bytearray(b"".join(
+            self.read_block(1 + i) for i in range(bitmap_blocks)))
+        self.dirty_bitmap = set()
+
+    def close(self):
+        self.f.close()
+
+    # -- blocks ------------------------------------------------------------
+    def read_block(self, n):
+        self.f.seek(n * BLOCK)
+        data = self.f.read(BLOCK)
+        return data + bytes(BLOCK - len(data))
+
+    def write_block(self, n, data):
+        assert len(data) == BLOCK
+        self.f.seek(n * BLOCK)
+        self.f.write(data)
+
+    def used(self, n):
+        return self.bitmap[n // 8] >> (n % 8) & 1
+
+    def set_used(self, n, used):
+        if used:
+            self.bitmap[n // 8] |= 1 << (n % 8)
+        else:
+            self.bitmap[n // 8] &= ~(1 << (n % 8)) & 0xFF
+        self.dirty_bitmap.add(n // (BLOCK * 8))
+
+    def sync_bitmap(self):
+        for i in sorted(self.dirty_bitmap):
+            self.write_block(1 + i, bytes(self.bitmap[i * BLOCK:(i + 1) * BLOCK]))
+        self.dirty_bitmap.clear()
+
+    def alloc_block(self):
+        for n in range(self.data_start, self.total):
+            if not self.used(n):
+                self.set_used(n, True)
+                return n
+        raise FsError("no free blocks")
+
+    # -- inodes ------------------------------------------------------------
+    def read_inode(self, n):
+        if not 0 < n < self.inode_count:
+            raise FsError("inode %d out of range" % n)
+        block = self.read_block(self.inode_start + n // INODES_PER_BLOCK)
+        offset = (n % INODES_PER_BLOCK) * INODE.size
+        return Inode(block[offset:offset + INODE.size])
+
+    def write_inode(self, n, inode):
+        index = self.inode_start + n // INODES_PER_BLOCK
+        block = bytearray(self.read_block(index))
+        offset = (n % INODES_PER_BLOCK) * INODE.size
+        block[offset:offset + INODE.size] = inode.pack()
+        self.write_block(index, bytes(block))
+
+    def alloc_inode(self):
+        for n in range(ROOT + 1, self.inode_count):
+            if self.read_inode(n).type == TYPE_FREE:
+                return n
+        raise FsError("no free inodes")
+
+    def block_list(self, inode):
+        """The blocks of an inode, in order."""
+        count = -(-inode.size // BLOCK)
+        if count > MAX_FILE_BLOCKS:
+            raise FsError("size %d is too big" % inode.size)
+        blocks = inode.direct[:min(count, DIRECT)]
+        if count > DIRECT:
+            table = self.read_block(inode.indirect)
+            blocks += list(struct.unpack("<%dI" % POINTERS, table))[:count - DIRECT]
+        return blocks
+
+    def read_data(self, inode):
+        data = b"".join(self.read_block(b) for b in self.block_list(inode))
+        return data[:inode.size]
+
+    # -- directories -----------------------------------------------------------
+    def entries(self, dir_no):
+        """(block index, slot, inode, type, name) of the used entries"""
+        inode = self.read_inode(dir_no)
+        if inode.type != TYPE_DIR:
+            raise FsError("not a directory")
+        out = []
+        for index, block in enumerate(self.block_list(inode)):
+            raw = self.read_block(block)
+            for slot in range(ENTRIES_PER_BLOCK):
+                number, kind, _, name = DIRENT.unpack_from(raw, slot * DIRENT.size)
+                if number:
+                    out.append((index, slot, number, kind,
+                                name.rstrip(b"\0").decode(errors="replace")))
+        return out
+
+    def lookup_in(self, dir_no, name):
+        for _, _, number, _, entry in self.entries(dir_no):
+            if entry == name:
+                return number
+        return None
+
+    def resolve(self, path):
+        number = ROOT
+        for part in split_path(path):
+            if self.read_inode(number).type != TYPE_DIR:
+                raise FsError("not a directory: %s" % part)
+            number = self.lookup_in(number, part)
+            if number is None:
+                raise FsError("no such file or directory: %s" % path)
+        return number
+
+    def resolve_parent(self, path):
+        parts = split_path(path)
+        if not parts:
+            raise FsError("the root has no parent")
+        parent = self.resolve("/".join(parts[:-1]))
+        if self.read_inode(parent).type != TYPE_DIR:
+            raise FsError("not a directory: %s" % "/".join(parts[:-1]))
+        return parent, parts[-1]
+
+    def add_entry(self, dir_no, name, number, kind):
+        inode = self.read_inode(dir_no)
+        blocks = self.block_list(inode)
+        for block in blocks:
+            raw = bytearray(self.read_block(block))
+            for slot in range(ENTRIES_PER_BLOCK):
+                if struct.unpack_from("<I", raw, slot * DIRENT.size)[0] == 0:
+                    DIRENT.pack_into(raw, slot * DIRENT.size, number, kind,
+                                     bytes(3), name.encode())
+                    self.write_block(block, bytes(raw))
+                    return
+        if len(blocks) >= DIRECT:
+            raise FsError("directory full")
+        block = self.alloc_block()
+        self.sync_bitmap()
+        raw = bytearray(BLOCK)
+        DIRENT.pack_into(raw, 0, number, kind, bytes(3), name.encode())
+        self.write_block(block, bytes(raw))
+        inode.direct[len(blocks)] = block
+        inode.size += BLOCK
+        self.write_inode(dir_no, inode)
+
+    def remove_entry(self, dir_no, number):
+        for index, slot, entry, _, _ in self.entries(dir_no):
+            if entry == number:
+                block = self.block_list(self.read_inode(dir_no))[index]
+                raw = bytearray(self.read_block(block))
+                raw[slot * DIRENT.size:(slot + 1) * DIRENT.size] = bytes(DIRENT.size)
+                self.write_block(block, bytes(raw))
+                return
+        raise FsError("inode %d is not in directory %d" % (number, dir_no))
+
+    # -- operations --------------------------------------------------------------
+    def put(self, path, data, flags=0, version=0):
+        if len(data) > MAX_FILE_SIZE:
+            raise FsError("file too big (max %d bytes)" % MAX_FILE_SIZE)
+        parent, name = self.resolve_parent(path)
+        number = self.lookup_in(parent, name)
+        if number is not None and self.read_inode(number).type != TYPE_FILE:
+            raise FsError("is a directory: %s" % path)
+        count = -(-len(data) // BLOCK)
+        new = Inode()
+        new.type, new.flags, new.size = TYPE_FILE, flags, len(data)
+        new.parent, new.version = parent, version
+        blocks = [self.alloc_block() for _ in range(count)]
+        if count > DIRECT:
+            new.indirect = self.alloc_block()
+        self.sync_bitmap()
+        for i, block in enumerate(blocks):
+            chunk = data[i * BLOCK:(i + 1) * BLOCK]
+            self.write_block(block, chunk + bytes(BLOCK - len(chunk)))
+        new.direct = (blocks + [0] * DIRECT)[:DIRECT]
+        if count > DIRECT:
+            table = blocks[DIRECT:] + [0] * (POINTERS - (count - DIRECT))
+            self.write_block(new.indirect, struct.pack("<%dI" % POINTERS, *table))
+        if number is None:
+            number = self.alloc_inode()
+            self.write_inode(number, new)
+            self.add_entry(parent, name, number, TYPE_FILE)
+        else:
+            old = self.read_inode(number)
+            self.write_inode(number, new)
+            self.free_blocks(old)
+        self.sync_bitmap()
+
+    def mkdir(self, path):
+        parent, name = self.resolve_parent(path)
+        if self.lookup_in(parent, name) is not None:
+            raise FsError("exists: %s" % path)
+        number = self.alloc_inode()
+        inode = Inode()
+        inode.type, inode.parent = TYPE_DIR, parent
+        self.write_inode(number, inode)
+        self.add_entry(parent, name, number, TYPE_DIR)
+        self.sync_bitmap()
+
+    def free_blocks(self, inode):
+        for block in self.block_list(inode):
+            self.set_used(block, False)
+        if inode.indirect:
+            self.set_used(inode.indirect, False)
+
+    def remove(self, path):
+        number = self.resolve(path)
+        if number == ROOT:
+            raise FsError("cannot remove the root")
+        self._remove_tree(number)
+        self.sync_bitmap()
+
+    def _remove_tree(self, number):
+        inode = self.read_inode(number)
+        if inode.type == TYPE_DIR:
+            for _, _, child, _, _ in self.entries(number):
+                self._remove_tree(child)
+        self.remove_entry(inode.parent, number)
+        self.free_blocks(inode)
+        self.write_inode(number, Inode())
+
+    # -- consistency check ----------------------------------------------------------
+    def check(self):
+        problems = []
+        owner = {}
+        for n in range(self.data_start):
+            if not self.used(n):
+                problems.append("metadata block %d not marked used" % n)
+        seen = {ROOT}
+        stack = [ROOT]
+        root = self.read_inode(ROOT)
+        if root.type != TYPE_DIR or root.parent != ROOT:
+            problems.append("inode 1 is not the root directory")
+            return problems
+        while stack:
+            number = stack.pop()
+            inode = self.read_inode(number)
+            try:
+                blocks = self.block_list(inode)
+            except FsError as exc:
+                problems.append("inode %d: %s" % (number, exc))
+                continue
+            if inode.type == TYPE_DIR and inode.size % BLOCK:
+                problems.append("directory %d size %d" % (number, inode.size))
+            if inode.type == TYPE_DIR and len(blocks) > DIRECT:
+                problems.append("directory %d uses the indirect block" % number)
+            listed = len(blocks)
+            if any(inode.direct[listed:]) or (listed <= DIRECT and inode.indirect):
+                problems.append("inode %d has pointers past its size" % number)
+            refs = blocks + ([inode.indirect] if listed > DIRECT else [])
+            for block in refs:
+                if not self.data_start <= block < self.total:
+                    problems.append("inode %d: block %d outside the data "
+                                    "area" % (number, block))
+                elif block in owner:
+                    problems.append("block %d used by inodes %d and %d"
+                                    % (block, owner[block], number))
+                else:
+                    owner[block] = number
+                    if not self.used(block):
+                        problems.append("block %d of inode %d is marked "
+                                        "free" % (block, number))
+            if inode.type != TYPE_DIR:
+                continue
+            names = set()
+            for _, _, child, kind, name in self.entries(number):
+                try:
+                    check_name(name)
+                except FsError as exc:
+                    problems.append("directory %d: %s" % (number, exc))
+                if name in names:
+                    problems.append("directory %d: %s twice" % (number, name))
+                names.add(name)
+                if not 0 < child < self.inode_count or child == ROOT:
+                    problems.append("directory %d: entry %s points to inode "
+                                    "%d" % (number, name, child))
+                    continue
+                if child in seen:
+                    problems.append("inode %d linked twice" % child)
+                    continue
+                target = self.read_inode(child)
+                if target.type == TYPE_FREE:
+                    problems.append("entry %s points to free inode %d"
+                                    % (name, child))
+                    continue
+                if target.type != kind:
+                    problems.append("entry %s: type %d, inode type %d"
+                                    % (name, kind, target.type))
+                if target.parent != number:
+                    problems.append("inode %d: parent %d, found in %d"
+                                    % (child, target.parent, number))
+                seen.add(child)
+                stack.append(child)
+        for n in range(ROOT + 1, self.inode_count):
+            if n not in seen and self.read_inode(n).type != TYPE_FREE:
+                problems.append("inode %d is used but in no directory" % n)
+        for n in range(self.data_start, self.total):
+            if self.used(n) and n not in owner:
+                problems.append("block %d is marked used but belongs to "
+                                "nothing" % n)
+        return problems
+
+    def usage(self):
+        used_blocks = sum(self.used(n) for n in range(self.total))
+        used_inodes = sum(self.read_inode(n).type != TYPE_FREE
+                          for n in range(1, self.inode_count))
+        return used_blocks, used_inodes
+
+
+def format_image(path, size, inodes, label, force):
+    if os.path.exists(path) and not force:
+        raise FsError("%s exists; use --force to overwrite it" % path)
+    total = size // BLOCK
+    if inodes is None:
+        inodes = min(MAX_INODES, max(MIN_INODES, total // 4))
+    inodes -= inodes % INODES_PER_BLOCK
+    if not MIN_INODES <= inodes <= MAX_INODES:
+        raise FsError("inode count must be %d..%d" % (MIN_INODES, MAX_INODES))
+    if total > MAX_FS_BLOCKS:
+        raise FsError("at most %d MB" % (MAX_FS_BLOCKS * BLOCK >> 20))
+    bitmap_blocks, inode_start, inode_blocks, data_start = layout(total, inodes)
+    if total < data_start + 16:
+        raise FsError("image too small")
+    with open(path, "wb") as f:
+        f.truncate(total * BLOCK)
+        raw = bytearray(BLOCK)
+        SUPER.pack_into(raw, 0, MAGIC, VERSION, BLOCK, total, 1, bitmap_blocks,
+                        inode_start, inode_blocks, inodes, data_start, ROOT,
+                        label.encode()[:16])
+        struct.pack_into("<I", raw, 508, zlib.crc32(bytes(raw[:508])))
+        f.write(raw)
+        bitmap = bytearray(bitmap_blocks * BLOCK)
+        for n in range(data_start):
+            bitmap[n // 8] |= 1 << (n % 8)
+        f.seek(BLOCK)
+        f.write(bitmap)
+        root = Inode()
+        root.type, root.parent = TYPE_DIR, ROOT
+        f.seek(inode_start * BLOCK + ROOT * INODE.size)
+        f.write(root.pack())
+    return total, inodes, data_start
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="\n".join(__doc__.splitlines()[1:]))
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("format")
+    p.add_argument("image")
+    p.add_argument("--size", default="10M")
+    p.add_argument("--inodes", type=int)
+    p.add_argument("--label", default="GemOS data")
+    p.add_argument("--force", action="store_true")
+    for name in ("info", "check"):
+        sub.add_parser(name).add_argument("image")
+    p = sub.add_parser("ls")
+    p.add_argument("image")
+    p.add_argument("path", nargs="?", default="/")
+    for name in ("cat", "mkdir", "rm"):
+        p = sub.add_parser(name)
+        p.add_argument("image")
+        p.add_argument("path")
+    p = sub.add_parser("put")
+    p.add_argument("image")
+    p.add_argument("hostfile")
+    p.add_argument("path")
+    p.add_argument("--system", action="store_true")
+    p.add_argument("--version", type=lambda v: int(v, 0), default=0)
+    args = parser.parse_args()
+
+    try:
+        if args.command == "format":
+            total, inodes, data_start = format_image(
+                args.image, parse_size(args.size), args.inodes, args.label,
+                args.force)
+            print("%s: GemFS v3, %d blocks of 4 KB (%d KB), %d inodes, data "
+                  "from block %d" % (args.image, total, total * 4, inodes,
+                                     data_start))
+            return 0
+        writable = args.command in ("put", "mkdir", "rm")
+        fs = GemFS(args.image, writable)
+        try:
+            if args.command == "info":
+                used_blocks, used_inodes = fs.usage()
+                print("label %r, %d blocks (%d KB), %d used; %d inodes, %d "
+                      "used; data from block %d" % (
+                          fs.label, fs.total, fs.total * 4, used_blocks,
+                          fs.inode_count - 1, used_inodes, fs.data_start))
+            elif args.command == "ls":
+                number = fs.resolve(args.path)
+                for _, _, child, kind, name in sorted(fs.entries(number),
+                                                      key=lambda e: e[4]):
+                    inode = fs.read_inode(child)
+                    print("%s %s %8d  %s%s" % (
+                        "d" if kind == TYPE_DIR else "-",
+                        "s" if inode.flags & FLAG_SYSTEM else "-",
+                        inode.size, name, "/" if kind == TYPE_DIR else ""))
+            elif args.command == "cat":
+                inode = fs.read_inode(fs.resolve(args.path))
+                if inode.type != TYPE_FILE:
+                    raise FsError("not a file: %s" % args.path)
+                sys.stdout.buffer.write(fs.read_data(inode))
+            elif args.command == "put":
+                with open(args.hostfile, "rb") as f:
+                    data = f.read()
+                fs.put(args.path, data, FLAG_SYSTEM if args.system else 0,
+                       args.version)
+            elif args.command == "mkdir":
+                fs.mkdir(args.path)
+            elif args.command == "rm":
+                fs.remove(args.path)
+            elif args.command == "check":
+                problems = fs.check()
+                used_blocks, used_inodes = fs.usage()
+                for problem in problems:
+                    print("problem: %s" % problem)
+                print("%s: %s, %d of %d blocks and %d of %d inodes used" % (
+                    args.image, "clean" if not problems else
+                    "%d problems" % len(problems), used_blocks, fs.total,
+                    used_inodes, fs.inode_count - 1))
+                return 1 if problems else 0
+        finally:
+            fs.close()
+    except FsError as exc:
+        print("mkgemfs: %s" % exc, file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print("mkgemfs: %s" % exc, file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -19,5 +19,9 @@ int memcmp(const void *s1, const void *s2, size_t num);
 char *strcpy(char *destination, const char *source);
 char *strncpy(char *destination, const char *source, size_t num);
 int strcmp(const char *str1, const char *str2);
+int strncmp(const char *str1, const char *str2, size_t num);
+size_t strlen(const char *str);
+char *strcat(char *destination, const char *source);
+char *strrchr(const char *str, int character);
 
 #endif /* STRING_H */

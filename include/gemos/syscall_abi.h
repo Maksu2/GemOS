@@ -32,6 +32,8 @@ enum {
   GEMOS_ERR_TOO_BIG = -4,
   GEMOS_ERR_BUSY = -5,
   GEMOS_ERR_NOENT = -6,
+  /* SYS_file_write: programs (*.ELF) and system files are read-only */
+  GEMOS_ERR_DENIED = -7,
 };
 
 #endif /* GEMOS_SYSCALL_ABI_H */

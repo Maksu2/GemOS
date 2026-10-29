@@ -14,9 +14,26 @@
 #define PICKER_HEIGHT 400
 #define ITEM_HEIGHT 24
 
+#define PICKER_MAX_FILES 32
+
 static app_t filepicker_app;
 static filepicker_callback_t active_callback = NULL;
 static int hover_index = -1;
+static char file_names[PICKER_MAX_FILES][GEMFS_NAME_MAX + 1];
+static int file_count;
+
+static void filepicker_collect(void *ctx, const gemfs_entry_t *entry) {
+  (void)ctx;
+  if (entry->type == GEMFS_TYPE_FILE && file_count < PICKER_MAX_FILES) {
+    strcpy(file_names[file_count++], entry->name);
+  }
+}
+
+/* Files in the root directory */
+static void filepicker_refresh(void) {
+  file_count = 0;
+  (void)gemfs_list("/", filepicker_collect, NULL);
+}
 
 /* Render */
 static void filepicker_render(window_t *win) {
@@ -28,29 +45,19 @@ static void filepicker_render(window_t *win) {
                 0xFFFFFF);
 
   /* List Files */
-  int count = gemfs_count();
   int y = oy + 5; /* Start closer to top */
 
-  /* We iterate through all slots to find used ones */
-  int display_idx = 0;
-
-  for (int i = 0; i < GEMFS_MAX_FILES; i++) {
-    const char *name = gemfs_get_name(i);
-    if (name) {
-      /* Highlight hover */
-      if (display_idx == hover_index) {
-        gfx_fill_rect(&win->ctx, ox, y, win->client_rect.w, ITEM_HEIGHT,
-                      0xCCE5FF);
-      }
-
-      font_draw_text(&win->ctx, ox + 10, y + 4, name, 14, 0x000000);
-
-      display_idx++;
-      y += ITEM_HEIGHT;
+  for (int i = 0; i < file_count; i++) {
+    /* Highlight hover */
+    if (i == hover_index) {
+      gfx_fill_rect(&win->ctx, ox, y, win->client_rect.w, ITEM_HEIGHT,
+                    0xCCE5FF);
     }
+    font_draw_text(&win->ctx, ox + 10, y + 4, file_names[i], 14, 0x000000);
+    y += ITEM_HEIGHT;
   }
 
-  if (count == 0) {
+  if (file_count == 0) {
     font_draw_text(&win->ctx, ox + 10, oy + 50, "(No files found)", 12,
                    0x808080);
   }
@@ -65,8 +72,7 @@ static void filepicker_handle_event(window_t *win, event_t *ev) {
 
     if (my >= list_start_y) {
       int idx = (my - list_start_y) / ITEM_HEIGHT;
-      int count = gemfs_count();
-      if (idx >= 0 && idx < count) {
+      if (idx >= 0 && idx < file_count) {
         hover_index = idx;
       } else {
         hover_index = -1;
@@ -82,21 +88,12 @@ static void filepicker_handle_event(window_t *win, event_t *ev) {
     if (my >= list_start_y) {
       int idx = (my - list_start_y) / ITEM_HEIGHT;
 
-      /* Map display index to real gemfs index */
-      int current_disp = 0;
-      for (int i = 0; i < GEMFS_MAX_FILES; i++) {
-        const char *name = gemfs_get_name(i);
-        if (name) {
-          if (current_disp == idx) {
-            /* Found clicked file */
-            if (active_callback) {
-              active_callback(name);
-            }
-            wm_remove_window(win);
-            return;
-          }
-          current_disp++;
+      if (idx >= 0 && idx < file_count) {
+        if (active_callback) {
+          active_callback(file_names[idx]);
         }
+        wm_remove_window(win);
+        return;
       }
     }
   } else if (ev->type == EVENT_KEY_PRESS) {
@@ -137,6 +134,7 @@ static void filepicker_init_app(void) {
 void filepicker_show(filepicker_callback_t callback) {
   active_callback = callback;
   hover_index = -1;
+  filepicker_refresh();
 
   filepicker_init_app();
   filepicker_open();
