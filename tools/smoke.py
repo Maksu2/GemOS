@@ -45,10 +45,11 @@ the first boot wrote, and the second boot checks those files again. The
 second disk must come out of both boots unchanged.
 
 With --editor it tests UTEXTEDIT.ELF with files instead: Esc and the close
-button ask before unsaved text is lost (a box appears over the text, Esc
-cancels it), Y saves under a new name, the File Explorer opens that file in
-the editor, which saves it again, N discards, and saving over UTERM.ELF
-shows an error; the file is then read on the host.
+button ask before unsaved text is lost (a box lined up with the console
+grid appears over the text, Esc cancels it), Y saves under a new name, the
+File Explorer opens that file in the editor, which saves it again, N
+discards, and saving over UTERM.ELF shows an error; the file is then read
+on the host.
 
 With --stress N it runs a load test instead: N cycles of opening all
 three programs from the menus, typing into them and moving the mouse while
@@ -219,10 +220,12 @@ STRESS_WIGGLE = [(300, 200), (700, 300), (500, 480), (880, 520), (200, 400),
 
 
 # --editor: UTEXTEDIT.ELF with files. Its console is 84x28 cells.
-# Questions are drawn as a box over rows 8-12
+# Questions are drawn as a box over rows 8-12 and columns 6-77
 # (userland/textedit/textedit_theme.h); the status line is row 26 and the
 # shortcuts are row 27, the last one.
+EDITOR_COLS = 84
 EDITOR_BOX_ROWS = (8, 12)
+EDITOR_BOX_COLS = (6, 77)
 EDITOR_STATUS_ROWS = (26, 26)
 EDITOR_MENU = (MENU_APPS, menu_item(130, 3))     # Apps -> Text Editor
 EXPLORER_MENU = (MENU_APPS, menu_item(130, 0))   # Apps -> File Explorer
@@ -248,6 +251,18 @@ def key_names(text):
 def pixels_changed(before, after):
     return sum(1 for i in range(0, len(before), 3)
                if before[i:i + 3] != after[i:i + 3])
+
+
+def spans(cols):
+    """Columns as ranges: [6, 7, 8, 77] -> "6-8, 77"."""
+    parts = []
+    for col in cols:
+        if parts and parts[-1][1] == col - 1:
+            parts[-1][1] = col
+        else:
+            parts.append([col, col])
+    return ", ".join(str(a) if a == b else "%d-%d" % (a, b)
+                     for a, b in parts) or "none"
 
 
 def reddish_pixels(area):
@@ -1119,6 +1134,24 @@ class Smoke:
         return self.check(issue is None, "editor: %s" % what,
                           "%s.png, %s" % (shot, issue or "%.1f s" % seconds))
 
+    def question_box_grid(self, window):
+        """The question box lines up with the console grid: its lines of '-'
+        fill its columns, and its empty row (the "Save the changes"
+        question has no file name line) has a bar at either end."""
+        first, last = EDITOR_BOX_COLS
+        top, bottom = EDITOR_BOX_ROWS
+        middle = (top + bottom) // 2
+        image = self.screendump("editor-box-grid")
+        wanted = {top: list(range(first, last + 1)), middle: [first, last],
+                  bottom: list(range(first, last + 1))}
+        found = {row: window.inked_cells(image, row, range(EDITOR_COLS))
+                 for row in wanted}
+        self.check(found == wanted,
+                   "editor: the question box lines up with the grid",
+                   "editor-box-grid.png, cells with ink: " +
+                   "; ".join("row %d: %s" % (row, spans(found[row]))
+                             for row in sorted(found)))
+
     def editor(self):
         start = time.monotonic()
 
@@ -1133,6 +1166,7 @@ class Smoke:
         self.monitor.cmd("sendkey esc")
         self.editor_box("editor-question", pid, window, before, True,
                         "Esc with unsaved text asks first")
+        self.question_box_grid(window)
         self.editor_running(pid, "the window stays while it asks")
         self.monitor.cmd("sendkey esc")
         self.editor_box("editor-cancelled", pid, window, before, False,
