@@ -449,13 +449,18 @@ int process_kill_pid(uint32_t pid, int32_t exit_code) {
   if (process->state == PROC_ZOMBIE || process->state == PROC_FAULTED) {
     return 1;
   }
-  if (!scheduler_kill_task(process->task_id)) {
+  switch (scheduler_kill_task(process->task_id)) {
+  case SCHEDULER_KILLED:
+    process->state = PROC_ZOMBIE;
+    process->exit_code = exit_code;
+    return 1;
+  case SCHEDULER_KILL_DEFERRED:
+    /* inside a syscall: the reaper gets it once the syscall returns */
+    process->exit_code = exit_code;
+    return 1;
+  default:
     return 0;
   }
-
-  process->state = PROC_ZOMBIE;
-  process->exit_code = exit_code;
-  return 1;
 }
 
 void process_wake(uint32_t pid) {

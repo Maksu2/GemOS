@@ -43,6 +43,7 @@ static int    current_task = 0;
 static int    task_count   = 0;
 static int    yield_requested = 0;
 static int    need_resched = 0;   /* a task was woken since the last switch */
+static int    yield_target = -1;  /* scheduler_yield_to(): run it next */
 
 static uint32_t scheduler_read_esp(void) {
     uint32_t esp;
@@ -108,6 +109,7 @@ static uint32_t scheduler_resume_task(int next, uint32_t fallback_esp) {
     current_task = next;
     tasks[current_task].state = TASK_RUNNING;
     tasks[current_task].ticks_remaining = TASK_QUANTUM;
+    tasks[current_task].runs++;
     scheduler_apply_task_context(&tasks[current_task]);
 
     if (tasks[current_task].esp == 0) {
@@ -267,6 +269,11 @@ int task_create_kernel(void (*entry)(void), uintptr_t stack_top) {
 static uint32_t scheduler_choose_next(uint32_t fallback_esp) {
     int next = scheduler_find_next_runnable(current_task);
 
+    if (yield_target >= 0 && yield_target != current_task &&
+        tasks[yield_target].state == TASK_READY) {
+        next = yield_target;
+    }
+    yield_target = -1;
     need_resched = 0;
     if (next < 0) {
         next = IDLE_TASK;
@@ -358,6 +365,28 @@ void scheduler_yield(void) {
     __asm__ volatile("int %0" : : "i"(KERNEL_YIELD_VECTOR) : "memory");
 }
 
+void scheduler_yield_to(uint32_t task_id) {
+    uint32_t flags = irq_save();  /* nothing else may consume the target */
+
+    if (task_id < MAX_TASKS) {
+        yield_target = (int)task_id;
+    }
+    scheduler_yield();
+    irq_restore(flags);
+}
+
+void scheduler_preempt_point(void) {
+    if (current_task == TASK_GUI) {
+        return;
+    }
+    /* both change in IRQ0; a stale value only moves the switch by a tick */
+    if (tasks[current_task].ticks_remaining == 0 || need_resched) {
+        scheduler_yield();
+    }
+}
+
+uint32_t scheduler_current_task(void) { return (uint32_t)current_task; }
+
 /*
  * scheduler_interrupt_exit — called by isr_handler before it returns to the
  * interrupted code. Keeps running the current task unless it cannot continue
@@ -426,24 +455,65 @@ void scheduler_mark_current_fault(uint32_t vector, uint32_t error,
     scheduler_wake(TASK_GUI);
 }
 
+/* A process that gave up the CPU inside a syscall: its saved frame is a
+ * Ring 0 one. One that was preempted in Ring 3, or sleeps in a syscall
+ * that runs again when it wakes, has a Ring 3 frame. */
+static int scheduler_frame_in_kernel(const task_t *task) {
+    const registers_t *frame = (const registers_t *)(uintptr_t)task->esp;
+
+    return task->kind == TASK_KIND_USER && task->esp != 0 &&
+           (frame->cs & 0x3U) != 0x3U;
+}
+
 int scheduler_kill_task(uint32_t task_id) {
     uint32_t flags;
-    int result = 1;
+    int result = SCHEDULER_KILLED;
 
     if (task_id == 0 || task_id >= MAX_TASKS) {
-        return 0;
+        return SCHEDULER_KILL_FAILED;
     }
 
     flags = irq_save();
     if (task_id == (uint32_t)current_task) {
-        result = 0;
+        result = SCHEDULER_KILL_FAILED;
     } else if (tasks[task_id].state != TASK_UNUSED &&
                tasks[task_id].state != TASK_ZOMBIE) {
-        tasks[task_id].state = TASK_ZOMBIE;
-        tasks[task_id].wake_tick = 0;
+        if (scheduler_frame_in_kernel(&tasks[task_id])) {
+            /* it may hold GemFS or be half way through a change: it
+             * finishes the syscall, which ends it (kernel/syscall.c), and
+             * stops waiting if it waits */
+            tasks[task_id].kill_pending = 1;
+            scheduler_wake_locked(task_id);
+            result = SCHEDULER_KILL_DEFERRED;
+        } else {
+            tasks[task_id].state = TASK_ZOMBIE;
+            tasks[task_id].wake_tick = 0;
+        }
     }
     irq_restore(flags);
     return result;
+}
+
+int scheduler_kill_pending(void) { return tasks[current_task].kill_pending; }
+
+int scheduler_task_in_kernel(uint32_t task_id) {
+    uint32_t flags;
+    int result;
+
+    if (task_id >= MAX_TASKS) {
+        return 0;
+    }
+    flags = irq_save();
+    result = task_id != (uint32_t)current_task &&
+             tasks[task_id].state != TASK_UNUSED &&
+             tasks[task_id].state != TASK_ZOMBIE &&
+             scheduler_frame_in_kernel(&tasks[task_id]);
+    irq_restore(flags);
+    return result;
+}
+
+uint32_t scheduler_task_runs(uint32_t task_id) {
+    return task_id < MAX_TASKS ? tasks[task_id].runs : 0;
 }
 
 int scheduler_get_current_pid(void) {

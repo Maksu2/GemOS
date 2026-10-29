@@ -470,6 +470,15 @@ void syscall_interrupt_handler(registers_t *regs) {
     regs->eax = (uint32_t)GEMOS_ERR_NOSYS;
     break;
   }
+  if (scheduler_kill_pending()) {
+    /* killed while it was in here (process_kill_pid): it does not go back
+     * to Ring 3 */
+    process_t *process = syscall_current_process();
+
+    if (process != NULL && process->state != PROC_ZOMBIE) {
+      scheduler_mark_current_zombie(process->exit_code);
+    }
+  }
   irq_disable();
 }
 

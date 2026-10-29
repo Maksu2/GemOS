@@ -56,6 +56,8 @@ int process_spawn_user_with_arg(const char *name, const char *arg);
 int process_spawn_user_image(const char *name, const uint8_t *image,
                              size_t size);
 #endif
+/* 1 if the process ends: at once, or when it is inside a syscall, as soon
+ * as the syscall returns (the reaper logs it then). */
 int process_kill_pid(uint32_t pid, int32_t exit_code);
 /* Make the process runnable if it is blocked (e.g. waiting for an event). */
 void process_wake(uint32_t pid);
