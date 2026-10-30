@@ -90,6 +90,13 @@ uint32_t *vbe_get_back_page(void) {
   return (uint32_t *)((uint8_t *)fb_addr + back * page_size);
 }
 
+/* The page on the screen now (the framebuffer without page flipping) */
+uint32_t *vbe_get_front_page(void) {
+  if (!bga_flip_enabled)
+    return fb_addr;
+  return (uint32_t *)((uint8_t *)fb_addr + current_page * page_size);
+}
+
 /* Flip: make the back page visible, swap roles */
 void vbe_flip(void) {
   if (!bga_flip_enabled)

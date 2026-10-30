@@ -14,4 +14,7 @@ void app_open(const char *name);
 /* Open an app with a file argument */
 void app_open_with_file(const char *app_name, const char *path);
 
+/* Some app's windows changed without an event (app_t.changed) */
+bool app_manager_changed(void);
+
 #endif

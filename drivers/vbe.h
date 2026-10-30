@@ -61,8 +61,9 @@ uint16_t vbe_get_pitch(void);
 uint32_t *vbe_get_framebuffer(void);
 
 /* BGA Page Flipping */
-uint32_t *vbe_get_back_page(void); /* Get render target (invisible page) */
-void vbe_flip(void);               /* Swap visible/invisible pages */
-int vbe_has_page_flip(void);       /* Check if page flip is available */
+uint32_t *vbe_get_back_page(void);  /* Get render target (invisible page) */
+uint32_t *vbe_get_front_page(void); /* The page on the screen now */
+void vbe_flip(void);                /* Swap visible/invisible pages */
+int vbe_has_page_flip(void);        /* Check if page flip is available */
 
 #endif /* VBE_H */

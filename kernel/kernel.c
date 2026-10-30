@@ -56,6 +56,36 @@ boot_info_t boot_info;
 /* Global Screen Context */
 gfx_context_t screen_ctx;
 static bool pending_redraw = true;
+/* The mouse moved since the last frame: without a redraw request only the
+ * cursor is drawn again (cursor_move_on) */
+static bool cursor_moved;
+
+/* Frames drawn so far, logged at most every 2 s while there are new ones;
+ * tools/smoke.py reads the line */
+static uint32_t frames_full;
+static uint32_t frames_cursor;
+static uint32_t full_ms_total;
+static uint32_t full_ms_max;
+static uint32_t frames_logged;
+static uint64_t frames_logged_at;
+
+static void frame_stats_log(uint64_t now) {
+  if (frames_full + frames_cursor == frames_logged ||
+      now - frames_logged_at < 2000) {
+    return;
+  }
+  frames_logged = frames_full + frames_cursor;
+  frames_logged_at = now;
+  serial_print("[GFX] Frames: full=");
+  serial_print_dec(frames_full);
+  serial_print(" cursor=");
+  serial_print_dec(frames_cursor);
+  serial_print(", a full one takes ");
+  serial_print_dec(frames_full != 0 ? full_ms_total / frames_full : 0);
+  serial_print(" ms on average, ");
+  serial_print_dec(full_ms_max);
+  serial_print(" ms at most\n");
+}
 
 void kernel_request_redraw(void) {
   pending_redraw = true;
@@ -346,6 +376,7 @@ void kernel_main(const boot_info_t *loader_info) {
   /* Main kernel loop */
   event_t ev;
   uint64_t last_render_tick = 0;
+  uint64_t clock_checked_at = 0;
 
   /* Target FPS: 60 -> ~16.6ms per frame */
   /* PIT is 1000Hz, so 16 ticks */
@@ -357,19 +388,23 @@ void kernel_main(const boot_info_t *loader_info) {
     /* Process Events */
     while (event_pop(&ev)) {
       if (ev.type == EVENT_MOUSE_MOVE) {
+        /* A move only draws the cursor again, unless it changes the scene:
+         * the open menu lights up the item under the pointer, and the
+         * window manager (a window dragged) and the apps (hover) ask for a
+         * frame themselves. */
         /* 1. Menu Handling (Highest Priority) */
         if (menu_handle_event(&ev)) {
-          /* Menu consumed event */
+          pending_redraw = true;
         }
         /* 1.5 Dock Handling */
         else if (dock_handle_event(&ev)) {
-          /* Dock consumed event */
+          pending_redraw = true;
         } else {
           /* Pass Move to WM (for dragging) */
           wm_handle_event(&ev);
         }
 
-        pending_redraw = true;
+        cursor_moved = true;
       } else if (ev.type == EVENT_MOUSE_CLICK ||
                  ev.type == EVENT_MOUSE_RELEASE) {
         /* A release ends a window drag wherever it happens, also over
@@ -414,28 +449,57 @@ void kernel_main(const boot_info_t *loader_info) {
       kernel_shutdown(backbuffer, vbe_buffer, buffer_size, use_page_flip);
     }
 
+    /* The clock in the topbar and what some apps show (the Log Viewer's
+     * log) change without an event: they are read only while a frame
+     * draws them */
+    uint64_t now = timer_get_ticks();
+    if (now - clock_checked_at >= 1000) {
+      clock_checked_at = now;
+      if (topbar_clock_changed() || app_manager_changed()) {
+        pending_redraw = true;
+      }
+    }
+
     /* At most one frame per TICKS_PER_FRAME ticks. The request is cleared
      * before drawing, so a redraw requested while this frame is drawn gets
      * the next frame instead of being lost. */
-    uint64_t now = timer_get_ticks();
-    if (pending_redraw && now - last_render_tick >= TICKS_PER_FRAME) {
-      pending_redraw = false;
+    if ((pending_redraw || cursor_moved) &&
+        now - last_render_tick >= TICKS_PER_FRAME) {
       last_render_tick = now;
+      cursor_moved = false;
+      if (pending_redraw) {
+        uint32_t ms;
 
-      /* Render to the heap backbuffer, then copy the finished frame to VRAM
-       * in one burst: direct VRAM rendering is slow because MMIO writes go
-       * through QEMU's hypervisor per pixel. */
-      screen_ctx.framebuffer = (uint32_t *)backbuffer;
+        pending_redraw = false;
 
-      desktop_draw(&screen_ctx);
-      dock_render(&screen_ctx);
-      wm_render_all();
-      topbar_render(&screen_ctx);
-      menu_render(&screen_ctx);
-      cursor_draw();
+        /* Render to the heap backbuffer, then copy the finished frame to
+         * VRAM in one burst: direct VRAM rendering is slow because MMIO
+         * writes go through QEMU's hypervisor per pixel. */
+        screen_ctx.framebuffer = (uint32_t *)backbuffer;
 
-      present_frame(backbuffer, vbe_buffer, buffer_size, use_page_flip);
+        desktop_draw(&screen_ctx);
+        dock_render(&screen_ctx);
+        wm_render_all();
+        topbar_render(&screen_ctx);
+        menu_render(&screen_ctx);
+
+        cursor_frame_begin();
+        present_frame(backbuffer, vbe_buffer, buffer_size, use_page_flip);
+        cursor_frame_end();
+
+        ms = (uint32_t)(timer_get_ticks() - now);
+        frames_full++;
+        full_ms_total += ms;
+        full_ms_max = ms > full_ms_max ? ms : full_ms_max;
+      } else {
+        /* The backbuffer holds the frame on the screen: only the cursor
+         * changes, on the visible page */
+        cursor_move_on(use_page_flip ? vbe_get_front_page()
+                                     : (uint32_t *)vbe_buffer);
+        frames_cursor++;
+      }
     }
+    frame_stats_log(now);
 
 #ifdef GEMOS_SELFTEST
     selftest_gui_iteration();

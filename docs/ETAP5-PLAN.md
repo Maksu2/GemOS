@@ -88,7 +88,10 @@ Konsola rysuje każdą komórkę osobno (`font_draw_cell`) i pomija znaki steruj
   - W zrzucie z pytaniem wiersze 8 i 12 mają tusz w kolumnach 6–77, a w 78–83 nie.
   - Oba sprawdzenia dziś padają, a po poprawce przechodzą.
 
-## 4. Render: najpierw kursor, potem uszkodzone prostokąty
+## 4. Render: najpierw kursor, potem uszkodzone prostokąty — krok 1 zrobiony
+
+Krok 1: ruch myszy, który nic innego nie zmienia, rysuje tylko kursor na widocznej stronie, a backbuffer nigdy nie trzyma kursora. Po punkcie 5 okno z fokusem dostaje ruchy myszy, więc Explorer sam prosi o klatkę, gdy zmienia podświetlenie albo obrys przeciągania. Przy okazji zegar w topbarze sam prosi o klatkę co minutę (wcześniej stał na bezczynnym pulpicie), a aplikacje mogą powiedzieć, że ich okna zmieniły się bez zdarzenia (`app_t.changed`, pętla pyta co sekundę): Log Viewer robi to, gdy log urósł. Bez tego po kroku 1 nowe linie czekałyby na kliknięcie. Log `[GFX] Frames: full= cursor=` (bez `partial=`, które przyjdzie z krokiem 2). Testy w smoke: ruch po pustym pulpicie bez pełnych klatek i bez śladów kursora na gradiencie, także na `vga-4M` (ścieżka `memcpy`), oraz zegar i Log Viewer zmieniające się bez wejścia. Test „ducha” na drugiej stronie BGA nie jest potrzebny: pełna klatka nadpisuje całą tylną stronę. Krok 2 (lista uszkodzonych prostokątów) czeka.
+
 
 Dziś każdy ruch myszy to pełna klatka: gradient tła 8,3 MB, wszystkie okna i kopia 8,3 MB do VRAM (`kernel/kernel.c:330,370-393`), co 16–20 ms, póki mysz się rusza. Aplikacje nie dostają ruchu myszy (`kernel/gui/wm/wm.c:429-442`), więc bez menu i przeciągania zmienia się tylko kursor.
 

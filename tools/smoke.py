@@ -7,6 +7,11 @@ the monitor:
 
   * the kernel reaches "[BOOT] Window Manager Active",
   * the desktop screendump is a rendered 1920x1080 frame,
+  * a mouse move over the empty desktop draws only the cursor again: no
+    full frame (the kernel logs how many frames of each kind it drew),
+    and no trace of the arrow on the wallpaper,
+  * the clock in the topbar shows a new minute by itself (QEMU's clock
+    starts a few seconds before one), and the Log Viewer new log lines,
   * UTERM.ELF, ABOUT.ELF and UTEXTEDIT.ELF are started from the topbar menus,
     open their console window, close on Esc and are reaped with exit=0,
   * windows open between the topbar and the dock, a second one moves off
@@ -212,6 +217,18 @@ class Window:
                 self.y + 36 + 15 * (last + 1))
 
 
+# The mouse moved over the empty desktop (logical points between the
+# topbar and the dock): only the cursor may be drawn again.
+CURSOR_PATH = [(480, 270), (800, 150), (150, 400), (600, 450), (300, 100),
+               (700, 300)]
+CURSOR_SIZE = (12, 17)  # the arrow (kernel/ui/cursor.c)
+# "[GFX] Frames: full= cursor=" (kernel/kernel.c), at most every 2 s
+FRAMES_RE = re.compile(r"\[GFX\] Frames: full=(\d+) cursor=(\d+)")
+FRAMES_LOG_DELAY = 2.5
+# QEMU's clock starts this many seconds before a new minute, so the clock
+# in the topbar (x from 80 px left of the right edge) changes then
+CLOCK_FLIP = 14
+
 # Stress test: what to type into each program (QEMU sendkey names; no Esc
 # and no "q", which close windows).
 STRESS_TYPING = {
@@ -236,6 +253,7 @@ EDITOR_BOX_COLS = (6, 77)
 EDITOR_STATUS_ROWS = (26, 26)
 EDITOR_MENU = (MENU_APPS, menu_item(130, 3))     # Apps -> Text Editor
 EXPLORER_MENU = (MENU_APPS, menu_item(130, 0))   # Apps -> File Explorer
+LOG_VIEWER_MENU = (MENU_APPS, menu_item(130, 2))  # Apps -> Log Viewer
 
 
 def explorer_entry(window, index):
@@ -669,6 +687,10 @@ class Smoke:
             # (-global VGA.vgamem_mb leaves the machine without a VGA)
             cmd += ["-vga", "none",
                     "-device", "VGA,vgamem_mb=%d" % self.args.vga_mem]
+        now = time.gmtime()
+        cmd += ["-rtc", "base=%04d-%02d-%02dT%02d:%02d:%02d"
+                % (now[:5] + (60 - CLOCK_FLIP,))]
+        self.clock_flip_at = time.monotonic() + CLOCK_FLIP
         cmd += [
             "-m", "%dM" % self.args.memory,
             "-display", "none",
@@ -780,6 +802,106 @@ class Smoke:
         return self.check(issue is None, "desktop: screendump shows topbar, "
                           "wallpaper and dock",
                           issue or "desktop.png, %.1f s" % seconds)
+
+    def frame_counts(self):
+        """Full and cursor frames so far, from the last "[GFX] Frames" line
+        once the GUI loop has had the time to log every frame drawn."""
+        time.sleep(FRAMES_LOG_DELAY)
+        found = FRAMES_RE.findall(self.log_text())
+        return tuple(int(v) for v in found[-1]) if found else (0, 0)
+
+    def cursor_frames(self):
+        """A mouse move that changes nothing else draws only the cursor
+        again: no full frame, and no trace of the arrow where it was (the
+        wallpaper is a vertical gradient, one colour per row)."""
+        full0, cursor0 = self.frame_counts()
+        self.pointer.home()
+        for point in CURSOR_PATH:
+            self.pointer.move_to(point)
+        full1, cursor1 = self.frame_counts()
+        # a new minute on the clock may take one full frame
+        self.check(full1 - full0 <= 1 and cursor1 - cursor0 >= 10,
+                   "frames: moving the mouse over the desktop draws only the "
+                   "cursor", "%d full frames, %d cursor frames"
+                   % (full1 - full0, cursor1 - cursor0))
+
+        image = self.screendump("cursor-moved")
+        s = UI_SCALE
+        px, py = CURSOR_PATH[-1]
+        x0, y0 = (px - 2) * s, (py - 2) * s  # the arrow, with a margin
+        x1 = (px + CURSOR_SIZE[0] + 2) * s
+        y1 = (py + CURSOR_SIZE[1] + 2) * s
+        stride = image.width * 3
+        bad = []
+        for y in range(30 * s, (SCREEN_SIZE[1] // s - 50) * s):
+            row = image.pixels[y * stride:(y + 1) * stride]
+            if y0 <= y < y1:
+                row = row[:x0 * 3] + row[x1 * 3:]
+            if row != row[:3] * (len(row) // 3):
+                bad.append(y // s)
+        self.check(not bad, "frames: no trace of the cursor on the wallpaper",
+                   "cursor-moved.png, %s" % (
+                       "rows with other pixels: %s" % spans(sorted(set(bad)))
+                       if bad else "every row one colour"))
+
+    def clock(self):
+        """The clock in the topbar shows the new minute by itself: the GUI
+        loop asks for a frame when it changes. No input is sent, and
+        nothing else on the empty desktop asks for one."""
+        width = SCREEN_SIZE[0] // UI_SCALE
+        area = (width - 82, 4, width - 20, 26)
+        if time.monotonic() > self.clock_flip_at - 1.0:
+            self.clock_flip_at += 60  # too late for this one: the next
+        before = self.screendump("clock-before").logical_area(area)
+        time.sleep(max(0.0, self.clock_flip_at - time.monotonic()))
+        issue, seconds = self.watch_screen(
+            "clock-after", lambda image: None
+            if image.logical_area(area) != before else "the clock is the same",
+            10.0)
+        self.check(issue is None, "frames: the clock shows the new minute by "
+                   "itself", "clock-before.png, clock-after.png, %s"
+                   % (issue or "%.1f s after the minute" % seconds))
+
+    def log_viewer(self):
+        """The Log Viewer shows new log lines by itself: the GUI loop asks
+        it once a second whether the log grew, and the kernel logs
+        "[GFX] Frames" lines meanwhile. No input is sent while the test
+        waits; then the close button closes the window."""
+        placed_re = re.compile(r"\[WM\] Placed " + Window.GEOMETRY)
+        before = len(placed_re.findall(self.log_text()))
+        self.pointer.home()
+        self.pointer.move_to(LOG_VIEWER_MENU[0])
+        self.pointer.click()
+        time.sleep(0.4)
+        self.pointer.move_to(LOG_VIEWER_MENU[1])
+        self.pointer.click()
+        placed = self.wait_for(lambda t: list(placed_re.finditer(t))[before:],
+                               self.args.app_timeout)
+        if not placed:
+            raise SmokeError("the Log Viewer opened no window")
+        window = Window.parse(placed[0])
+        # the first frame with the window rasterizes its font (up to 2 s
+        # under TCG): the log is compared once it is on the screen and its
+        # frames are logged
+        issue, _ = self.watch_screen(
+            "log-viewer", lambda image: title_bar_problem(image, window),
+            WINDOW_TIMEOUT)
+        if issue:
+            raise SmokeError("the Log Viewer window is not on the screen: %s"
+                             % issue)
+        time.sleep(FRAMES_LOG_DELAY)
+        first = self.screendump("log-viewer", save=False).logical_area(
+            window.client())
+        issue, seconds = self.watch_screen(
+            "log-viewer", lambda image: None
+            if image.logical_area(window.client()) != first
+            else "the log in the window is the same", 6.0)
+        self.check(issue is None, "frames: the Log Viewer shows new log lines "
+                   "by itself", "log-viewer.png, %s"
+                   % (issue or "%.1f s, no input" % seconds))
+        self.pointer.home()
+        self.pointer.move_to(window.close_button())
+        self.pointer.click()
 
     def console_window(self, pid):
         """The window of a hosted app, from its "[CONSOLE] Opened" line."""
@@ -1596,6 +1718,11 @@ class Smoke:
                 self.save_diagnostics()
                 return False
             self.desktop()
+            if not (self.args.selftest or self.args.stress or
+                    self.args.editor):
+                self.cursor_frames()
+                self.clock()
+                self.log_viewer()
             if self.args.selftest:
                 self.selftest(boot)
             elif self.args.stress:
