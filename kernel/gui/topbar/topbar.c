@@ -42,7 +42,6 @@ void topbar_init(void) {
   menu_gemos = menu_create();
   if (menu_gemos) {
     menu_add_item(menu_gemos, "About GemOS", action_open_about);
-    menu_add_item(menu_gemos, "System Info", NULL);
     menu_add_item(menu_gemos, "Shutdown", action_exit);
   }
 

@@ -1206,6 +1206,13 @@ class Smoke:
         self.pointer.move_to(aside)            # off the entries
         time.sleep(0.5)
         image = self.screendump("explorer-selected")
+        width, height = (v // UI_SCALE for v in SCREEN_SIZE)
+        dock = image.logical_area((0, height - 48, width, height))
+        missing = sum(1 for i in range(0, len(dock), 3)
+                      if dock[i:i + 3] == b"\xff\x40\x40")
+        self.check(missing == 0, "explorer: its dock icon is not the red "
+                   "placeholder of an app without one",
+                   "%d placeholder pixels in the dock" % missing)
         cell = image.logical_rgb((about[0] - 36, about[1] - 14))
         # explorer_render draws a drag as the black outline of a 32 px
         # square around the pointer: count black pixels on its top edge
@@ -1687,7 +1694,7 @@ class Smoke:
         self.pointer.move_to(MENU_GEMOS)
         self.pointer.click()
         time.sleep(0.4)
-        self.pointer.move_to(menu_item(60, 2))  # GemOS -> Shutdown
+        self.pointer.move_to(menu_item(60, 1))  # GemOS -> Shutdown
         start = time.monotonic()
         try:
             # the menu acts on the press; the button is never released

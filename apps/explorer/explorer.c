@@ -357,7 +357,7 @@ static void explorer_open(void) {
 
 void explorer_init(void) {
   explorer_app.name = "File Explorer";
-  explorer_app.icon = NULL;
+  explorer_app.icon = &icon_folder;
   explorer_app.init = NULL;
   explorer_app.open = explorer_open;
   explorer_app.open_file = NULL; /* Can't open explorer with file yet */
