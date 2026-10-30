@@ -7,6 +7,7 @@
 #include "../../kernel/gui/wm/wm.h"
 #include "../../kernel/include/heap.h"
 #include "../../kernel/gfx/icons.h"
+#include "../../kernel/process.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -30,6 +31,10 @@ static char listed_path[GEMFS_PATH_MAX];
 static uint32_t listed_generation;
 static bool listed;
 
+/* Why the last file did not open, shown in red in place of the path until
+ * the next click; empty when there is nothing to report */
+static char status[GEMFS_NAME_MAX + 24];
+
 /* Drag State */
 static int drag_src_id = -1;
 static bool is_dragging = false;
@@ -43,8 +48,9 @@ static window_t *drag_win_ref = NULL; /* To unproject coords */
 #define COL_FOLDER 0xFFD700
 #define COL_FILE 0xDDDDDD
 #define COL_TEXT 0x000000
+#define COL_ERROR 0xC00000
 
-/* Helper: Check extension */
+/* Helper: Check extension, in any case (suffix in lower case) */
 static bool strends(const char *str, const char *suffix) {
   if (!str || !suffix)
     return false;
@@ -58,12 +64,32 @@ static bool strends(const char *str, const char *suffix) {
     return false;
   const char *sub = str + (l1 - l2);
   while (*sub && *suffix) {
-    if (*sub != *suffix)
+    char c = *sub;
+    if (c >= 'A' && c <= 'Z')
+      c = (char)(c - 'A' + 'a');
+    if (c != *suffix)
       return false;
     sub++;
     suffix++;
   }
   return true;
+}
+
+static bool is_text_file(const char *name) {
+  return strends(name, ".gemtext") || strends(name, ".txt");
+}
+
+/* status = first + second, cut to fit */
+static void explorer_set_status(const char *first, const char *second) {
+  size_t length = strlen(first);
+
+  if (length >= sizeof(status)) {
+    length = sizeof(status) - 1;
+  }
+  memcpy(status, first, length);
+  status[length] = '\0';
+  strncpy(status + length, second, sizeof(status) - 1 - length);
+  status[sizeof(status) - 1] = '\0';
 }
 
 /* dir + "/" + name into out; 0 if it does not fit */
@@ -134,9 +160,13 @@ static void explorer_render(window_t *win) {
 
   /* Path/Status */
   explorer_refresh();
-  font_draw_text(&win->ctx, ox + 150, oy + 8,
-                 gemfs_available() ? current_path : "No file system", 12,
-                 0x404040);
+  if (status[0] != '\0') {
+    font_draw_text(&win->ctx, ox + 150, oy + 8, status, 12, COL_ERROR);
+  } else {
+    font_draw_text(&win->ctx, ox + 150, oy + 8,
+                   gemfs_available() ? current_path : "No file system", 12,
+                   0x404040);
+  }
 
   /* Grid Area */
   int start_y = oy + TOP_BAR_H + 10;
@@ -161,7 +191,7 @@ static void explorer_render(window_t *win) {
     const icon_t *file_icon;
     if (entries[i].type == GEMFS_TYPE_DIR) {
       file_icon = &icon_folder;
-    } else if (strends(name, ".gemtext") || strends(name, ".txt")) {
+    } else if (is_text_file(name)) {
       file_icon = &icon_textfile;
     } else {
       file_icon = &icon_generic_file;
@@ -223,6 +253,8 @@ static void explorer_handle_event(window_t *win, event_t *ev) {
     int mx = ev->data.mouse.x;
     int my = ev->data.mouse.y;
 
+    status[0] = '\0';
+
     /* Check Toolbar */
     int rx = mx - win->client_rect.x;
     int ry = my - win->client_rect.y;
@@ -261,9 +293,19 @@ static void explorer_handle_event(window_t *win, event_t *ev) {
         }
         if (entries[id].type == GEMFS_TYPE_DIR) {
           strcpy(current_path, path);
-        } else if (strends(name, ".gemtext") || strends(name, ".txt")) {
-          /* FILE ASSOCIATION */
-          app_open_with_file("Text Editor", path);
+        } else {
+          /* one click opens one copy: the next click selects again */
+          selected_id = -1;
+          if (is_text_file(name)) {
+            /* FILE ASSOCIATION */
+            app_open_with_file("Text Editor", path);
+          } else if (strends(name, ".elf")) {
+            if (process_spawn_user_from_file(path) < 0) {
+              explorer_set_status("Could not start ", name);
+            }
+          } else {
+            explorer_set_status("No program opens ", name);
+          }
         }
       } else {
         selected_id = id;

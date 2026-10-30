@@ -23,6 +23,9 @@ void serial_putc(char c);
 /* Write a null-terminated string */
 void serial_print(const char *str);
 
+/* Wait until everything written has been sent, e.g. before power off */
+void serial_drain(void);
+
 /* Print a decimal number */
 void serial_print_dec(uint32_t value);
 

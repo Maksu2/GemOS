@@ -10,8 +10,9 @@
 #              no data disk, 4 MB VRAM (smaller mode, no page flip),
 #              boot from the hard disk image, a data disk without GemFS
 #              or with a damaged superblock (must stay unchanged), a
-#              second boot of the same disk (must write nothing), and a
-#              disk that writes slowly
+#              second boot of the same disk (must write nothing), a
+#              disk that writes slowly, and a machine without ACPI
+#              (Shutdown halts instead of turning it off)
 #   --editor   the text editor with files: type, Esc and the close button
 #              ask about unsaved text, save as, reopen from the File
 #              Explorer, save again, discard, and a refused save over a

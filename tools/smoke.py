@@ -12,10 +12,14 @@ the monitor:
   * windows open between the topbar and the dock, a second one moves off
     the first one's corner, and a dragged window keeps its title bar there,
   * every character of a hosted console sits in its own cell of the grid,
+  * the File Explorer starts ABOUT.ELF and USRSMOKE.ELF from GemFS, and a
+    click on an entry leaves no drag outline behind,
   * every frame checked must appear on screen by itself: no input is sent
     while waiting for it,
   * the serial log has no PANIC, user fault, allocation failure or refused
     disk write, and no line was printed into the middle of another one,
+  * GemOS -> Shutdown turns the machine off (QEMU exits by itself) after
+    the kernel has stopped GemFS; every mode but --selftest ends this way,
   * after QEMU has stopped, tools/mkgemfs check finds the GemFS data disk
     consistent.
 
@@ -30,8 +34,9 @@ test: the kernel must not have written a single byte.
 With --matrix it runs the smoke test once per machine variant (32/64/256 MB
 of RAM, no data disk, 4 MB of VRAM, boot from the hard disk image, a data
 disk without GemFS or with a damaged superblock, a second boot, a slow
-disk); each
-variant also checks log lines that show which path the kernel took.
+disk, a machine without ACPI, which Shutdown cannot turn off: the kernel
+halts and says so on the screen); each variant also checks log lines
+that show which path the kernel took.
 
 With --selftest it boots the self-test image (make selftest) instead, with
 a second disk without GemFS: kernel/selftest.c checks the heap, the pool,
@@ -123,6 +128,8 @@ MATRIX = [
     ("slow-disk", ["--slow-writes", "12"],
      [r"\[GemFS\] Mounted GemFS v3",
       r"\[PROC\] Programs on GemFS: 4 seeded, 0 up to date"]),
+    # Shutdown cannot turn the machine off: the kernel halts instead
+    ("no-acpi", ["--no-acpi"], [r"\[GemFS\] Mounted GemFS v3"]),
 ]
 
 # Topbar menus (kernel/gui/topbar/topbar.c): "GemOS" at x 10..80, "Apps" at
@@ -231,11 +238,22 @@ EDITOR_MENU = (MENU_APPS, menu_item(130, 3))     # Apps -> Text Editor
 EXPLORER_MENU = (MENU_APPS, menu_item(130, 0))   # Apps -> File Explorer
 
 
-def explorer_fifth(window):
-    """The File Explorer (apps/explorer/explorer.c) shows a grid of 80x70
-    cells. On a new disk the fifth entry of / is the first file the test
-    saves, after the four programs."""
-    return (window.x + 10 + 4 * 80 + 30, window.y + 28 + 30 + 10 + 20)
+def explorer_entry(window, index):
+    """The middle of the icon of an entry in the File Explorer
+    (apps/explorer/explorer.c): a grid of 80x70 cells, five in a row, from
+    10 px into the client area below a 30 px toolbar, with 32 px icons
+    2 px below the top of the cell. On a new disk / lists the programs as
+    the kernel puts them there: USRSMOKE.ELF, UTERM.ELF, ABOUT.ELF,
+    UTEXTEDIT.ELF (kernel/process.c), then the files the tests save."""
+    x = window.x + 1 + 10 + 80 * (index % 5)
+    y = window.y + 27 + 30 + 10 + 70 * (index // 5)
+    return (x + 40, y + 18)
+
+
+EXPLORER_USRSMOKE = 0
+EXPLORER_ABOUT = 2
+EXPLORER_FIRST_FILE = 4
+EXPLORER_SELECTION = (0xCC, 0xE5, 0xFF)  # COL_SELECTION
 EDITOR_FILE = "/notes.txt"
 EDITOR_SAVED = b"first line +more\nsecond"
 # QEMU sendkey names of the characters the test types
@@ -644,6 +662,9 @@ class Smoke:
                     drive += ",throttling.iops-write=%d" % self.args.slow_writes
                 cmd += ["-drive", drive]
                 index += 1
+        if self.args.no_acpi:
+            # no ACPI power management, so no port turns the machine off
+            cmd += ["-machine", "pc,acpi=off"]
         if self.args.vga_mem:
             # (-global VGA.vgamem_mb leaves the machine without a VGA)
             cmd += ["-vga", "none",
@@ -769,21 +790,30 @@ class Smoke:
         return Window.parse(match)
 
     def run_app(self, name, menu, item, updates_itself):
+        def press():
+            self.pointer.home()
+            self.pointer.move_to(menu)
+            self.pointer.click()
+            time.sleep(0.4)
+            self.pointer.move_to(item)
+            self.pointer.press()
+        return self.run_program(name, press, updates_itself)
+
+    def run_program(self, name, press, updates_itself, shot=None):
+        """press() presses the mouse button where it starts the program
+        name; then the program opens its window, closes on Esc and is
+        reaped with exit=0."""
         spawn_re = re.compile(r"\[PROC\] Spawned PID=(\d+) " + re.escape(name))
 
         def spawned(text):
             return spawn_re.findall(text)
 
         before = len(spawned(self.log_text()))
-        self.pointer.home()
-        self.pointer.move_to(menu)
-        self.pointer.click()
-        time.sleep(0.4)
-        self.pointer.move_to(item)
-        # The menu starts the program on the button press. The button stays
-        # down until the window check is done, so no input event can make
-        # the kernel redraw while the test waits for the window.
-        self.pointer.press()
+        # The menu and the File Explorer start the program on the button
+        # press. The button stays down until the window check is done, so
+        # no input event can make the kernel redraw while the test waits
+        # for the window.
+        press()
         try:
             pids = self.wait_for(
                 lambda t: spawned(t) if len(spawned(t)) > before else None,
@@ -800,7 +830,7 @@ class Smoke:
                 return False
 
             window = self.console_window(pid)
-            self.check_window_drawn(name, window)
+            self.check_window_drawn(name, window, shot)
         finally:
             try:
                 self.pointer.release()
@@ -845,8 +875,8 @@ class Smoke:
         return self.check(False, "%s: window redraws by itself" % name,
                           "unchanged for 5 s without input")
 
-    def check_window_drawn(self, name, window):
-        shot = name.split(".")[0].lower()
+    def check_window_drawn(self, name, window, shot=None):
+        shot = shot or name.split(".")[0].lower()
 
         issue, seconds = self.watch_screen(
             shot, lambda image: title_bar_problem(image, window),
@@ -958,6 +988,80 @@ class Smoke:
         time.sleep(0.5)
         self.monitor.cmd("sendkey n")
         self.editor_ended(pid, "the grid test closes it", since)
+
+    # -- File Explorer -----------------------------------------------------------
+    def open_explorer(self):
+        """The File Explorer from the Apps menu; its window, once it has had
+        time to draw (its first frame rasterizes its font sizes)."""
+        placed_re = re.compile(r"\[WM\] Placed " + Window.GEOMETRY)
+        before = len(placed_re.findall(self.log_text()))
+        self.pointer.home()
+        self.pointer.move_to(EXPLORER_MENU[0])
+        self.pointer.click()
+        time.sleep(0.4)
+        self.pointer.move_to(EXPLORER_MENU[1])
+        self.pointer.click()
+        placed = self.wait_for(lambda t: list(placed_re.finditer(t))[before:],
+                               self.args.app_timeout)
+        if not placed:
+            raise SmokeError("the File Explorer opened no window")
+        time.sleep(1.5)
+        return Window.parse(placed[0])
+
+    def file_explorer(self):
+        """The File Explorer starts the programs on GemFS: a click selects
+        an entry and, once the button is up, leaves no drag outline on the
+        screen; a click on the selected entry starts the program."""
+        if "[GemFS] Mounted" not in self.log_text():
+            print("SKIP  explorer: no file system, no programs to start",
+                  flush=True)
+            return
+        explorer = self.open_explorer()
+        about = explorer_entry(explorer, EXPLORER_ABOUT)
+        aside = (explorer.x + explorer.w // 2, explorer.y + explorer.h - 60)
+        self.pointer.home()
+        self.pointer.move_to(about)
+        self.pointer.click()                   # select
+        self.pointer.move_to(aside)            # off the entries
+        time.sleep(0.5)
+        image = self.screendump("explorer-selected")
+        cell = image.logical_rgb((about[0] - 36, about[1] - 14))
+        # explorer_render draws a drag as the black outline of a 32 px
+        # square around the pointer: count black pixels on its top edge
+        black = 0
+        for x, y in (about, aside):
+            edge = image.logical_area((x - 16, y - 16, x + 16, y - 15))
+            black += sum(1 for i in range(0, len(edge), 3)
+                         if edge[i:i + 3] == b"\x00\x00\x00")
+        self.check(cell == EXPLORER_SELECTION and black == 0,
+                   "explorer: a click selects ABOUT.ELF and leaves no drag "
+                   "outline", "explorer-selected.png, cell #%02x%02x%02x, "
+                   "%d black pixels where an outline would be"
+                   % (cell + (black,)))
+
+        def open_about():
+            self.pointer.move_to(about)
+            self.pointer.press()               # the second click opens it
+        self.run_program("/ABOUT.ELF", open_about, False,
+                         shot="explorer-about")
+
+        # a program without a window
+        spawn_re = re.compile(r"\[PROC\] Spawned PID=(\d+) /USRSMOKE\.ELF")
+        before = len(spawn_re.findall(self.log_text()))
+        self.pointer.move_to(explorer_entry(explorer, EXPLORER_USRSMOKE))
+        self.pointer.click()                   # select
+        time.sleep(0.5)
+        self.pointer.click()                   # start
+        pids = self.wait_for(lambda t: spawn_re.findall(t)[before:],
+                             self.args.app_timeout)
+        reaped = pids and self.wait_for(
+            lambda t: re.search(r"\[PROC\] Reaped PID=%s exit=(-?\d+)"
+                                % pids[0], t), self.args.app_timeout)
+        self.check(bool(reaped) and reaped.group(1) == "42",
+                   "explorer: /USRSMOKE.ELF, a program without a window, "
+                   "runs and exits", "PID=%s exit=%s"
+                   % (pids[0] if pids else "none",
+                      reaped.group(1) if reaped else "none"))
 
     # -- stress test -----------------------------------------------------------
     def burst(self, keys):
@@ -1189,23 +1293,9 @@ class Smoke:
             return
 
         # the File Explorer opens the file in the editor
-        placed_re = re.compile(r"\[WM\] Placed " + Window.GEOMETRY)
-
         def open_from_explorer():
-            before = len(placed_re.findall(self.log_text()))
-            self.pointer.home()
-            self.pointer.move_to(EXPLORER_MENU[0])
-            self.pointer.click()
-            time.sleep(0.4)
-            self.pointer.move_to(EXPLORER_MENU[1])
-            self.pointer.click()
-            placed = self.wait_for(
-                lambda t: list(placed_re.finditer(t))[before:],
-                self.args.app_timeout)
-            if not placed:
-                raise SmokeError("editor: the File Explorer opened no window")
-            time.sleep(1.5)
-            self.pointer.move_to(explorer_fifth(Window.parse(placed[0])))
+            explorer = self.open_explorer()
+            self.pointer.move_to(explorer_entry(explorer, EXPLORER_FIRST_FILE))
             self.pointer.click()           # select
             time.sleep(0.5)
             self.pointer.click()           # open
@@ -1406,6 +1496,74 @@ class Smoke:
                        "serial log: /%s/" % pattern)
         self.check(self.qemu.poll() is None, "QEMU still running at the end")
 
+    def shutdown(self):
+        """GemOS -> Shutdown: the kernel lets a GemFS call in progress
+        finish, keeps any other from starting and turns the machine off,
+        so QEMU exits by itself. With --no-acpi nothing turns it off: the
+        kernel halts, and the screen says it is safe to turn it off."""
+        since = len(self.log_text())
+        self.pointer.home()
+        self.pointer.move_to(MENU_GEMOS)
+        self.pointer.click()
+        time.sleep(0.4)
+        self.pointer.move_to(menu_item(60, 2))  # GemOS -> Shutdown
+        start = time.monotonic()
+        try:
+            # the menu acts on the press; the button is never released
+            self.monitor.cmd("mouse_button 1")
+        except (OSError, SmokeError):
+            pass  # QEMU has already turned off
+
+        if self.args.no_acpi:
+            halted = self.wait_for(
+                lambda t: "[POWER] Still running" in t[since:], 30.0)
+            self.check(bool(halted),
+                       "shutdown: without ACPI the kernel halts, QEMU stays "
+                       "on", "%.1f s" % (time.monotonic() - start))
+
+            def problem(image):
+                width, height = (v // UI_SCALE for v in SCREEN_SIZE)
+                corner = image.logical_rgb((10, 10))
+                middle = image.logical_area((width // 2 - 150, height // 2 - 12,
+                                             width // 2 + 150, height // 2 + 12))
+                white = sum(1 for i in range(0, len(middle), 3)
+                            if min(middle[i:i + 3]) > 200)
+                if corner != (0, 0, 0):
+                    return "corner pixel #%02x%02x%02x" % corner
+                if white < 200:
+                    return "%d white pixels in the middle" % white
+                return None
+
+            issue, seconds = self.watch_screen("shutdown", problem,
+                                               WINDOW_TIMEOUT)
+            self.check(issue is None, "shutdown: the screen says it is safe "
+                       "to turn the computer off",
+                       "shutdown.png, %s" % (issue or "%.1f s" % seconds))
+            return
+
+        try:
+            code = self.qemu.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            code = None
+        self.check(code == 0, "shutdown: GemOS -> Shutdown turns the machine "
+                   "off", "QEMU exited with status %s after %.1f s"
+                   % (code, time.monotonic() - start) if code is not None
+                   else "QEMU still running after 30 s")
+        text = self.log_text()
+        steps = ["[POWER] Shutdown requested", "[POWER] Powering off"]
+        if "[GemFS] Mounted" in text:
+            steps.insert(1, "[GemFS] Stopped")
+        found = [text.find(step, since) for step in steps]
+        failures = [p for p in FAILURE_PATTERNS + [r"\[POWER\] Still running"]
+                    if re.search(p, text[since:])]
+        self.check(min(found) >= 0 and found == sorted(found) and not failures,
+                   "shutdown: the log shows %s, in that order"
+                   % ", then ".join(steps),
+                   "missing: %s" % ", ".join(s for s, f in zip(steps, found)
+                                             if f < 0) if min(found) < 0
+                   else "failures: %s" % ", ".join(failures) if failures
+                   else "")
+
     def save_diagnostics(self):
         """On failure: the screen and the CPU registers (EIP shows where the
         guest is, e.g. `nm build/kernel.elf | sort`) next to the log."""
@@ -1450,8 +1608,10 @@ class Smoke:
                     time.sleep(0.5)
                 self.windows()
                 self.console_grid()
+                self.file_explorer()
             if not self.args.selftest:
                 self.scan_log()
+                self.shutdown()
             if any(not ok for ok, _, _ in self.results):
                 self.save_diagnostics()
         except SmokeError:
@@ -1497,6 +1657,9 @@ def main():
     parser.add_argument("--expect-unchanged", action="append", default=[],
                         choices=("data", "boot"),
                         help="that disk image must be the same afterwards")
+    parser.add_argument("--no-acpi", action="store_true",
+                        help="a machine without ACPI: Shutdown cannot turn "
+                        "it off")
     parser.add_argument("--vga-mem", type=int, default=0, metavar="MB",
                         help="VRAM of the QEMU VGA (default: QEMU's 16)")
     parser.add_argument("--resolution", default="1920x1080",

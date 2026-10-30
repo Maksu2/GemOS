@@ -2,6 +2,7 @@
 #include "../drivers/mouse.h"
 #include "../drivers/pic.h"
 #include "../drivers/pit.h"
+#include "../drivers/power.h"
 #include "../drivers/serial.h"
 #include "../drivers/vbe.h"
 #include "console.h"
@@ -59,6 +60,47 @@ static bool pending_redraw = true;
 void kernel_request_redraw(void) {
   pending_redraw = true;
   scheduler_wake(TASK_GUI);
+}
+
+/* Set by the GemOS menu's Shutdown, which runs in the GUI task: the loop
+ * acts on it after the events it is handling. */
+static bool shutdown_requested;
+
+void kernel_request_shutdown(void) { shutdown_requested = true; }
+
+/* The finished frame from the backbuffer to the screen */
+static void present_frame(void *backbuffer, void *vbe_buffer,
+                          uint32_t buffer_size, int use_page_flip) {
+  if (use_page_flip) {
+    /* BGA: copy to the invisible back page, then flip atomically */
+    memcpy(vbe_get_back_page(), backbuffer, buffer_size);
+    vbe_flip();
+  } else {
+    memcpy(vbe_buffer, backbuffer, buffer_size);
+  }
+}
+
+/* Shutdown, from the GUI loop. A file system call in progress finishes and
+ * no other starts, the screen says it is safe to turn the computer off,
+ * and the machine turns off where it can (drivers/power.c). No process
+ * runs again: the GUI task keeps the CPU from here on. Text not saved in
+ * an editor is lost. */
+static void kernel_shutdown(void *backbuffer, void *vbe_buffer,
+                            uint32_t buffer_size, int use_page_flip) {
+  const char *message = "It is now safe to turn off the computer.";
+  int width = (int)(screen_ctx.width / ui_scale);
+  int height = (int)(screen_ctx.height / ui_scale);
+
+  serial_print("[POWER] Shutdown requested\n");
+  gemfs_shutdown();
+
+  screen_ctx.framebuffer = (uint32_t *)backbuffer;
+  gfx_reset_clip(&screen_ctx);
+  gfx_fill_rect(&screen_ctx, 0, 0, width, height, 0x000000);
+  font_draw_text(&screen_ctx, (width - font_text_width(message, 16)) / 2,
+                 height / 2 - 10, message, 16, 0xFFFFFF);
+  present_frame(backbuffer, vbe_buffer, buffer_size, use_page_flip);
+  power_off();
 }
 
 /* End of a GUI loop iteration. Kernel code is never preempted, so the GUI
@@ -368,6 +410,10 @@ void kernel_main(const boot_info_t *loader_info) {
       /* EVENT_TIMER_TICK only wakes the loop for the frame pacing below. */
     }
 
+    if (shutdown_requested) {
+      kernel_shutdown(backbuffer, vbe_buffer, buffer_size, use_page_flip);
+    }
+
     /* At most one frame per TICKS_PER_FRAME ticks. The request is cleared
      * before drawing, so a redraw requested while this frame is drawn gets
      * the next frame instead of being lost. */
@@ -388,13 +434,7 @@ void kernel_main(const boot_info_t *loader_info) {
       menu_render(&screen_ctx);
       cursor_draw();
 
-      if (use_page_flip) {
-        /* BGA: copy to the invisible back page, then flip atomically */
-        memcpy(vbe_get_back_page(), backbuffer, buffer_size);
-        vbe_flip();
-      } else {
-        memcpy(vbe_buffer, backbuffer, buffer_size);
-      }
+      present_frame(backbuffer, vbe_buffer, buffer_size, use_page_flip);
     }
 
 #ifdef GEMOS_SELFTEST

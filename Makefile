@@ -113,7 +113,8 @@ ifeq ($(SELFTEST),1)
 endif
 
 DRIVER_SOURCES := drivers/serial.c drivers/vbe.c drivers/pic.c drivers/pit.c \
-                  drivers/keyboard.c drivers/mouse.c drivers/ata.c drivers/rtc.c
+                  drivers/keyboard.c drivers/mouse.c drivers/ata.c drivers/rtc.c \
+                  drivers/power.c
 
 LIB_SOURCES := lib/string.c
 
