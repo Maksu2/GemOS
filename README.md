@@ -69,6 +69,7 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 - File Explorer: folders, opens text files in the editor and starts programs from the disk
 - ATA PIO with IDENTIFY, timeouts and error checks; without a data disk the system runs without a file system
 - GemFS v3 on a whole disk: a superblock with a checksum, a block bitmap, inodes and directories, files up to about 4 MB. The kernel mounts only a disk with a valid superblock, never formats one and never writes to a disk it has not mounted; `tools/mkgemfs` makes and inspects disks on the host
+- writes are ordered so that a crash keeps every file whole: at worst it leaves blocks and inodes that nothing uses, and the next mount frees them
 
 ### Userland transition
 
@@ -143,7 +144,7 @@ tools/smoke.sh --editor   # UTEXTEDIT with files: save as, reopen from the File 
 tools/smoke.sh --stress   # 25 cycles of opening, typing into and closing them
 tools/smoke.sh --matrix   # smoke test on 32/64/256 MB, no data disk, 4 MB VRAM, hard disk boot,
                           # disks without GemFS that must stay unchanged, a second boot,
-                          # a slow disk, a machine without ACPI
+                          # a slow disk, a machine without ACPI, a disk after a crash
 tools/smoke.sh --selftest # kernel self-test image: heap, ELF loader, GemFS, FPU, every ring 3
                           # exception; boots twice on the same disks
 make run          # QEMU window with the GemFS data disk (build/data.img)
