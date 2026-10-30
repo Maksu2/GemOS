@@ -158,3 +158,7 @@ Explorer uruchamia `.ELF` (rozszerzenia w dowolnej wielkości liter, czerwony ko
   - Trwałość: zapis pliku w edytorze, od razu Shutdown, odczyt `mkgemfs cat` na hoście.
   - `--preboot` może kończyć Shutdownem zamiast `quit` z HMP.
   - Wariant macierzy z `-machine pc,acpi=off` sprawdza ekran zapasowy (nie sprawdzone, czy QEMU 8.2 wtedy ignoruje oba porty).
+
+## Reszta etapu 5 z audytu — zrobiona
+
+Audyt (§8.2) wymienia jeszcze tytuły menu i ikony. Log Viewer ma tytuł okna i menu „Log Viewer” (było „Window” i „Menu”), Explorer ikonę folderu w docku (był czerwony placeholder), a z menu GemOS zniknęła pozycja „System Info” bez akcji. Przeniesienie Explorera do userlandu („docelowo”) zostaje na później.

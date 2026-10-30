@@ -171,4 +171,4 @@ docs/       strona GitHub Pages, audyt kodu, GEMFS.md (format dysku)
 - **GUI zostaje w jądrze.** Userland rozmawia z systemem wyłącznie przez ABI z `include/gemos/` (`syscall_abi.h`, `console_abi.h`, `user_api.h`; programy autotestu także `selftest_abi.h`) i nie includuje nagłówków jądra.
 - **Kody klawiszy** pochodzą tylko z `GEMOS_KEY_*` w `include/gemos/console_abi.h`.
 - **Jeden `string.h`**: `include/string.h`, dołączany jako `<string.h>`.
-- **Kolejność prac jest w §8.2 audytu.** Nowe funkcje czekały na współbieżność z etapu 3; jest zrobiona, więc teraz kolej na resztę etapu 5.
+- **Kolejność prac jest w §8.2 audytu.** Etapy 0–5 są zrobione (etap 5 krok po kroku: `docs/ETAP5-PLAN.md`). Dalej idą znane problemy z listy wyżej; duże nowe rzeczy, przed którymi audyt ostrzega (GUI w userlandzie, sieć, USB, SMP), i przeniesienie Explorera do userlandu czekają na osobną decyzję.
