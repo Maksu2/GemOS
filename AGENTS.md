@@ -58,7 +58,13 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
     - ekran pokazuje „It is now safe to turn off the computer.”,
     - `power_off()` (`drivers/power.c`) pisze polecenie uśpienia ACPI do PM1a_CNT pod `0x604` (QEMU) i `0xB004` (Bochs); gdzie to nie działa, jądro loguje `[POWER] Still running` i staje (`hlt` z IF=0),
     - od wywołania żaden proces już nie działa, a tekst niezapisany w edytorze przepada.
-  - Każda klatka przerysowuje cały ekran. Page flip przez BGA tylko po wykryciu adaptera (ID `0xB0C0`–`0xB0C5`) i przy VRAM na dwie strony; inaczej `memcpy` do framebuffera.
+  - Klatki (`kernel/kernel.c`):
+    - pełna klatka przerysowuje cały ekran do backbuffera i kopiuje go do VRAM; page flip przez BGA tylko po wykryciu adaptera (ID `0xB0C0`–`0xB0C5`) i przy VRAM na dwie strony, inaczej `memcpy` do framebuffera,
+    - backbuffer nigdy nie trzyma kursora: pełna klatka bierze go tylko na czas kopii (`cursor_frame_begin`/`cursor_frame_end`),
+    - ruch myszy, który nic innego nie zmienia, daje klatkę samego kursora (`cursor_move_on`): na widocznej stronie stary prostokąt kursora wraca z backbuffera, a kursor rysuje się w nowym miejscu,
+    - o pełną klatkę przy ruchu prosi otwarte menu (podświetlenie), WM przy przeciąganiu okna i aplikacja, której wygląd zależy od myszy (Explorer: podświetlenie, obrys przeciągania),
+    - co sekundę pętla pyta zegar w topbarze (`topbar_clock_changed()`) i aplikacje (opcjonalne `app_t.changed`; Log Viewer odpowiada „tak”, gdy log urósł), czy coś zmieniło się bez zdarzenia, i wtedy rysuje pełną klatkę,
+    - log `[GFX] Frames: full= cursor=` najwyżej co 2 s, gdy przybyły klatki, ze średnim i najdłuższym czasem pełnej (pod TCG ok. 50 ms).
 - **ATA:** PIO LBA28 (`drivers/ata.c`). IDENTIFY na 4 pozycjach, każde oczekiwanie z limitem, kody błędów zamiast pętli bez końca. Limity są czasowe, mierzone stoperem na liczniku PIT (`pit_stopwatch_*`: liczy przeładowania licznika, więc działa też z IF=0, a z IF=1 bierze też ticki): 5 s na IDENTIFY, 30 s na odczyt, zapis i FLUSH CACHE. Po timeoutcie sterownik resetuje kanał (SRST), żeby następne polecenie nie przesłało złych bajtów. Każdy dysk jest tylko do odczytu, dopóki GemFS go nie zamontuje (`ata_allow_writes()`); zapis na inny dysk kończy się `ATA_ERR_READ_ONLY` i linią `[ATA] Refused …` w logu.
 - **GemFS v3** (`kernel/fs/`, format w `docs/GEMFS.md`):
   - cały dysk ATA w blokach 4 KB: superblok z magic `GEMOS-FS`, wersją, rozmiarem i CRC-32, bitmapa bloków, tablica inode'ów (128 B: 12 bloków bezpośrednich i 1 pośredni, plik do ok. 4 MB), katalogi (wpisy 64 B, nazwy do 55 bajtów, ścieżki do 127);
@@ -80,7 +86,7 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
 Nie obchodzić ich po cichu; plan naprawy jest w §8.2 audytu.
 
 - **Zadanie GUI czeka na koniec operacji GemFS, w której trakcie potrzebuje dysku** (File Explorer albo start programu w trakcie zapisu do 1 MB): GUI stoi wtedy do jej końca.
-- **Render całej klatki (1080p) w task 0 nie jest przerywany:** procesy czekają na koniec iteracji.
+- **Render pełnej klatki (1080p, pod TCG ok. 50 ms) w task 0 nie jest przerywany:** procesy czekają na koniec iteracji. Ruch myszy już jej nie wywołuje; pozostałe przypadki ograniczy lista uszkodzonych prostokątów (krok 2 punktu 4 w `docs/ETAP5-PLAN.md`).
 - **GemFS bez księgowania:** awaria w trakcie zapisu albo usuwania nie psuje istniejących plików, ale może zostawić zajęte bloki i inode'y bez właściciela. Jądro ich nie odzyskuje; `tools/mkgemfs check` je pokazuje.
 - **RAM powyżej 32 MB nie jest używany** (okno identity map, patrz wyżej).
 - **Shutdown nie pyta programów o niezapisane zmiany:** tekst niezapisany w UTEXTEDIT przepada.
@@ -109,7 +115,7 @@ docs/       strona GitHub Pages, audyt kodu, GEMFS.md (format dysku)
 ## Budowanie i testy
 
 - `make all` tworzy `build/gemos.img` (dyskietka) i `build/gemos-hdd.img` (dysk twardy). Wymaga `nasm` oraz `i686-elf-gcc` albo `x86_64-elf-gcc`; bez nich Makefile używa hostowego `gcc -m32`, tak jak CI.
-- `tools/smoke.sh` buduje obraz, bootuje go w QEMU bez okna, uruchamia UTERM, ABOUT i UTEXTEDIT, sprawdza log i zrzuty ekranu oraz rozmieszczenie okien (obszar roboczy, kaskada drugiego okna, przeciąganie na dock i puszczenie nad topbarem; położenie okien bierze z logu) i siatkę konsoli (10 liter różnej szerokości zajmuje dokładnie 10 komórek), uruchamia ABOUT i USRSMOKE z File Explorera (kliknięcie nie zostawia prostokąta przeciągania), kończy się Shutdown z menu GemOS (QEMU musi zamknąć się samo z kodem 0, a log pokazać zatrzymanie GemFS przed wyłączeniem), a potem sprawdza dysk danych przez `tools/mkgemfs check`. Shutdown kończy też test edytora i stress. Musi skończyć się `SMOKE: PASS` przed każdym commitem. Test nie wysyła żadnego wejścia, gdy czeka na klatkę: okno ma się pojawić samo.
+- `tools/smoke.sh` buduje obraz, bootuje go w QEMU bez okna, uruchamia UTERM, ABOUT i UTEXTEDIT, sprawdza log i zrzuty ekranu oraz rozmieszczenie okien (obszar roboczy, kaskada drugiego okna, przeciąganie na dock i puszczenie nad topbarem; położenie okien bierze z logu) i siatkę konsoli (10 liter różnej szerokości zajmuje dokładnie 10 komórek), sprawdza, że ruch myszy po pustym pulpicie nie rysuje pełnych klatek (liczniki z `[GFX] Frames`) ani nie zostawia śladów kursora na tapecie, i że zegar w topbarze sam pokazuje nową minutę (harness ustawia zegar QEMU na 14 s przed pełną minutą), a Log Viewer nowe linie logu, uruchamia ABOUT i USRSMOKE z File Explorera (kliknięcie nie zostawia prostokąta przeciągania), kończy się Shutdown z menu GemOS (QEMU musi zamknąć się samo z kodem 0, a log pokazać zatrzymanie GemFS przed wyłączeniem), a potem sprawdza dysk danych przez `tools/mkgemfs check`. Shutdown kończy też test edytora i stress. Musi skończyć się `SMOKE: PASS` przed każdym commitem. Test nie wysyła żadnego wejścia, gdy czeka na klatkę: okno ma się pojawić samo.
 - `tools/smoke.sh --stress [N]` (domyślnie 25 cykli) otwiera, obsługuje klawiaturą i myszą i zamyka wszystkie programy; każdy proces musi skończyć z `exit=0`, a log nie może mieć przeplecionych linii. Uruchom go po każdej zmianie schedulera, syscalli, konsoli albo pętli GUI.
 - `tools/smoke.sh --matrix` uruchamia smoke na 32/64/256 MB, bez dysku danych, z 4 MB VRAM (1280×800, `memcpy`), przy starcie z dysku twardego (dysk rozruchowy musi zostać bez zmian), z dyskiem danych bez GemFS i z uszkodzonym superblokiem (SHA-256 obrazu przed i po musi być ten sam), przy drugim starcie tego samego dysku (nic nie może się zapisać), z dyskiem, który zapisuje wolno (QEMU przepuszcza 12 zapisów na sekundę), oraz na maszynie bez ACPI (`-machine pc,acpi=off`: Shutdown nie wyłącza QEMU, jądro staje, a ekran mówi, że można wyłączyć komputer). Uruchom go po każdej zmianie bootloadera, pamięci, VBE, ATA albo GemFS.
 - `tools/smoke.sh --selftest` buduje obraz autotestu (`make selftest`, `build/selftest/gemos.img`, jądro z `-DGEMOS_SELFTEST`) i sprawdza jego raport. `kernel/selftest.c` działa jako zadanie jądra obok GUI i sprawdza:
@@ -158,7 +164,7 @@ docs/       strona GitHub Pages, audyt kodu, GEMFS.md (format dysku)
     - tablica zadań,
     - stan klawiatury i myszy,
     - pozycja kursora.
-  - **Odświeżanie ekranu:** wszystko, co zmienia zawartość ekranu, woła `kernel_request_redraw()`, co budzi task 0.
+  - **Odświeżanie ekranu:** wszystko, co zmienia zawartość ekranu, woła `kernel_request_redraw()`, co budzi task 0. Dotyczy to także zmian po ruchu myszy: sam ruch rysuje tylko kursor.
 - **32-bit, własny bootloader**, bez GRUB-a, bez libc i bez libgcc.
 - **GUI zostaje w jądrze.** Userland rozmawia z systemem wyłącznie przez ABI z `include/gemos/` (`syscall_abi.h`, `console_abi.h`, `user_api.h`; programy autotestu także `selftest_abi.h`) i nie includuje nagłówków jądra.
 - **Kody klawiszy** pochodzą tylko z `GEMOS_KEY_*` w `include/gemos/console_abi.h`.
