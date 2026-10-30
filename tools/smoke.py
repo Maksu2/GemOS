@@ -9,7 +9,9 @@ the monitor:
   * the desktop screendump is a rendered 1920x1080 frame,
   * a mouse move over the empty desktop draws only the cursor again: no
     full frame (the kernel logs how many frames of each kind it drew),
-    and no trace of the arrow on the wallpaper,
+    and no trace of the arrow on the wallpaper; typing into UTERM.ELF
+    draws only partial frames, which leave the screen exactly as a full
+    frame draws it,
   * the clock in the topbar shows a new minute by itself (QEMU's clock
     starts a few seconds before one), and the Log Viewer new log lines,
   * UTERM.ELF, ABOUT.ELF and UTEXTEDIT.ELF are started from the topbar menus,
@@ -22,7 +24,8 @@ the monitor:
   * every frame checked must appear on screen by itself: no input is sent
     while waiting for it,
   * the serial log has no PANIC, user fault, allocation failure or refused
-    disk write, and no line was printed into the middle of another one,
+    disk write, and no line was printed into the middle of another one;
+    on a GemFS disk the kernel found nothing to reclaim at mount,
   * GemOS -> Shutdown turns the machine off (QEMU exits by itself) after
     the kernel has stopped GemFS; every mode but --selftest ends this way,
   * after QEMU has stopped, tools/mkgemfs check finds the GemFS data disk
@@ -31,7 +34,12 @@ the monitor:
 The data disk is a fresh GemFS disk (tools/mkgemfs format), or with
 --data-disk "unsigned" (random bytes) or "damaged" (a GemFS superblock with
 a wrong checksum). --preboot boots once on the new disks and shuts down
-before the test, which then runs on a second boot. --slow-writes N lets
+before the test, which then runs on a second boot. --leftovers then adds
+files that must survive and what a crash in the middle of writes and
+deletes can leave: blocks and inodes that nothing uses. A boot during which
+the blocks of one file cannot be mapped must free none of them and write
+nothing; the test runs on the next boot, which must free exactly them,
+after which tools/mkgemfs check finds nothing wrong. --slow-writes N lets
 QEMU write only N requests per second to the data disk. --expect-unchanged
 data|boot compares the SHA-256 of that disk image before and after the
 test: the kernel must not have written a single byte.
@@ -40,8 +48,8 @@ With --matrix it runs the smoke test once per machine variant (32/64/256 MB
 of RAM, no data disk, 4 MB of VRAM, boot from the hard disk image, a data
 disk without GemFS or with a damaged superblock, a second boot, a slow
 disk, a machine without ACPI, which Shutdown cannot turn off: the kernel
-halts and says so on the screen); each variant also checks log lines
-that show which path the kernel took.
+halts and says so on the screen, and a disk after a crash); each variant
+also checks log lines that show which path the kernel took.
 
 With --selftest it boots the self-test image (make selftest) instead, with
 a second disk without GemFS: kernel/selftest.c checks the heap, the pool,
@@ -51,7 +59,8 @@ logs "[SELFTEST] RESULT", then
 overflows its kernel stack on purpose; the log must end in the double
 fault panic that names the overflow. The self-test boots twice on the same
 disks: between the boots the harness checks the GemFS disk and the files
-the first boot wrote, and the second boot checks those files again. The
+the first boot wrote, and the second boot checks those files again and
+finds nothing to reclaim at mount. The
 second disk must come out of both boots unchanged.
 
 With --editor it tests UTEXTEDIT.ELF with files instead: Esc and the close
@@ -75,6 +84,7 @@ Exit status: 0 = PASS, 1 = FAIL, 2 = setup error.
 
 import argparse
 import hashlib
+import importlib.machinery
 import os
 import random
 import re
@@ -86,6 +96,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import zlib
 
 # The desktop runs at 1920x1080 with ui_scale 2.0 (kernel/kernel.c), so
@@ -135,6 +146,10 @@ MATRIX = [
       r"\[PROC\] Programs on GemFS: 4 seeded, 0 up to date"]),
     # Shutdown cannot turn the machine off: the kernel halts instead
     ("no-acpi", ["--no-acpi"], [r"\[GemFS\] Mounted GemFS v3"]),
+    # a crash left blocks and inodes that nothing uses: a boot that cannot
+    # read the whole tree leaves them, the next one frees them
+    ("after-crash", ["--preboot", "--leftovers"],
+     [r"\[PROC\] Programs on GemFS: 0 seeded, 4 up to date"]),
 ]
 
 # Topbar menus (kernel/gui/topbar/topbar.c): "GemOS" at x 10..80, "Apps" at
@@ -222,8 +237,10 @@ class Window:
 CURSOR_PATH = [(480, 270), (800, 150), (150, 400), (600, 450), (300, 100),
                (700, 300)]
 CURSOR_SIZE = (12, 17)  # the arrow (kernel/ui/cursor.c)
-# "[GFX] Frames: full= cursor=" (kernel/kernel.c), at most every 2 s
-FRAMES_RE = re.compile(r"\[GFX\] Frames: full=(\d+) cursor=(\d+)")
+# "[GFX] Frames: full= partial= cursor=" (kernel/kernel.c), at most every
+# 2 s
+FRAMES_RE = re.compile(
+    r"\[GFX\] Frames: full=(\d+) partial=(\d+) cursor=(\d+)")
 FRAMES_LOG_DELAY = 2.5
 # QEMU's clock starts this many seconds before a new minute, so the clock
 # in the topbar (x from 80 px left of the right edge) changes then
@@ -331,6 +348,7 @@ FAILURE_PATTERNS = [
     r"Failed to",
     r"\[ELF\]",
     r"\[ATA\] (Refused|[a-z ]+ failed)",
+    r"\[GemFS\] (Nothing reclaimed|Reclaiming stopped)",
 ]
 
 # Kernel log lines start with a "[Tag] " prefix; indented lines continue the
@@ -356,6 +374,14 @@ FILETEST_BIG = "/fstest/big.bin"
 FILETEST_TABLE = bytes((((i >> 8) ^ (i * 13 + 5)) & 0xFF)
                        for i in range(81920))
 
+# --leftovers: files that must come out of the test as they went in, the
+# second one with an indirect block (15 blocks of 4 KB), and what a crash
+# left besides them (see add_leftovers).
+KEPT_SMALL = "/kept/small.txt"
+KEPT_BIG = "/kept/big.bin"
+LEFTOVERS_RECLAIMED = ("[GemFS] Reclaimed 21 blocks and 4 inodes that no "
+                       "file or directory used")
+
 
 def mkgemfs(*args):
     return subprocess.run([sys.executable, MKGEMFS] + list(args),
@@ -365,6 +391,62 @@ def mkgemfs(*args):
 def random_bytes(size, seed):
     """The same bytes on every run, so a failure can be repeated."""
     return random.Random(seed).randbytes(size)
+
+
+def kept_files():
+    return {KEPT_SMALL: b"Kept through a crash and the boot after it.\n",
+            KEPT_BIG: random_bytes(60 * 1024, 0x4B45)}
+
+
+def load_mkgemfs():
+    """tools/mkgemfs as a module: it can change an image the way only a
+    crash would."""
+    loader = importlib.machinery.SourceFileLoader("mkgemfs", MKGEMFS)
+    module = types.ModuleType(loader.name)
+    loader.exec_module(module)
+    return module
+
+
+def add_leftovers(path):
+    """Put the kept files on a GemFS disk, then leave what a crash in the
+    middle of writes and deletes can leave (docs/GEMFS.md, "Update order"):
+    blocks and inodes marked used that no directory leads to. That is 21
+    blocks and 4 inodes: 3 blocks of a write that never got to its inode,
+    and three deletes that stopped once the entry was gone: /lost.txt (2
+    blocks), /lostdir with a file in it (2 blocks) and /lostbig.bin (13
+    blocks and its indirect block). Returns the inode of KEPT_BIG."""
+    gemfs = load_mkgemfs()
+    fs = gemfs.GemFS(path, writable=True)
+    try:
+        fs.mkdir("/kept")
+        for name, data in kept_files().items():
+            fs.put(name, data)
+        for _ in range(3):
+            fs.alloc_block()
+        fs.sync_bitmap()
+        fs.put("/lost.txt", random_bytes(5000, 1))
+        fs.mkdir("/lostdir")
+        fs.put("/lostdir/inner.txt", b"In a directory nothing leads to.\n")
+        fs.put("/lostbig.bin", random_bytes(13 * gemfs.BLOCK, 2))
+        for name in ("/lost.txt", "/lostdir", "/lostbig.bin"):
+            fs.remove_entry(gemfs.ROOT, fs.resolve(name))
+        return fs.resolve(KEPT_BIG)
+    finally:
+        fs.close()
+
+
+def set_indirect(path, number, block):
+    """Point the indirect block of inode `number` at `block`; returns the
+    block it pointed at."""
+    gemfs = load_mkgemfs()
+    fs = gemfs.GemFS(path, writable=True)
+    try:
+        inode = fs.read_inode(number)
+        old, inode.indirect = inode.indirect, block
+        fs.write_inode(number, inode)
+        return old
+    finally:
+        fs.close()
 
 
 def make_data_disk(path, kind):
@@ -623,6 +705,11 @@ class Smoke:
         self.check_gemfs("after the test")
         if self.args.editor:
             self.check_editor_files()
+        if self.args.leftovers:
+            for path, data in kept_files().items():
+                result = mkgemfs("cat", self.disks["data"], path)
+                self.check(result.returncode == 0 and result.stdout == data,
+                           "disk: %s is as it was before the crash" % path)
         unchanged = list(self.args.expect_unchanged)
         if self.args.selftest:
             unchanged.append("spare")
@@ -651,6 +738,32 @@ class Smoke:
         finally:
             self.stop_qemu()
         self.check_gemfs("after the first boot")
+
+    def crash_leftovers(self):
+        """Leave on the data disk what a crash can leave, and make the
+        blocks of one file unreadable: its indirect block points outside
+        the data area. The kernel cannot tell then what belongs to whom, so
+        a boot must free nothing and write nothing. The test runs on the
+        next boot, with the pointer back, which frees all the leftovers."""
+        data = self.disks["data"]
+        big = add_leftovers(data)
+        indirect = set_indirect(data, big, 0)
+        before = sha256(data)
+        self.start_qemu("leftovers-serial.log")
+        try:
+            done = self.wait_for(lambda t: "[PROC] Programs on GemFS" in t,
+                                 self.args.boot_timeout)
+        finally:
+            self.stop_qemu()
+        line = re.search(r"\[GemFS\] Nothing reclaimed: [^\n]*",
+                         self.log_text())
+        self.check(bool(done) and line is not None and
+                   "a bad block pointer" in line.group(0),
+                   "leftovers: a boot that cannot map the blocks of a file "
+                   "frees nothing", line.group(0) if line else "no such line")
+        self.check(sha256(data) == before,
+                   "leftovers: ... and writes nothing to the disk")
+        set_indirect(data, big, indirect)
 
     # -- QEMU ----------------------------------------------------------------
     def start_qemu(self, serial="serial.log"):
@@ -804,26 +917,28 @@ class Smoke:
                           issue or "desktop.png, %.1f s" % seconds)
 
     def frame_counts(self):
-        """Full and cursor frames so far, from the last "[GFX] Frames" line
-        once the GUI loop has had the time to log every frame drawn."""
+        """Full, partial and cursor frames so far, from the last "[GFX]
+        Frames" line once the GUI loop has had the time to log every frame
+        drawn."""
         time.sleep(FRAMES_LOG_DELAY)
         found = FRAMES_RE.findall(self.log_text())
-        return tuple(int(v) for v in found[-1]) if found else (0, 0)
+        return tuple(int(v) for v in found[-1]) if found else (0, 0, 0)
 
     def cursor_frames(self):
         """A mouse move that changes nothing else draws only the cursor
         again: no full frame, and no trace of the arrow where it was (the
         wallpaper is a vertical gradient, one colour per row)."""
-        full0, cursor0 = self.frame_counts()
+        full0, partial0, cursor0 = self.frame_counts()
         self.pointer.home()
         for point in CURSOR_PATH:
             self.pointer.move_to(point)
-        full1, cursor1 = self.frame_counts()
-        # a new minute on the clock may take one full frame
-        self.check(full1 - full0 <= 1 and cursor1 - cursor0 >= 10,
+        full1, partial1, cursor1 = self.frame_counts()
+        # a new minute on the clock may take one partial frame
+        self.check(full1 == full0 and partial1 - partial0 <= 1 and
+                   cursor1 - cursor0 >= 10,
                    "frames: moving the mouse over the desktop draws only the "
-                   "cursor", "%d full frames, %d cursor frames"
-                   % (full1 - full0, cursor1 - cursor0))
+                   "cursor", "%d full frames, %d partial, %d cursor frames"
+                   % (full1 - full0, partial1 - partial0, cursor1 - cursor0))
 
         image = self.screendump("cursor-moved")
         s = UI_SCALE
@@ -902,6 +1017,59 @@ class Smoke:
         self.pointer.home()
         self.pointer.move_to(window.close_button())
         self.pointer.click()
+
+    def partial_frames(self):
+        """Typing into UTERM.ELF draws only the window that changed: no
+        full frame, and the screen is then exactly what a full frame draws
+        (one is forced with a click on the focused window's title bar,
+        which changes nothing on the screen)."""
+        name, menu, item, _ = APPS[0]
+        opened_re = re.compile(r"\[CONSOLE\] Opened PID=(\d+) handle=\d+ " +
+                               Window.GEOMETRY)
+        before = len(opened_re.findall(self.log_text()))
+        self.pointer.home()
+        self.pointer.move_to(menu)
+        self.pointer.click()
+        time.sleep(0.4)
+        self.pointer.move_to(item)
+        self.pointer.click()
+        opened = self.wait_for(lambda t: list(opened_re.finditer(t))[before:],
+                               self.args.app_timeout)
+        if not opened:
+            raise SmokeError("frames: %s opened no window" % name)
+        pid, window = opened[0].group(1), Window.parse(opened[0])
+        self.pointer.home()
+        self.pointer.move_to(window.title_bar())
+        full0, partial0, _ = self.frame_counts()
+        for key in ["h", "e", "l", "p", "ret"]:
+            self.monitor.cmd("sendkey %s" % key)
+            time.sleep(0.05)
+        full1, partial1, _ = self.frame_counts()
+        self.check(full1 == full0 and partial1 > partial0,
+                   "frames: typing into %s draws only partial frames" % name,
+                   "%d full, %d partial frames"
+                   % (full1 - full0, partial1 - partial0))
+        partial = self.screendump("partial-frames")
+        self.pointer.click()  # on the title bar: a full frame
+        time.sleep(1.0)
+        full = self.screendump("full-frame")
+        # the clock may have shown a new minute meanwhile
+        width = SCREEN_SIZE[0] // UI_SCALE
+        differ = (pixels_changed(partial.logical_area((0, 0, width - 90, 28)),
+                                 full.logical_area((0, 0, width - 90, 28))) +
+                  pixels_changed(
+                      partial.logical_area((0, 28, width,
+                                            SCREEN_SIZE[1] // UI_SCALE)),
+                      full.logical_area((0, 28, width,
+                                         SCREEN_SIZE[1] // UI_SCALE))))
+        self.check(differ == 0, "frames: the partial frames drew what a full "
+                   "frame draws", "partial-frames.png, full-frame.png, %d "
+                   "pixels differ" % differ)
+        self.monitor.cmd("sendkey esc")
+        if not self.wait_for(lambda t: "[PROC] Reaped PID=%s exit=0" % pid in t,
+                             self.args.app_timeout):
+            raise SmokeError("frames: %s (PID=%s) did not end with exit=0"
+                             % (name, pid))
 
     def console_window(self, pid):
         """The window of a hosted app, from its "[CONSOLE] Opened" line."""
@@ -1147,6 +1315,13 @@ class Smoke:
         self.pointer.move_to(aside)            # off the entries
         time.sleep(0.5)
         image = self.screendump("explorer-selected")
+        width, height = (v // UI_SCALE for v in SCREEN_SIZE)
+        dock = image.logical_area((0, height - 48, width, height))
+        missing = sum(1 for i in range(0, len(dock), 3)
+                      if dock[i:i + 3] == b"\xff\x40\x40")
+        self.check(missing == 0, "explorer: its dock icon is not the red "
+                   "placeholder of an app without one",
+                   "%d placeholder pixels in the dock" % missing)
         cell = image.logical_rgb((about[0] - 36, about[1] - 14))
         # explorer_render draws a drag as the black outline of a 32 px
         # square around the pointer: count black pixels on its top edge
@@ -1552,6 +1727,9 @@ class Smoke:
             self.check(re.search(r"^\[PROC\] Programs on GemFS: 0 seeded",
                                  text, re.M) is not None,
                        label + ": the programs were not written again")
+            # failed, interrupted and killed writes gave their blocks back
+            self.check("[GemFS] Nothing to reclaim" in text,
+                       label + ": the first boot left nothing to reclaim")
         for line in skipped:
             print("SKIP  %s: %s" % (label, line), flush=True)
 
@@ -1613,6 +1791,12 @@ class Smoke:
         bad = interleaved_lines(text)
         self.check(not bad, "serial log: no interleaved lines",
                    "; ".join(repr(line) for line in bad[:3]))
+        if self.args.data_disk == "gemfs" and not self.args.no_data_disk:
+            # the kernel walks the tree at mount; only --leftovers left
+            # anything for it to free
+            line = (LEFTOVERS_RECLAIMED if self.args.leftovers else
+                    "[GemFS] Nothing to reclaim")
+            self.check(line in text, "serial log: %s" % line)
         for pattern in self.args.expect_log:
             self.check(re.search(pattern, text) is not None,
                        "serial log: /%s/" % pattern)
@@ -1628,7 +1812,7 @@ class Smoke:
         self.pointer.move_to(MENU_GEMOS)
         self.pointer.click()
         time.sleep(0.4)
-        self.pointer.move_to(menu_item(60, 2))  # GemOS -> Shutdown
+        self.pointer.move_to(menu_item(60, 1))  # GemOS -> Shutdown
         start = time.monotonic()
         try:
             # the menu acts on the press; the button is never released
@@ -1701,6 +1885,8 @@ class Smoke:
         self.prepare_disks()
         if self.args.preboot:
             self.preboot()
+        if self.args.leftovers:
+            self.crash_leftovers()
         self.snapshot_disks()
         boots = 2 if self.args.selftest else 1
         for boot in range(1, boots + 1):
@@ -1733,6 +1919,7 @@ class Smoke:
                 for name, menu, item, updates_itself in APPS:
                     self.run_app(name, menu, item, updates_itself)
                     time.sleep(0.5)
+                self.partial_frames()
                 self.windows()
                 self.console_grid()
                 self.file_explorer()
@@ -1781,6 +1968,9 @@ def main():
                         help="open, edit and save files in UTEXTEDIT.ELF")
     parser.add_argument("--preboot", action="store_true",
                         help="boot once on the new disks before the test")
+    parser.add_argument("--leftovers", action="store_true",
+                        help="after --preboot, leave on the data disk what "
+                        "a crash can leave; the kernel must free it")
     parser.add_argument("--expect-unchanged", action="append", default=[],
                         choices=("data", "boot"),
                         help="that disk image must be the same afterwards")

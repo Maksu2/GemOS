@@ -4,8 +4,8 @@
  * The whole bitmap and a bitmap of used inodes stay in memory; inodes,
  * directories and data are read from the disk when needed. Writes follow
  * the update order of docs/GEMFS.md: a crash leaves at worst blocks or
- * inodes marked used that nothing points to (tools/mkgemfs check lists
- * them), never a pointer to a free block.
+ * inodes marked used that nothing points to, never a pointer to a free
+ * block. The next mount frees them (gemfs_reclaim).
  *
  * The scratch buffers below are shared by all calls: a function that
  * fills one never calls another function that uses the same buffer, and
@@ -737,6 +737,186 @@ static const char *gemfs_load(int device) {
   return NULL;
 }
 
+/* -- reclaiming ---------------------------------------------------------------- */
+
+/*
+ * A crash in the middle of a write or a delete leaves blocks and inodes that
+ * are marked used but that no directory leads to (docs/GEMFS.md, "Update
+ * order"). At mount the kernel walks the tree from the root and frees them.
+ * It frees nothing if anything on the way is not as the update order leaves
+ * it: an inode, a directory or an indirect block it cannot read, a bad
+ * pointer or entry, an entry for a free inode, an inode in two entries, a
+ * block in two inodes or a block of the tree marked free. It cannot tell
+ * then what belongs to whom; tools/mkgemfs check shows what is wrong.
+ */
+typedef struct {
+  uint8_t *reached;  /* inodes found in the tree, one bit each */
+  uint8_t *owned;    /* blocks of those inodes, one bit each */
+  uint32_t *pending; /* inodes found but not looked at yet */
+  uint32_t count;
+} walk_t;
+
+static int bit_get(const uint8_t *bits, uint32_t n) {
+  return (bits[n / 8U] >> (n % 8U)) & 1U;
+}
+
+static void bit_set(uint8_t *bits, uint32_t n) {
+  bits[n / 8U] |= (uint8_t)(1U << (n % 8U));
+}
+
+static const char *walk_own(walk_t *walk, uint32_t block) {
+  if (bit_get(walk->owned, block)) {
+    return "a block in two inodes";
+  }
+  if (!block_in_use(block)) {
+    return "a block of the tree is marked free";
+  }
+  bit_set(walk->owned, block);
+  return NULL;
+}
+
+/* The entries of the directory block in dir_buf. */
+static const char *walk_entries(walk_t *walk) {
+  for (uint32_t slot = 0; slot < ENTRIES_PER_BLOCK; ++slot) {
+    const gemfs_dirent_t *entry =
+        (const gemfs_dirent_t *)(dir_buf + slot * ENTRY_SIZE);
+
+    if (entry->inode == 0) {
+      continue;
+    }
+    if (!inode_ok(entry->inode) || entry->inode == ROOT) {
+      return "a bad directory entry";
+    }
+    if (!bit_get(inode_used, entry->inode)) {
+      return "an entry for a free inode";
+    }
+    if (bit_get(walk->reached, entry->inode)) {
+      return "an inode in two entries";
+    }
+    bit_set(walk->reached, entry->inode);
+    walk->pending[walk->count++] = entry->inode;
+  }
+  return NULL;
+}
+
+/* Own the blocks of an inode; a directory adds its entries to pending. */
+static const char *walk_inode(walk_t *walk, uint32_t number) {
+  gemfs_inode_t inode;
+  uint32_t blocks;
+
+  if (inode_read(number, &inode) != GEMFS_OK) {
+    return "cannot read an inode";
+  }
+  blocks = inode_block_count(&inode);
+  if (blocks > (inode.type == GEMFS_TYPE_DIR ? DIRECT : MAX_FILE_BLOCKS)) {
+    return "an inode too big";
+  }
+  for (uint32_t i = 0; i < blocks; ++i) {
+    const char *problem;
+    uint32_t block;
+    int result = inode_map(&inode, i, &block);
+
+    if (result != GEMFS_OK) {
+      return result == GEMFS_ERR_IO ? "cannot read an indirect block"
+                                    : "a bad block pointer";
+    }
+    problem = walk_own(walk, block);
+    if (problem == NULL && inode.type == GEMFS_TYPE_DIR) {
+      problem = block_read(block, dir_buf) == GEMFS_OK
+                    ? walk_entries(walk)
+                    : "cannot read a directory";
+    }
+    if (problem != NULL) {
+      return problem;
+    }
+  }
+  return blocks > DIRECT ? walk_own(walk, inode.indirect) : NULL;
+}
+
+static const char *walk_tree(walk_t *walk) {
+  const char *problem = NULL;
+
+  bit_set(walk->reached, ROOT);
+  walk->pending[walk->count++] = ROOT;
+  while (problem == NULL && walk->count > 0) {
+    problem = walk_inode(walk, walk->pending[--walk->count]);
+  }
+  return problem;
+}
+
+/* Free what the tree does not own; the caller checked the whole tree. */
+static const char *reclaim_unowned(const walk_t *walk, uint32_t *blocks,
+                                   uint32_t *inodes) {
+  gemfs_inode_t empty;
+
+  memset(&empty, 0, sizeof(empty));
+  for (uint32_t number = ROOT + 1U; number < sb.inode_count; ++number) {
+    if (bit_get(inode_used, number) && !bit_get(walk->reached, number)) {
+      if (inode_write(number, &empty) != GEMFS_OK) {
+        return "cannot write an inode";
+      }
+      inode_release(number);
+      (*inodes)++;
+    }
+  }
+  for (uint32_t block = sb.data_start; block < sb.total_blocks; ++block) {
+    if (block_in_use(block) && !bit_get(walk->owned, block)) {
+      block_release(block);
+      (*blocks)++;
+    }
+  }
+  return bitmap_sync() == GEMFS_OK ? NULL : "cannot write the bitmap";
+}
+
+static void gemfs_reclaim(void) {
+  uint32_t owned_bytes = sb.bitmap_blocks * GEMFS_BLOCK_SIZE;
+  uint32_t blocks = 0;
+  uint32_t inodes = 0;
+  const char *problem = NULL;
+  walk_t walk;
+
+  walk.reached = (uint8_t *)kalloc(sb.inode_count / 8U);
+  walk.owned = (uint8_t *)kalloc(owned_bytes);
+  walk.pending = (uint32_t *)kalloc(sb.inode_count * sizeof(uint32_t));
+  walk.count = 0;
+  if (walk.reached == NULL || walk.owned == NULL || walk.pending == NULL) {
+    problem = "no memory to check the tree";
+  } else {
+    memset(walk.reached, 0, sb.inode_count / 8U);
+    memset(walk.owned, 0, owned_bytes);
+    problem = walk_tree(&walk);
+    if (problem == NULL) {
+      problem = reclaim_unowned(&walk, &blocks, &inodes);
+    }
+  }
+  if (walk.reached != NULL) {
+    kfree(walk.reached);
+  }
+  if (walk.owned != NULL) {
+    kfree(walk.owned);
+  }
+  if (walk.pending != NULL) {
+    kfree(walk.pending);
+  }
+
+  if (blocks != 0 || inodes != 0) {
+    serial_print("[GemFS] Reclaimed ");
+    serial_print_dec(blocks);
+    serial_print(" blocks and ");
+    serial_print_dec(inodes);
+    serial_print(" inodes that no file or directory used\n");
+  }
+  if (problem != NULL) {
+    serial_print(blocks != 0 || inodes != 0 ? "[GemFS] Reclaiming stopped: "
+                                            : "[GemFS] Nothing reclaimed: ");
+    serial_print(problem);
+    serial_print(" (tools/mkgemfs check shows more)\n");
+  } else if (blocks == 0 && inodes == 0) {
+    serial_print("[GemFS] Nothing to reclaim: every used block and inode "
+                 "belongs to a file or directory\n");
+  }
+}
+
 void gemfs_init(void) {
   ata_init();
 
@@ -779,6 +959,7 @@ void gemfs_init(void) {
     serial_print(" KB and ");
     serial_print_dec(free_inodes);
     serial_print(" inodes free\n");
+    gemfs_reclaim();
   }
 
   if (fs_device < 0) {

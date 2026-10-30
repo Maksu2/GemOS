@@ -89,3 +89,13 @@ reference to a free block or inode:
   that points to it.
 - Deleting removes the directory entry first, then frees the blocks and the
   inode. A directory is deleted with everything in it.
+
+The kernel frees such leftovers when it mounts the disk: it walks the tree
+from the root, and every block and inode marked used that the walk does not
+reach is freed (inodes first, then the bitmap). It frees nothing if the
+tree is not as this order leaves it: an inode, a directory or an indirect
+block that cannot be read, a block pointer outside the data area, a bad
+entry, an entry for a free inode, an inode in two entries, a block in two
+inodes, or a block of the tree marked free. It cannot tell then what
+belongs to whom, so it leaves the disk to `tools/mkgemfs check`. On a disk
+with nothing to free, the mount writes nothing.

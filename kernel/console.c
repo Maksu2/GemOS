@@ -7,6 +7,7 @@
 #include "gfx/primitives.h"
 #include "gui/window/window.h"
 #include "gui/wm/wm.h"
+#include "include/gui_loop.h"
 #include "include/heap.h"
 #include "process.h"
 #include "../include/gemos/syscall_abi.h"
@@ -75,9 +76,19 @@ typedef struct {
 static app_t console_window_app;
 static console_session_t console_sessions[CONSOLE_MAX_SESSIONS];
 static uint32_t next_console_handle = 1;
-extern void kernel_request_redraw(void);
 
 static void console_mark_dirty(void) { kernel_request_redraw(); }
+
+/* What the program shows changed: only its window's client area is drawn
+ * again */
+static void console_damage(const console_session_t *session) {
+  const window_t *win = session->window;
+
+  if (win != NULL) {
+    kernel_damage(win->client_rect.x, win->client_rect.y, win->client_rect.w,
+                  win->client_rect.h);
+  }
+}
 
 static void console_reset_legacy_screen(console_session_t *session) {
   if (session == NULL) {
@@ -552,7 +563,7 @@ int console_write(uint32_t owner_pid, int handle, const char *buffer,
   }
 
   session->dirty = 1;
-  console_mark_dirty();
+  console_damage(session);
 
   return (int)length;
 }
@@ -582,7 +593,7 @@ int console_clear(uint32_t owner_pid, int handle) {
   console_reset_legacy_screen(session);
   console_reset_surface(session);
   session->dirty = 1;
-  console_mark_dirty();
+  console_damage(session);
   return GEMOS_OK;
 }
 
@@ -621,7 +632,7 @@ int console_present(uint32_t owner_pid, int handle,
   session->surface_cursor_visible = frame->cursor_visible != 0U;
   session->render_mode = CONSOLE_RENDER_SURFACE;
   session->dirty = 1;
-  console_mark_dirty();
+  console_damage(session);
 
   return (int)cell_count;
 }

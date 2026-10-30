@@ -117,6 +117,7 @@ static void terminal_open(void) {
 
   /* Larger window for log viewing */
   window_init(win, 80, 80, 500, 350);
+  window_set_title(win, "Log Viewer");
   win->app = &terminal_app;
   last_rendered_line_count = -1; /* Force initial render */
   open_windows++;
@@ -139,6 +140,7 @@ static void terminal_init(void) {
   /* Create application menu */
   terminal_menu = menu_create();
   if (terminal_menu) {
+    menu_set_title(terminal_menu, "Log Viewer");
     menu_add_item(terminal_menu, "Close", action_close_terminal);
   }
   terminal_app.menu = terminal_menu;

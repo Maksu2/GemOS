@@ -88,9 +88,11 @@ Konsola rysuje każdą komórkę osobno (`font_draw_cell`) i pomija znaki steruj
   - W zrzucie z pytaniem wiersze 8 i 12 mają tusz w kolumnach 6–77, a w 78–83 nie.
   - Oba sprawdzenia dziś padają, a po poprawce przechodzą.
 
-## 4. Render: najpierw kursor, potem uszkodzone prostokąty — krok 1 zrobiony
+## 4. Render: najpierw kursor, potem uszkodzone prostokąty — zrobione
 
-Krok 1: ruch myszy, który nic innego nie zmienia, rysuje tylko kursor na widocznej stronie, a backbuffer nigdy nie trzyma kursora. Po punkcie 5 okno z fokusem dostaje ruchy myszy, więc Explorer sam prosi o klatkę, gdy zmienia podświetlenie albo obrys przeciągania. Przy okazji zegar w topbarze sam prosi o klatkę co minutę (wcześniej stał na bezczynnym pulpicie), a aplikacje mogą powiedzieć, że ich okna zmieniły się bez zdarzenia (`app_t.changed`, pętla pyta co sekundę): Log Viewer robi to, gdy log urósł. Bez tego po kroku 1 nowe linie czekałyby na kliknięcie. Log `[GFX] Frames: full= cursor=` (bez `partial=`, które przyjdzie z krokiem 2). Testy w smoke: ruch po pustym pulpicie bez pełnych klatek i bez śladów kursora na gradiencie, także na `vga-4M` (ścieżka `memcpy`), oraz zegar i Log Viewer zmieniające się bez wejścia. Test „ducha” na drugiej stronie BGA nie jest potrzebny: pełna klatka nadpisuje całą tylną stronę. Krok 2 (lista uszkodzonych prostokątów) czeka.
+Krok 1: ruch myszy, który nic innego nie zmienia, rysuje tylko kursor na widocznej stronie, a backbuffer nigdy nie trzyma kursora. Po punkcie 5 okno z fokusem dostaje ruchy myszy, więc Explorer sam prosi o klatkę, gdy zmienia podświetlenie albo obrys przeciągania. Przy okazji zegar w topbarze sam prosi o klatkę co minutę (wcześniej stał na bezczynnym pulpicie), a aplikacje mogą powiedzieć, że ich okna zmieniły się bez zdarzenia (`app_t.changed`, pętla pyta co sekundę): Log Viewer robi to, gdy log urósł. Bez tego po kroku 1 nowe linie czekałyby na kliknięcie. Log `[GFX] Frames: full= cursor=` (od kroku 2 także `partial=`). Testy w smoke: ruch po pustym pulpicie bez pełnych klatek i bez śladów kursora na gradiencie, także na `vga-4M` (ścieżka `memcpy`), oraz zegar i Log Viewer zmieniające się bez wejścia. Test „ducha” na drugiej stronie BGA nie jest potrzebny: pełna klatka nadpisuje całą tylną stronę.
+
+Krok 2: `kernel_damage(x, y, w, h)` (`kernel/include/gui_loop.h`) zbiera do 16 rozłącznych prostokątów (nachodzące się łączą, przepełnienie daje pełną klatkę). Zgłaszają je konsola (obszar klienta), Explorer (podświetlenie, obrys), WM przy przeciąganiu (stara i nowa ramka z cieniem) i zegar (topbar); klawisz sam nie wymusza już klatki. Częściowa klatka rysuje scenę z `bound_rect` w kontekście (punkt 1 to przewidział: `gfx_set_clip`/`gfx_reset_clip` biorą część wspólną z nim) i kopiuje prostokąty na widoczną stronę, tak jak klatka kursora, więc problem strony N−2 przy page flipie nie występuje: pełna klatka zawsze nadpisuje całą tylną stronę. Test w smoke: pisanie w UTERM daje tylko częściowe klatki, a zrzut po nich jest identyczny z pełną klatką wymuszoną kliknięciem w pasek tytułu.
 
 
 Dziś każdy ruch myszy to pełna klatka: gradient tła 8,3 MB, wszystkie okna i kopia 8,3 MB do VRAM (`kernel/kernel.c:330,370-393`), co 16–20 ms, póki mysz się rusza. Aplikacje nie dostają ruchu myszy (`kernel/gui/wm/wm.c:429-442`), więc bez menu i przeciągania zmienia się tylko kursor.
@@ -156,3 +158,7 @@ Explorer uruchamia `.ELF` (rozszerzenia w dowolnej wielkości liter, czerwony ko
   - Trwałość: zapis pliku w edytorze, od razu Shutdown, odczyt `mkgemfs cat` na hoście.
   - `--preboot` może kończyć Shutdownem zamiast `quit` z HMP.
   - Wariant macierzy z `-machine pc,acpi=off` sprawdza ekran zapasowy (nie sprawdzone, czy QEMU 8.2 wtedy ignoruje oba porty).
+
+## Reszta etapu 5 z audytu — zrobiona
+
+Audyt (§8.2) wymienia jeszcze tytuły menu i ikony. Log Viewer ma tytuł okna i menu „Log Viewer” (było „Window” i „Menu”), Explorer ikonę folderu w docku (był czerwony placeholder), a z menu GemOS zniknęła pozycja „System Info” bez akcji. Przeniesienie Explorera do userlandu („docelowo”) zostaje na później.
