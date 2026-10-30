@@ -61,7 +61,7 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 ### Desktop, drivers and storage
 
 - VBE LFB graphics: the best mode from 1920x1080 down to 800x600 (32 bpp); the UI is drawn 2x on Full HD
-- page flipping on the Bochs/QEMU adapter (BGA), memcpy to the framebuffer elsewhere; a mouse move that changes nothing else draws only the cursor
+- page flipping on the Bochs/QEMU adapter (BGA), memcpy to the framebuffer elsewhere; a mouse move that changes nothing else draws only the cursor, and a change in one window only that window's rectangle
 - PS/2 keyboard and mouse
 - TrueType font rendering
 - window manager: new windows open between the topbar and the dock and cascade, dragging keeps the title bar reachable, text is clipped to its window
