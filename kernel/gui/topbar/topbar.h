@@ -13,6 +13,9 @@ void topbar_init(void);
 /* Render Top Bar to the given context */
 void topbar_render(gfx_context_t *ctx);
 
+/* The clock shows another minute than in the last frame drawn */
+bool topbar_clock_changed(void);
+
 /*
  * Handle input event.
  * Returns true if the event was consumed by the Top Bar.

@@ -22,6 +22,9 @@ static menu_t *menu_apps = NULL;
 
 static app_t *active_app_with_menu = NULL; /* Cached focus state */
 
+/* The time the clock showed in the last frame, hours * 60 + minutes */
+static int clock_drawn = -1;
+
 extern void kernel_request_shutdown(void);
 
 void action_exit(void) { kernel_request_shutdown(); }
@@ -102,6 +105,8 @@ void topbar_render(gfx_context_t *ctx) {
   uint8_t hours = rtc_get_hours();
   uint8_t minutes = rtc_get_minutes();
 
+  clock_drawn = hours * 60 + minutes;
+
   char clock_str[6];
   clock_str[0] = '0' + (hours / 10);
   clock_str[1] = '0' + (hours % 10);
@@ -111,6 +116,10 @@ void topbar_render(gfx_context_t *ctx) {
   clock_str[5] = '\0';
 
   font_draw_text(ctx, clock_x, 8, clock_str, 14, 0xFFFFFF);
+}
+
+bool topbar_clock_changed(void) {
+  return rtc_get_hours() * 60 + rtc_get_minutes() != clock_drawn;
 }
 
 bool topbar_handle_event(event_t *event) {

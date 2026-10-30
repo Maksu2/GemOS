@@ -7,6 +7,8 @@ the monitor:
 
   * the kernel reaches "[BOOT] Window Manager Active",
   * the desktop screendump is a rendered 1920x1080 frame,
+  * the clock in the topbar shows a new minute by itself (QEMU's clock
+    starts a few seconds before one),
   * UTERM.ELF, ABOUT.ELF and UTEXTEDIT.ELF are started from the topbar menus,
     open their console window, close on Esc and are reaped with exit=0,
   * windows open between the topbar and the dock, a second one moves off
@@ -211,6 +213,10 @@ class Window:
         return (self.x + 4, self.y + 36 + 15 * first, self.x + 680,
                 self.y + 36 + 15 * (last + 1))
 
+
+# QEMU's clock starts this many seconds before a new minute, so the clock
+# in the topbar (x from 80 px left of the right edge) changes then
+CLOCK_FLIP = 14
 
 # Stress test: what to type into each program (QEMU sendkey names; no Esc
 # and no "q", which close windows).
@@ -669,6 +675,10 @@ class Smoke:
             # (-global VGA.vgamem_mb leaves the machine without a VGA)
             cmd += ["-vga", "none",
                     "-device", "VGA,vgamem_mb=%d" % self.args.vga_mem]
+        now = time.gmtime()
+        cmd += ["-rtc", "base=%04d-%02d-%02dT%02d:%02d:%02d"
+                % (now[:5] + (60 - CLOCK_FLIP,))]
+        self.clock_flip_at = time.monotonic() + CLOCK_FLIP
         cmd += [
             "-m", "%dM" % self.args.memory,
             "-display", "none",
@@ -780,6 +790,24 @@ class Smoke:
         return self.check(issue is None, "desktop: screendump shows topbar, "
                           "wallpaper and dock",
                           issue or "desktop.png, %.1f s" % seconds)
+
+    def clock(self):
+        """The clock in the topbar shows the new minute by itself: the GUI
+        loop asks for a frame when it changes. No input is sent, and
+        nothing else on the empty desktop asks for one."""
+        width = SCREEN_SIZE[0] // UI_SCALE
+        area = (width - 82, 4, width - 20, 26)
+        if time.monotonic() > self.clock_flip_at - 1.0:
+            self.clock_flip_at += 60  # too late for this one: the next
+        before = self.screendump("clock-before").logical_area(area)
+        time.sleep(max(0.0, self.clock_flip_at - time.monotonic()))
+        issue, seconds = self.watch_screen(
+            "clock-after", lambda image: None
+            if image.logical_area(area) != before else "the clock is the same",
+            10.0)
+        self.check(issue is None, "frames: the clock shows the new minute by "
+                   "itself", "clock-before.png, clock-after.png, %s"
+                   % (issue or "%.1f s after the minute" % seconds))
 
     def console_window(self, pid):
         """The window of a hosted app, from its "[CONSOLE] Opened" line."""
@@ -1596,6 +1624,9 @@ class Smoke:
                 self.save_diagnostics()
                 return False
             self.desktop()
+            if not (self.args.selftest or self.args.stress or
+                    self.args.editor):
+                self.clock()
             if self.args.selftest:
                 self.selftest(boot)
             elif self.args.stress:

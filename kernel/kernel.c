@@ -346,6 +346,7 @@ void kernel_main(const boot_info_t *loader_info) {
   /* Main kernel loop */
   event_t ev;
   uint64_t last_render_tick = 0;
+  uint64_t clock_checked_at = 0;
 
   /* Target FPS: 60 -> ~16.6ms per frame */
   /* PIT is 1000Hz, so 16 ticks */
@@ -414,10 +415,18 @@ void kernel_main(const boot_info_t *loader_info) {
       kernel_shutdown(backbuffer, vbe_buffer, buffer_size, use_page_flip);
     }
 
+    /* The clock in the topbar only changes when a frame draws it */
+    uint64_t now = timer_get_ticks();
+    if (now - clock_checked_at >= 1000) {
+      clock_checked_at = now;
+      if (topbar_clock_changed()) {
+        pending_redraw = true;
+      }
+    }
+
     /* At most one frame per TICKS_PER_FRAME ticks. The request is cleared
      * before drawing, so a redraw requested while this frame is drawn gets
      * the next frame instead of being lost. */
-    uint64_t now = timer_get_ticks();
     if (pending_redraw && now - last_render_tick >= TICKS_PER_FRAME) {
       pending_redraw = false;
       last_render_tick = now;
