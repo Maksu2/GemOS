@@ -10,6 +10,8 @@
 #include "../topbar/topbar.h" /* For TOPBAR_HEIGHT */
 #include <stddef.h>
 
+extern void kernel_request_redraw(void);
+
 // Global state
 static window_t *windows_head = NULL; // Bottom-most window
 static window_t *windows_tail = NULL; // Top-most window (active)
@@ -531,6 +533,7 @@ void wm_handle_event(event_t *event) {
       focused_window->y = y < area.y ? area.y : (y > max_y ? max_y : y);
 
       window_update_rects(focused_window);
+      kernel_request_redraw();
     } else if (focused_window && focused_window->app &&
                focused_window->app->handle_event) {
       /* hover, and drags inside the window */

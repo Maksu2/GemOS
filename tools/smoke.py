@@ -7,6 +7,9 @@ the monitor:
 
   * the kernel reaches "[BOOT] Window Manager Active",
   * the desktop screendump is a rendered 1920x1080 frame,
+  * a mouse move over the empty desktop draws only the cursor again: no
+    full frame (the kernel logs how many frames of each kind it drew),
+    and no trace of the arrow on the wallpaper,
   * the clock in the topbar shows a new minute by itself (QEMU's clock
     starts a few seconds before one),
   * UTERM.ELF, ABOUT.ELF and UTEXTEDIT.ELF are started from the topbar menus,
@@ -214,6 +217,14 @@ class Window:
                 self.y + 36 + 15 * (last + 1))
 
 
+# The mouse moved over the empty desktop (logical points between the
+# topbar and the dock): only the cursor may be drawn again.
+CURSOR_PATH = [(480, 270), (800, 150), (150, 400), (600, 450), (300, 100),
+               (700, 300)]
+CURSOR_SIZE = (12, 17)  # the arrow (kernel/ui/cursor.c)
+# "[GFX] Frames: full= cursor=" (kernel/kernel.c), at most every 2 s
+FRAMES_RE = re.compile(r"\[GFX\] Frames: full=(\d+) cursor=(\d+)")
+FRAMES_LOG_DELAY = 2.5
 # QEMU's clock starts this many seconds before a new minute, so the clock
 # in the topbar (x from 80 px left of the right edge) changes then
 CLOCK_FLIP = 14
@@ -790,6 +801,47 @@ class Smoke:
         return self.check(issue is None, "desktop: screendump shows topbar, "
                           "wallpaper and dock",
                           issue or "desktop.png, %.1f s" % seconds)
+
+    def frame_counts(self):
+        """Full and cursor frames so far, from the last "[GFX] Frames" line
+        once the GUI loop has had the time to log every frame drawn."""
+        time.sleep(FRAMES_LOG_DELAY)
+        found = FRAMES_RE.findall(self.log_text())
+        return tuple(int(v) for v in found[-1]) if found else (0, 0)
+
+    def cursor_frames(self):
+        """A mouse move that changes nothing else draws only the cursor
+        again: no full frame, and no trace of the arrow where it was (the
+        wallpaper is a vertical gradient, one colour per row)."""
+        full0, cursor0 = self.frame_counts()
+        self.pointer.home()
+        for point in CURSOR_PATH:
+            self.pointer.move_to(point)
+        full1, cursor1 = self.frame_counts()
+        # a new minute on the clock may take one full frame
+        self.check(full1 - full0 <= 1 and cursor1 - cursor0 >= 10,
+                   "frames: moving the mouse over the desktop draws only the "
+                   "cursor", "%d full frames, %d cursor frames"
+                   % (full1 - full0, cursor1 - cursor0))
+
+        image = self.screendump("cursor-moved")
+        s = UI_SCALE
+        px, py = CURSOR_PATH[-1]
+        x0, y0 = (px - 2) * s, (py - 2) * s  # the arrow, with a margin
+        x1 = (px + CURSOR_SIZE[0] + 2) * s
+        y1 = (py + CURSOR_SIZE[1] + 2) * s
+        stride = image.width * 3
+        bad = []
+        for y in range(30 * s, (SCREEN_SIZE[1] // s - 50) * s):
+            row = image.pixels[y * stride:(y + 1) * stride]
+            if y0 <= y < y1:
+                row = row[:x0 * 3] + row[x1 * 3:]
+            if row != row[:3] * (len(row) // 3):
+                bad.append(y // s)
+        self.check(not bad, "frames: no trace of the cursor on the wallpaper",
+                   "cursor-moved.png, %s" % (
+                       "rows with other pixels: %s" % spans(sorted(set(bad)))
+                       if bad else "every row one colour"))
 
     def clock(self):
         """The clock in the topbar shows the new minute by itself: the GUI
@@ -1626,6 +1678,7 @@ class Smoke:
             self.desktop()
             if not (self.args.selftest or self.args.stress or
                     self.args.editor):
+                self.cursor_frames()
                 self.clock()
             if self.args.selftest:
                 self.selftest(boot)

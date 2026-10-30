@@ -11,6 +11,8 @@
 #include <stddef.h>
 #include <string.h>
 
+extern void kernel_request_redraw(void);
+
 #define GRID_COLS 5
 #define GRID_CELL_W 80
 #define GRID_CELL_H 70
@@ -241,13 +243,15 @@ static void explorer_handle_event(window_t *win, event_t *ev) {
   if (ev->type == EVENT_MOUSE_MOVE) {
     int id = explorer_hit_test(win, ev->data.mouse.x, ev->data.mouse.y);
     if (!is_dragging) {
-      hover_id = id;
+      if (id != hover_id) {
+        hover_id = id;
+        kernel_request_redraw(); /* the light under the pointer moves */
+      }
     } else {
       drag_mx = ev->data.mouse.x;
       drag_my = ev->data.mouse.y;
       hover_id = id; // Update hover for drop target feedback
-                     // Force redraw for drag overlay
-                     // invalidating rect... we rely on WM or loop
+      kernel_request_redraw(); /* the drag outline follows the pointer */
     }
   } else if (ev->type == EVENT_MOUSE_CLICK) {
     int mx = ev->data.mouse.x;
