@@ -11,8 +11,11 @@
 #              boot from the hard disk image, a data disk without GemFS
 #              or with a damaged superblock (must stay unchanged), a
 #              second boot of the same disk (must write nothing), a
-#              disk that writes slowly, and a machine without ACPI
-#              (Shutdown halts instead of turning it off)
+#              disk that writes slowly, a machine without ACPI
+#              (Shutdown halts instead of turning it off), and a disk
+#              after a crash (blocks and inodes that nothing uses: the
+#              kernel frees them at mount, unless it cannot read the
+#              whole tree)
 #   --editor   the text editor with files: type, Esc and the close button
 #              ask about unsaved text, save as, reopen from the File
 #              Explorer, save again, discard, and a refused save over a

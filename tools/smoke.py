@@ -24,7 +24,8 @@ the monitor:
   * every frame checked must appear on screen by itself: no input is sent
     while waiting for it,
   * the serial log has no PANIC, user fault, allocation failure or refused
-    disk write, and no line was printed into the middle of another one,
+    disk write, and no line was printed into the middle of another one;
+    on a GemFS disk the kernel found nothing to reclaim at mount,
   * GemOS -> Shutdown turns the machine off (QEMU exits by itself) after
     the kernel has stopped GemFS; every mode but --selftest ends this way,
   * after QEMU has stopped, tools/mkgemfs check finds the GemFS data disk
@@ -33,7 +34,12 @@ the monitor:
 The data disk is a fresh GemFS disk (tools/mkgemfs format), or with
 --data-disk "unsigned" (random bytes) or "damaged" (a GemFS superblock with
 a wrong checksum). --preboot boots once on the new disks and shuts down
-before the test, which then runs on a second boot. --slow-writes N lets
+before the test, which then runs on a second boot. --leftovers then adds
+files that must survive and what a crash in the middle of writes and
+deletes can leave: blocks and inodes that nothing uses. A boot during which
+the blocks of one file cannot be mapped must free none of them and write
+nothing; the test runs on the next boot, which must free exactly them,
+after which tools/mkgemfs check finds nothing wrong. --slow-writes N lets
 QEMU write only N requests per second to the data disk. --expect-unchanged
 data|boot compares the SHA-256 of that disk image before and after the
 test: the kernel must not have written a single byte.
@@ -42,8 +48,8 @@ With --matrix it runs the smoke test once per machine variant (32/64/256 MB
 of RAM, no data disk, 4 MB of VRAM, boot from the hard disk image, a data
 disk without GemFS or with a damaged superblock, a second boot, a slow
 disk, a machine without ACPI, which Shutdown cannot turn off: the kernel
-halts and says so on the screen); each variant also checks log lines
-that show which path the kernel took.
+halts and says so on the screen, and a disk after a crash); each variant
+also checks log lines that show which path the kernel took.
 
 With --selftest it boots the self-test image (make selftest) instead, with
 a second disk without GemFS: kernel/selftest.c checks the heap, the pool,
@@ -53,7 +59,8 @@ logs "[SELFTEST] RESULT", then
 overflows its kernel stack on purpose; the log must end in the double
 fault panic that names the overflow. The self-test boots twice on the same
 disks: between the boots the harness checks the GemFS disk and the files
-the first boot wrote, and the second boot checks those files again. The
+the first boot wrote, and the second boot checks those files again and
+finds nothing to reclaim at mount. The
 second disk must come out of both boots unchanged.
 
 With --editor it tests UTEXTEDIT.ELF with files instead: Esc and the close
@@ -77,6 +84,7 @@ Exit status: 0 = PASS, 1 = FAIL, 2 = setup error.
 
 import argparse
 import hashlib
+import importlib.machinery
 import os
 import random
 import re
@@ -88,6 +96,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import zlib
 
 # The desktop runs at 1920x1080 with ui_scale 2.0 (kernel/kernel.c), so
@@ -137,6 +146,10 @@ MATRIX = [
       r"\[PROC\] Programs on GemFS: 4 seeded, 0 up to date"]),
     # Shutdown cannot turn the machine off: the kernel halts instead
     ("no-acpi", ["--no-acpi"], [r"\[GemFS\] Mounted GemFS v3"]),
+    # a crash left blocks and inodes that nothing uses: a boot that cannot
+    # read the whole tree leaves them, the next one frees them
+    ("after-crash", ["--preboot", "--leftovers"],
+     [r"\[PROC\] Programs on GemFS: 0 seeded, 4 up to date"]),
 ]
 
 # Topbar menus (kernel/gui/topbar/topbar.c): "GemOS" at x 10..80, "Apps" at
@@ -335,6 +348,7 @@ FAILURE_PATTERNS = [
     r"Failed to",
     r"\[ELF\]",
     r"\[ATA\] (Refused|[a-z ]+ failed)",
+    r"\[GemFS\] (Nothing reclaimed|Reclaiming stopped)",
 ]
 
 # Kernel log lines start with a "[Tag] " prefix; indented lines continue the
@@ -360,6 +374,14 @@ FILETEST_BIG = "/fstest/big.bin"
 FILETEST_TABLE = bytes((((i >> 8) ^ (i * 13 + 5)) & 0xFF)
                        for i in range(81920))
 
+# --leftovers: files that must come out of the test as they went in, the
+# second one with an indirect block (15 blocks of 4 KB), and what a crash
+# left besides them (see add_leftovers).
+KEPT_SMALL = "/kept/small.txt"
+KEPT_BIG = "/kept/big.bin"
+LEFTOVERS_RECLAIMED = ("[GemFS] Reclaimed 21 blocks and 4 inodes that no "
+                       "file or directory used")
+
 
 def mkgemfs(*args):
     return subprocess.run([sys.executable, MKGEMFS] + list(args),
@@ -369,6 +391,62 @@ def mkgemfs(*args):
 def random_bytes(size, seed):
     """The same bytes on every run, so a failure can be repeated."""
     return random.Random(seed).randbytes(size)
+
+
+def kept_files():
+    return {KEPT_SMALL: b"Kept through a crash and the boot after it.\n",
+            KEPT_BIG: random_bytes(60 * 1024, 0x4B45)}
+
+
+def load_mkgemfs():
+    """tools/mkgemfs as a module: it can change an image the way only a
+    crash would."""
+    loader = importlib.machinery.SourceFileLoader("mkgemfs", MKGEMFS)
+    module = types.ModuleType(loader.name)
+    loader.exec_module(module)
+    return module
+
+
+def add_leftovers(path):
+    """Put the kept files on a GemFS disk, then leave what a crash in the
+    middle of writes and deletes can leave (docs/GEMFS.md, "Update order"):
+    blocks and inodes marked used that no directory leads to. That is 21
+    blocks and 4 inodes: 3 blocks of a write that never got to its inode,
+    and three deletes that stopped once the entry was gone: /lost.txt (2
+    blocks), /lostdir with a file in it (2 blocks) and /lostbig.bin (13
+    blocks and its indirect block). Returns the inode of KEPT_BIG."""
+    gemfs = load_mkgemfs()
+    fs = gemfs.GemFS(path, writable=True)
+    try:
+        fs.mkdir("/kept")
+        for name, data in kept_files().items():
+            fs.put(name, data)
+        for _ in range(3):
+            fs.alloc_block()
+        fs.sync_bitmap()
+        fs.put("/lost.txt", random_bytes(5000, 1))
+        fs.mkdir("/lostdir")
+        fs.put("/lostdir/inner.txt", b"In a directory nothing leads to.\n")
+        fs.put("/lostbig.bin", random_bytes(13 * gemfs.BLOCK, 2))
+        for name in ("/lost.txt", "/lostdir", "/lostbig.bin"):
+            fs.remove_entry(gemfs.ROOT, fs.resolve(name))
+        return fs.resolve(KEPT_BIG)
+    finally:
+        fs.close()
+
+
+def set_indirect(path, number, block):
+    """Point the indirect block of inode `number` at `block`; returns the
+    block it pointed at."""
+    gemfs = load_mkgemfs()
+    fs = gemfs.GemFS(path, writable=True)
+    try:
+        inode = fs.read_inode(number)
+        old, inode.indirect = inode.indirect, block
+        fs.write_inode(number, inode)
+        return old
+    finally:
+        fs.close()
 
 
 def make_data_disk(path, kind):
@@ -627,6 +705,11 @@ class Smoke:
         self.check_gemfs("after the test")
         if self.args.editor:
             self.check_editor_files()
+        if self.args.leftovers:
+            for path, data in kept_files().items():
+                result = mkgemfs("cat", self.disks["data"], path)
+                self.check(result.returncode == 0 and result.stdout == data,
+                           "disk: %s is as it was before the crash" % path)
         unchanged = list(self.args.expect_unchanged)
         if self.args.selftest:
             unchanged.append("spare")
@@ -655,6 +738,32 @@ class Smoke:
         finally:
             self.stop_qemu()
         self.check_gemfs("after the first boot")
+
+    def crash_leftovers(self):
+        """Leave on the data disk what a crash can leave, and make the
+        blocks of one file unreadable: its indirect block points outside
+        the data area. The kernel cannot tell then what belongs to whom, so
+        a boot must free nothing and write nothing. The test runs on the
+        next boot, with the pointer back, which frees all the leftovers."""
+        data = self.disks["data"]
+        big = add_leftovers(data)
+        indirect = set_indirect(data, big, 0)
+        before = sha256(data)
+        self.start_qemu("leftovers-serial.log")
+        try:
+            done = self.wait_for(lambda t: "[PROC] Programs on GemFS" in t,
+                                 self.args.boot_timeout)
+        finally:
+            self.stop_qemu()
+        line = re.search(r"\[GemFS\] Nothing reclaimed: [^\n]*",
+                         self.log_text())
+        self.check(bool(done) and line is not None and
+                   "a bad block pointer" in line.group(0),
+                   "leftovers: a boot that cannot map the blocks of a file "
+                   "frees nothing", line.group(0) if line else "no such line")
+        self.check(sha256(data) == before,
+                   "leftovers: ... and writes nothing to the disk")
+        set_indirect(data, big, indirect)
 
     # -- QEMU ----------------------------------------------------------------
     def start_qemu(self, serial="serial.log"):
@@ -1618,6 +1727,9 @@ class Smoke:
             self.check(re.search(r"^\[PROC\] Programs on GemFS: 0 seeded",
                                  text, re.M) is not None,
                        label + ": the programs were not written again")
+            # failed, interrupted and killed writes gave their blocks back
+            self.check("[GemFS] Nothing to reclaim" in text,
+                       label + ": the first boot left nothing to reclaim")
         for line in skipped:
             print("SKIP  %s: %s" % (label, line), flush=True)
 
@@ -1679,6 +1791,12 @@ class Smoke:
         bad = interleaved_lines(text)
         self.check(not bad, "serial log: no interleaved lines",
                    "; ".join(repr(line) for line in bad[:3]))
+        if self.args.data_disk == "gemfs" and not self.args.no_data_disk:
+            # the kernel walks the tree at mount; only --leftovers left
+            # anything for it to free
+            line = (LEFTOVERS_RECLAIMED if self.args.leftovers else
+                    "[GemFS] Nothing to reclaim")
+            self.check(line in text, "serial log: %s" % line)
         for pattern in self.args.expect_log:
             self.check(re.search(pattern, text) is not None,
                        "serial log: /%s/" % pattern)
@@ -1767,6 +1885,8 @@ class Smoke:
         self.prepare_disks()
         if self.args.preboot:
             self.preboot()
+        if self.args.leftovers:
+            self.crash_leftovers()
         self.snapshot_disks()
         boots = 2 if self.args.selftest else 1
         for boot in range(1, boots + 1):
@@ -1848,6 +1968,9 @@ def main():
                         help="open, edit and save files in UTEXTEDIT.ELF")
     parser.add_argument("--preboot", action="store_true",
                         help="boot once on the new disks before the test")
+    parser.add_argument("--leftovers", action="store_true",
+                        help="after --preboot, leave on the data disk what "
+                        "a crash can leave; the kernel must free it")
     parser.add_argument("--expect-unchanged", action="append", default=[],
                         choices=("data", "boot"),
                         help="that disk image must be the same afterwards")
