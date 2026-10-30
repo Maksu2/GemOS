@@ -5,6 +5,7 @@
 #include "../../app/app_manager.h"
 #include "../../gfx/font/font.h"
 #include "../../gfx/primitives.h"
+#include "../../include/gui_loop.h"
 #include "../../ui/focus.h"
 #include "../../ui/menu.h"
 #include "../../ui/ui_scale.h"
@@ -24,8 +25,6 @@ static app_t *active_app_with_menu = NULL; /* Cached focus state */
 
 /* The time the clock showed in the last frame, hours * 60 + minutes */
 static int clock_drawn = -1;
-
-extern void kernel_request_shutdown(void);
 
 void action_exit(void) { kernel_request_shutdown(); }
 void action_open_about(void) { app_open("About GemOS"); }

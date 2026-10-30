@@ -9,7 +9,9 @@ the monitor:
   * the desktop screendump is a rendered 1920x1080 frame,
   * a mouse move over the empty desktop draws only the cursor again: no
     full frame (the kernel logs how many frames of each kind it drew),
-    and no trace of the arrow on the wallpaper,
+    and no trace of the arrow on the wallpaper; typing into UTERM.ELF
+    draws only partial frames, which leave the screen exactly as a full
+    frame draws it,
   * the clock in the topbar shows a new minute by itself (QEMU's clock
     starts a few seconds before one), and the Log Viewer new log lines,
   * UTERM.ELF, ABOUT.ELF and UTEXTEDIT.ELF are started from the topbar menus,
@@ -222,8 +224,10 @@ class Window:
 CURSOR_PATH = [(480, 270), (800, 150), (150, 400), (600, 450), (300, 100),
                (700, 300)]
 CURSOR_SIZE = (12, 17)  # the arrow (kernel/ui/cursor.c)
-# "[GFX] Frames: full= cursor=" (kernel/kernel.c), at most every 2 s
-FRAMES_RE = re.compile(r"\[GFX\] Frames: full=(\d+) cursor=(\d+)")
+# "[GFX] Frames: full= partial= cursor=" (kernel/kernel.c), at most every
+# 2 s
+FRAMES_RE = re.compile(
+    r"\[GFX\] Frames: full=(\d+) partial=(\d+) cursor=(\d+)")
 FRAMES_LOG_DELAY = 2.5
 # QEMU's clock starts this many seconds before a new minute, so the clock
 # in the topbar (x from 80 px left of the right edge) changes then
@@ -804,26 +808,28 @@ class Smoke:
                           issue or "desktop.png, %.1f s" % seconds)
 
     def frame_counts(self):
-        """Full and cursor frames so far, from the last "[GFX] Frames" line
-        once the GUI loop has had the time to log every frame drawn."""
+        """Full, partial and cursor frames so far, from the last "[GFX]
+        Frames" line once the GUI loop has had the time to log every frame
+        drawn."""
         time.sleep(FRAMES_LOG_DELAY)
         found = FRAMES_RE.findall(self.log_text())
-        return tuple(int(v) for v in found[-1]) if found else (0, 0)
+        return tuple(int(v) for v in found[-1]) if found else (0, 0, 0)
 
     def cursor_frames(self):
         """A mouse move that changes nothing else draws only the cursor
         again: no full frame, and no trace of the arrow where it was (the
         wallpaper is a vertical gradient, one colour per row)."""
-        full0, cursor0 = self.frame_counts()
+        full0, partial0, cursor0 = self.frame_counts()
         self.pointer.home()
         for point in CURSOR_PATH:
             self.pointer.move_to(point)
-        full1, cursor1 = self.frame_counts()
-        # a new minute on the clock may take one full frame
-        self.check(full1 - full0 <= 1 and cursor1 - cursor0 >= 10,
+        full1, partial1, cursor1 = self.frame_counts()
+        # a new minute on the clock may take one partial frame
+        self.check(full1 == full0 and partial1 - partial0 <= 1 and
+                   cursor1 - cursor0 >= 10,
                    "frames: moving the mouse over the desktop draws only the "
-                   "cursor", "%d full frames, %d cursor frames"
-                   % (full1 - full0, cursor1 - cursor0))
+                   "cursor", "%d full frames, %d partial, %d cursor frames"
+                   % (full1 - full0, partial1 - partial0, cursor1 - cursor0))
 
         image = self.screendump("cursor-moved")
         s = UI_SCALE
@@ -902,6 +908,59 @@ class Smoke:
         self.pointer.home()
         self.pointer.move_to(window.close_button())
         self.pointer.click()
+
+    def partial_frames(self):
+        """Typing into UTERM.ELF draws only the window that changed: no
+        full frame, and the screen is then exactly what a full frame draws
+        (one is forced with a click on the focused window's title bar,
+        which changes nothing on the screen)."""
+        name, menu, item, _ = APPS[0]
+        opened_re = re.compile(r"\[CONSOLE\] Opened PID=(\d+) handle=\d+ " +
+                               Window.GEOMETRY)
+        before = len(opened_re.findall(self.log_text()))
+        self.pointer.home()
+        self.pointer.move_to(menu)
+        self.pointer.click()
+        time.sleep(0.4)
+        self.pointer.move_to(item)
+        self.pointer.click()
+        opened = self.wait_for(lambda t: list(opened_re.finditer(t))[before:],
+                               self.args.app_timeout)
+        if not opened:
+            raise SmokeError("frames: %s opened no window" % name)
+        pid, window = opened[0].group(1), Window.parse(opened[0])
+        self.pointer.home()
+        self.pointer.move_to(window.title_bar())
+        full0, partial0, _ = self.frame_counts()
+        for key in ["h", "e", "l", "p", "ret"]:
+            self.monitor.cmd("sendkey %s" % key)
+            time.sleep(0.05)
+        full1, partial1, _ = self.frame_counts()
+        self.check(full1 == full0 and partial1 > partial0,
+                   "frames: typing into %s draws only partial frames" % name,
+                   "%d full, %d partial frames"
+                   % (full1 - full0, partial1 - partial0))
+        partial = self.screendump("partial-frames")
+        self.pointer.click()  # on the title bar: a full frame
+        time.sleep(1.0)
+        full = self.screendump("full-frame")
+        # the clock may have shown a new minute meanwhile
+        width = SCREEN_SIZE[0] // UI_SCALE
+        differ = (pixels_changed(partial.logical_area((0, 0, width - 90, 28)),
+                                 full.logical_area((0, 0, width - 90, 28))) +
+                  pixels_changed(
+                      partial.logical_area((0, 28, width,
+                                            SCREEN_SIZE[1] // UI_SCALE)),
+                      full.logical_area((0, 28, width,
+                                         SCREEN_SIZE[1] // UI_SCALE))))
+        self.check(differ == 0, "frames: the partial frames drew what a full "
+                   "frame draws", "partial-frames.png, full-frame.png, %d "
+                   "pixels differ" % differ)
+        self.monitor.cmd("sendkey esc")
+        if not self.wait_for(lambda t: "[PROC] Reaped PID=%s exit=0" % pid in t,
+                             self.args.app_timeout):
+            raise SmokeError("frames: %s (PID=%s) did not end with exit=0"
+                             % (name, pid))
 
     def console_window(self, pid):
         """The window of a hosted app, from its "[CONSOLE] Opened" line."""
@@ -1733,6 +1792,7 @@ class Smoke:
                 for name, menu, item, updates_itself in APPS:
                     self.run_app(name, menu, item, updates_itself)
                     time.sleep(0.5)
+                self.partial_frames()
                 self.windows()
                 self.console_grid()
                 self.file_explorer()

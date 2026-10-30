@@ -7,10 +7,10 @@
 #include "../../ui/dock/dock.h"
 #include "../../ui/focus.h"
 #include "../../ui/ui_scale.h"
+#include "../../include/gui_loop.h"
 #include "../topbar/topbar.h" /* For TOPBAR_HEIGHT */
 #include <stddef.h>
 
-extern void kernel_request_redraw(void);
 
 // Global state
 static window_t *windows_head = NULL; // Bottom-most window
@@ -47,6 +47,7 @@ static window_t *wm_press_window = NULL;
 #define SHADOW_ALPHA 70
 #define SHADOW_BLUR_RADIUS 8
 #define SHADOW_EXPAND 4 /* Extra pixels around shadow for blur bleed */
+#define SHADOW_DROP 4   /* the shadow drawn: the frame, this far down/right */
 
 /* Colors - Active */
 #define COLOR_TITLE_TOP_ACTIVE 0x2266CC /* Deep blue */
@@ -312,8 +313,9 @@ static void wm_render_shadow(window_t *win) {
    * Alpha blending reads every destination pixel which is catastrophically
    * slow at Full HD. A solid fill is write-only = ~10× faster. */
   gfx_reset_clip(&win->ctx);
-  gfx_fill_rect(&win->ctx, win->frame_rect.x + 4, win->frame_rect.y + 4,
-                win->frame_rect.w, win->frame_rect.h,
+  gfx_fill_rect(&win->ctx, win->frame_rect.x + SHADOW_DROP,
+                win->frame_rect.y + SHADOW_DROP, win->frame_rect.w,
+                win->frame_rect.h,
                 0x101018); /* Very dark blue, blends with dark wallpaper */
 }
 
@@ -396,22 +398,38 @@ void wm_render_window(window_t *win) {
   }
 }
 
+/* The window with its shadow touches the part of the frame being drawn */
+static bool wm_in_bound(const window_t *win) {
+  rect_t area = {win->frame_rect.x * ui_scale, win->frame_rect.y * ui_scale,
+                 (win->frame_rect.w + SHADOW_DROP) * ui_scale,
+                 (win->frame_rect.h + SHADOW_DROP) * ui_scale};
+  rect_t bound = wm_screen_ctx->bound_rect;
+  rect_t out;
+
+  return rect_intersect(&area, &bound, &out);
+}
+
 void wm_render_all(void) {
   /* Sync all window framebuffer pointers to the current screen context.
    * Required for BGA page flipping: screen_ctx.framebuffer alternates
    * between VRAM pages each frame, but win->ctx copies the pointer
    * by value at window creation time. Without this sync, windows
-   * render to the wrong buffer and cause flickering. */
+   * render to the wrong buffer and cause flickering. The bound (the part
+   * of the frame drawn) is copied the same way. */
   window_t *sync = windows_head;
   while (sync) {
     sync->ctx.framebuffer = wm_screen_ctx->framebuffer;
+    sync->ctx.bound_rect = wm_screen_ctx->bound_rect;
+    gfx_reset_clip(&sync->ctx);
     sync = sync->next;
   }
 
-  /* Render from Head (Bottom) to Tail (Top) */
+  /* Render from Head (Bottom) to Tail (Top), only what the bound touches */
   window_t *curr = windows_head;
   while (curr) {
-    wm_render_window(curr);
+    if (wm_in_bound(curr)) {
+      wm_render_window(curr);
+    }
     curr = curr->next;
   }
 }
@@ -521,6 +539,7 @@ void wm_handle_event(event_t *event) {
       int my = event->data.mouse.y;
 
       rect_t area = wm_work_area();
+      rect_t was = focused_window->frame_rect;
       int x = mx + wm_drag_offset_x;
       int y = my + wm_drag_offset_y;
       /* the title bar stays where it can be grabbed again: below the
@@ -533,7 +552,11 @@ void wm_handle_event(event_t *event) {
       focused_window->y = y < area.y ? area.y : (y > max_y ? max_y : y);
 
       window_update_rects(focused_window);
-      kernel_request_redraw();
+      /* the window with its shadow, where it was and where it is now */
+      kernel_damage(was.x, was.y, was.w + SHADOW_DROP, was.h + SHADOW_DROP);
+      kernel_damage(focused_window->frame_rect.x, focused_window->frame_rect.y,
+                    focused_window->frame_rect.w + SHADOW_DROP,
+                    focused_window->frame_rect.h + SHADOW_DROP);
     } else if (focused_window && focused_window->app &&
                focused_window->app->handle_event) {
       /* hover, and drags inside the window */

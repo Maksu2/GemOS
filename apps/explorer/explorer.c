@@ -5,13 +5,12 @@
 #include "../../kernel/gfx/font/font.h"
 #include "../../kernel/gfx/primitives.h"
 #include "../../kernel/gui/wm/wm.h"
+#include "../../kernel/include/gui_loop.h"
 #include "../../kernel/include/heap.h"
 #include "../../kernel/gfx/icons.h"
 #include "../../kernel/process.h"
 #include <stddef.h>
 #include <string.h>
-
-extern void kernel_request_redraw(void);
 
 #define GRID_COLS 5
 #define GRID_CELL_W 80
@@ -245,13 +244,17 @@ static void explorer_handle_event(window_t *win, event_t *ev) {
     if (!is_dragging) {
       if (id != hover_id) {
         hover_id = id;
-        kernel_request_redraw(); /* the light under the pointer moves */
+        /* the light under the pointer moves */
+        kernel_damage(win->client_rect.x, win->client_rect.y,
+                      win->client_rect.w, win->client_rect.h);
       }
     } else {
       drag_mx = ev->data.mouse.x;
       drag_my = ev->data.mouse.y;
       hover_id = id; // Update hover for drop target feedback
-      kernel_request_redraw(); /* the drag outline follows the pointer */
+      /* the drag outline follows the pointer */
+      kernel_damage(win->client_rect.x, win->client_rect.y,
+                    win->client_rect.w, win->client_rect.h);
     }
   } else if (ev->type == EVENT_MOUSE_CLICK) {
     int mx = ev->data.mouse.x;

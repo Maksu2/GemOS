@@ -31,6 +31,7 @@
 #include "../kernel/gui/wm/wm.h"         // WM Integration
 #include "../kernel/include/boot_info.h"
 #include "../kernel/include/event.h"
+#include "../kernel/include/gui_loop.h"
 #include "../kernel/include/heap.h"
 #include "../kernel/include/irq.h"
 #include "../kernel/memory/kstack.h"
@@ -60,9 +61,16 @@ static bool pending_redraw = true;
  * cursor is drawn again (cursor_move_on) */
 static bool cursor_moved;
 
+/* Parts of the screen that show something new (kernel_damage), logical
+ * pixels; they overlap no other. More than fit: a full frame. */
+#define DAMAGE_MAX 16
+static rect_t damage[DAMAGE_MAX];
+static int damage_count;
+
 /* Frames drawn so far, logged at most every 2 s while there are new ones;
  * tools/smoke.py reads the line */
 static uint32_t frames_full;
+static uint32_t frames_partial;
 static uint32_t frames_cursor;
 static uint32_t full_ms_total;
 static uint32_t full_ms_max;
@@ -70,14 +78,17 @@ static uint32_t frames_logged;
 static uint64_t frames_logged_at;
 
 static void frame_stats_log(uint64_t now) {
-  if (frames_full + frames_cursor == frames_logged ||
-      now - frames_logged_at < 2000) {
+  uint32_t frames = frames_full + frames_partial + frames_cursor;
+
+  if (frames == frames_logged || now - frames_logged_at < 2000) {
     return;
   }
-  frames_logged = frames_full + frames_cursor;
+  frames_logged = frames;
   frames_logged_at = now;
   serial_print("[GFX] Frames: full=");
   serial_print_dec(frames_full);
+  serial_print(" partial=");
+  serial_print_dec(frames_partial);
   serial_print(" cursor=");
   serial_print_dec(frames_cursor);
   serial_print(", a full one takes ");
@@ -90,6 +101,51 @@ static void frame_stats_log(uint64_t now) {
 void kernel_request_redraw(void) {
   pending_redraw = true;
   scheduler_wake(TASK_GUI);
+}
+
+void kernel_damage(int x, int y, int w, int h) {
+  rect_t screen = {0, 0, (int)(screen_ctx.width / ui_scale),
+                   (int)(screen_ctx.height / ui_scale)};
+  rect_t wanted = {x, y, w, h};
+  rect_t r;
+
+  if (!rect_intersect(&wanted, &screen, &r)) {
+    return;
+  }
+  /* a rectangle that meets one already listed takes it in, and may then
+   * meet others: keep merging until it meets none */
+  for (int i = 0; i < damage_count;) {
+    rect_t meet;
+
+    if (!rect_intersect(&r, &damage[i], &meet)) {
+      ++i;
+      continue;
+    }
+    int x0 = r.x < damage[i].x ? r.x : damage[i].x;
+    int y0 = r.y < damage[i].y ? r.y : damage[i].y;
+    int x1 = r.x + r.w > damage[i].x + damage[i].w ? r.x + r.w
+                                                    : damage[i].x + damage[i].w;
+    int y1 = r.y + r.h > damage[i].y + damage[i].h ? r.y + r.h
+                                                    : damage[i].y + damage[i].h;
+    r = (rect_t){x0, y0, x1 - x0, y1 - y0};
+    damage[i] = damage[--damage_count];
+    i = 0;
+  }
+  if (damage_count == DAMAGE_MAX) {
+    pending_redraw = true;
+  } else {
+    damage[damage_count++] = r;
+  }
+  scheduler_wake(TASK_GUI);
+}
+
+/* The whole scene into screen_ctx (the backbuffer), inside its bound */
+static void render_scene(void) {
+  desktop_draw(&screen_ctx);
+  dock_render(&screen_ctx);
+  wm_render_all();
+  topbar_render(&screen_ctx);
+  menu_render(&screen_ctx);
 }
 
 /* Set by the GemOS menu's Shutdown, which runs in the GUI task: the loop
@@ -431,14 +487,13 @@ void kernel_main(const boot_info_t *loader_info) {
 
         pending_redraw = true;
       } else if (ev.type == EVENT_KEY_PRESS) {
-        /* Menu Key Handling (ESC) */
+        /* Menu Key Handling (ESC). Other keys go to the focused window's
+         * app, which reports what it changes itself. */
         if (menu_handle_event(&ev)) {
           pending_redraw = true;
         } else {
           wm_handle_event(&ev);
         }
-
-        pending_redraw = true;
       } else if (ev.type == EVENT_REDRAW_REQUEST) {
         pending_redraw = true;
       }
@@ -455,7 +510,10 @@ void kernel_main(const boot_info_t *loader_info) {
     uint64_t now = timer_get_ticks();
     if (now - clock_checked_at >= 1000) {
       clock_checked_at = now;
-      if (topbar_clock_changed() || app_manager_changed()) {
+      if (topbar_clock_changed()) {
+        kernel_damage(0, 0, (int)(screen_width / ui_scale), TOPBAR_HEIGHT);
+      }
+      if (app_manager_changed()) {
         pending_redraw = true;
       }
     }
@@ -463,7 +521,7 @@ void kernel_main(const boot_info_t *loader_info) {
     /* At most one frame per TICKS_PER_FRAME ticks. The request is cleared
      * before drawing, so a redraw requested while this frame is drawn gets
      * the next frame instead of being lost. */
-    if ((pending_redraw || cursor_moved) &&
+    if ((pending_redraw || damage_count > 0 || cursor_moved) &&
         now - last_render_tick >= TICKS_PER_FRAME) {
       last_render_tick = now;
       cursor_moved = false;
@@ -471,17 +529,13 @@ void kernel_main(const boot_info_t *loader_info) {
         uint32_t ms;
 
         pending_redraw = false;
+        damage_count = 0;
 
         /* Render to the heap backbuffer, then copy the finished frame to
          * VRAM in one burst: direct VRAM rendering is slow because MMIO
          * writes go through QEMU's hypervisor per pixel. */
         screen_ctx.framebuffer = (uint32_t *)backbuffer;
-
-        desktop_draw(&screen_ctx);
-        dock_render(&screen_ctx);
-        wm_render_all();
-        topbar_render(&screen_ctx);
-        menu_render(&screen_ctx);
+        render_scene();
 
         cursor_frame_begin();
         present_frame(backbuffer, vbe_buffer, buffer_size, use_page_flip);
@@ -491,6 +545,32 @@ void kernel_main(const boot_info_t *loader_info) {
         frames_full++;
         full_ms_total += ms;
         full_ms_max = ms > full_ms_max ? ms : full_ms_max;
+      } else if (damage_count > 0) {
+        /* Only the rectangles reported change: drawn into the backbuffer
+         * and copied to the visible page, then the cursor on top. The
+         * backbuffer still holds the whole frame on the screen. */
+        uint32_t *screen = use_page_flip ? vbe_get_front_page()
+                                         : (uint32_t *)vbe_buffer;
+        rect_t parts[DAMAGE_MAX];
+        int count = damage_count;
+
+        for (int i = 0; i < count; ++i) {
+          parts[i] = (rect_t){damage[i].x * ui_scale, damage[i].y * ui_scale,
+                              damage[i].w * ui_scale, damage[i].h * ui_scale};
+        }
+        damage_count = 0;
+        screen_ctx.framebuffer = (uint32_t *)backbuffer;
+        for (int i = 0; i < count; ++i) {
+          gfx_set_bound(&screen_ctx, &parts[i]);
+          render_scene();
+        }
+        gfx_set_bound(&screen_ctx, NULL);
+        for (int i = 0; i < count; ++i) {
+          gfx_copy_rect(&screen_ctx, screen, (const uint32_t *)backbuffer,
+                        parts[i]);
+        }
+        cursor_move_on(screen);
+        frames_partial++;
       } else {
         /* The backbuffer holds the frame on the screen: only the cursor
          * changes, on the visible page */
