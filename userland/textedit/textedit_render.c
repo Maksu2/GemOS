@@ -140,8 +140,8 @@ static void utextedit_render_status(const utextedit_state_t *state,
                                  right);
 }
 
-/* One line of the dialog box: "| text". No bar on the right: the console
- * draws text in a proportional font, so it would not line up. */
+/* One line of the dialog box: "| text |". The console draws every
+ * character in its own cell, so the right bar lines up. */
 static void utextedit_render_dialog_line(gemos_console_cell_t *cells,
                                          uint32_t row, uint8_t style,
                                          const char *text) {
@@ -150,6 +150,9 @@ static void utextedit_render_dialog_line(gemos_console_cell_t *cells,
                                  UTEXTEDIT_TEXT_STYLE, ' ');
   utextedit_render_put(cells, row, UTEXTEDIT_DIALOG_COL, UTEXTEDIT_ACCENT_STYLE,
                        '|');
+  utextedit_render_put(cells, row,
+                       UTEXTEDIT_DIALOG_COL + UTEXTEDIT_DIALOG_WIDTH - 1U,
+                       UTEXTEDIT_ACCENT_STYLE, '|');
   gemos_text_surface_write_text(cells, UTEXTEDIT_COLS, UTEXTEDIT_ROWS, row,
                                 UTEXTEDIT_DIALOG_COL + 2U, style, text);
 }

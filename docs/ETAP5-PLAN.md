@@ -62,7 +62,10 @@ Dziś nie ma żadnego rozmieszczania: okno otwiera się tam, gdzie wskaże woła
   - Pasek przeciągnięty do (480,539) kończy z y ≤ 465.
   - Po puszczeniu nad topbarem okno nie jedzie dalej za myszą.
 
-## 3. Siatka konsoli
+## 3. Siatka konsoli — zrobione
+
+Konsola rysuje każdą komórkę osobno (`font_draw_cell`) i pomija znaki sterujące; ramka pytania w UTEXTEDIT ma prawą krawędź. Testy: smoke (10 liter różnej szerokości zajmuje 10 komórek) i `--editor` (ramka pytania na siatce: wiersze z `-` w kolumnach 6–77, pusty wiersz tylko w 6 i 77).
+
 
 **Dziś:**
 - `console_render_surface` (`kernel/console.c:311-380`) łączy sąsiednie komórki o tym samym stylu w jeden ciąg i rysuje go jednym `font_draw_text`. Na siatce 8 px ląduje więc tylko początek ciągu. Tryb starszy rysuje całe linie (`console.c:302-308`).

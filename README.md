@@ -75,7 +75,7 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 - ELF32 static `ET_EXEC` loader
 - `int 0x80` syscall layer
 - safe copy helpers for user pointers
-- hosted app model: kernel hosts the window/surface, userland owns app state and render logic
+- hosted app model: kernel hosts the window/surface and draws every character in its own cell of the grid, userland owns app state and render logic
 - hosted close requests and keyboard modifiers
 - file read/write syscalls (`UTEXTEDIT.ELF` opens and saves files with them)
 

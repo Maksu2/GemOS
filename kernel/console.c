@@ -275,6 +275,18 @@ static uint16_t console_surface_slot(const console_session_t *session,
   return (uint16_t)(row * session->surface_cols + col);
 }
 
+/* One character in its cell of the grid. Programs send any byte, but only
+ * printable ASCII is drawn: a control character would draw the font's
+ * empty box, and a newline would move the rest of the row down. */
+static void console_draw_cell(window_t *win, int x, int y, uint32_t col,
+                              char ch, uint32_t color) {
+  if (ch <= ' ' || ch > '~') {
+    return;
+  }
+  font_draw_cell(&win->ctx, x + (int)(col * CONSOLE_CHAR_WIDTH), y,
+                 CONSOLE_CHAR_WIDTH, ch, CONSOLE_FONT_SIZE, color);
+}
+
 static void console_render_legacy(window_t *win, const console_session_t *session) {
   uint32_t visible_lines;
   uint32_t first_logical;
@@ -302,8 +314,11 @@ static void console_render_legacy(window_t *win, const console_session_t *sessio
   for (uint32_t i = 0; i < visible_lines && first_logical + i < session->line_count;
        ++i) {
     uint16_t slot = console_line_slot(session, (uint16_t)(first_logical + i));
-    font_draw_text(&win->ctx, x, y, session->lines[slot], CONSOLE_FONT_SIZE,
-                   CONSOLE_TEXT_COLOR);
+    const char *line = session->lines[slot];
+
+    for (uint32_t col = 0; col < session->cols && line[col] != '\0'; ++col) {
+      console_draw_cell(win, x, y, col, line[col], CONSOLE_TEXT_COLOR);
+    }
     y += CONSOLE_LINE_HEIGHT;
   }
 }
@@ -339,32 +354,12 @@ static void console_render_surface(window_t *win,
   y = win->client_rect.y + CONSOLE_PADDING;
 
   for (uint32_t row = 0; row < visible_rows; ++row) {
-    char run_buffer[CONSOLE_MAX_COLS + 1];
-    uint32_t col = 0;
-    int draw_x = x;
+    for (uint32_t col = 0; col < visible_cols; ++col) {
+      const gemos_console_cell_t *cell =
+          &session->surface_cells[console_surface_slot(session, row, col)];
 
-    while (col < visible_cols) {
-      uint8_t style;
-      uint32_t run_len = 0;
-
-      style = session->surface_cells[console_surface_slot(session, row, col)].style;
-      while (col < visible_cols) {
-        const gemos_console_cell_t *cell =
-            &session->surface_cells[console_surface_slot(session, row, col)];
-        if (cell->style != style) {
-          break;
-        }
-
-        run_buffer[run_len++] = (cell->ch == '\0') ? ' ' : cell->ch;
-        col++;
-      }
-
-      if (run_len > 0) {
-        run_buffer[run_len] = '\0';
-        font_draw_text(&win->ctx, draw_x, y, run_buffer, CONSOLE_FONT_SIZE,
-                       console_style_color(style));
-        draw_x += (int)(run_len * CONSOLE_CHAR_WIDTH);
-      }
+      console_draw_cell(win, x, y, col, (char)cell->ch,
+                        console_style_color(cell->style));
     }
 
     if (session->surface_cursor_visible &&
