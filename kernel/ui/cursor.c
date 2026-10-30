@@ -69,16 +69,6 @@ static rect_t cursor_rect_at(int cx, int cy) {
   return out;
 }
 
-/* Rows of a rectangle from one screen-sized buffer to another */
-static void copy_rect(uint32_t *dst, const uint32_t *src, rect_t r) {
-  uint32_t stride = cursor_ctx->pitch / 4U;
-
-  for (int row = 0; row < r.h; ++row) {
-    uint32_t at = (uint32_t)(r.y + row) * stride + (uint32_t)r.x;
-    memcpy(dst + at, src + at, (size_t)r.w * 4U);
-  }
-}
-
 /* The arrow at logical (cx, cy), drawn into a screen-sized buffer */
 static void paint(uint32_t *framebuffer, int cx, int cy) {
   gfx_context_t ctx = *cursor_ctx;
@@ -86,7 +76,7 @@ static void paint(uint32_t *framebuffer, int cx, int cy) {
   /* The mouse driver keeps the position on screen; gfx_put_pixel clips the
    * parts of the arrow that stick out past the screen edge. */
   ctx.framebuffer = framebuffer;
-  gfx_reset_clip(&ctx);
+  gfx_set_bound(&ctx, NULL); /* the whole screen, whatever frame is drawn */
   for (int y = 0; cursor_bitmap[y] != NULL; y++) {
     const char *row = cursor_bitmap[y];
     for (int x = 0; row[x] != '\0'; x++) {
@@ -145,7 +135,8 @@ void cursor_move_on(uint32_t *screen) {
   if (!cursor_ctx)
     return;
   if (shown.w > 0) {
-    copy_rect(screen, cursor_ctx->framebuffer, shown); /* the old arrow */
+    /* the old arrow */
+    gfx_copy_rect(cursor_ctx, screen, cursor_ctx->framebuffer, shown);
   }
   cursor_position(&cx, &cy);
   paint(screen, cx, cy);
