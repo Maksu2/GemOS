@@ -33,6 +33,10 @@ static menu_t *terminal_menu = NULL;
 /* Render state: avoid re-rendering when nothing changed */
 static int last_rendered_line_count = -1;
 
+/* The log as the last frame showed it, and how many windows show it */
+static uint32_t rendered_lines_written;
+static int open_windows;
+
 /* Menu Actions */
 static void action_close_terminal(void) {
   window_t *win = wm_get_focused_window();
@@ -50,6 +54,8 @@ static void terminal_render(window_t *win) {
   int h = win->client_rect.h;
 
   int total_lines = klog_get_line_count();
+
+  rendered_lines_written = klog_get_lines_written();
 
   /* Skip if content unchanged and window hasn't moved */
   if (total_lines == last_rendered_line_count) {
@@ -86,6 +92,17 @@ static void terminal_render(window_t *win) {
   }
 }
 
+/* The log grew since the last frame: new lines are only read while a
+ * frame draws the window */
+static bool terminal_changed(void) {
+  return open_windows > 0 && klog_get_lines_written() != rendered_lines_written;
+}
+
+static void terminal_close(window_t *win) {
+  open_windows--;
+  kfree(win);
+}
+
 /* Event handler - Terminal v1 has no input */
 static void terminal_handle_event(window_t *win, event_t *ev) {
   (void)win;
@@ -102,6 +119,7 @@ static void terminal_open(void) {
   window_init(win, 80, 80, 500, 350);
   win->app = &terminal_app;
   last_rendered_line_count = -1; /* Force initial render */
+  open_windows++;
 
   wm_add_window(win);
   serial_print("[Terminal] Window opened\n");
@@ -115,7 +133,8 @@ static void terminal_init(void) {
   terminal_app.open = terminal_open;
   terminal_app.render = terminal_render;
   terminal_app.handle_event = terminal_handle_event;
-  terminal_app.close = NULL;
+  terminal_app.close = terminal_close;
+  terminal_app.changed = terminal_changed;
 
   /* Create application menu */
   terminal_menu = menu_create();

@@ -39,6 +39,10 @@ void serial_print_hex(uint32_t value);
 /* Get number of log lines available */
 int klog_get_line_count(void);
 
+/* Lines written since boot: changes with every new line, also once the
+ * ring buffer is full */
+uint32_t klog_get_lines_written(void);
+
 /* Get log line by index (0 = oldest available) */
 const char *klog_get_line(int index);
 

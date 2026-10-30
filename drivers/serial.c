@@ -32,6 +32,7 @@
 static char klog_buffer[KLOG_MAX_LINES][KLOG_LINE_LEN];
 static int klog_write_idx = 0;  /* Next line to write */
 static int klog_line_count = 0; /* Total lines written (capped at MAX) */
+static uint32_t klog_lines_written; /* every line, not capped */
 
 /* Current line being built */
 static char klog_current_line[KLOG_LINE_LEN];
@@ -55,6 +56,7 @@ static void klog_flush_line(void) {
   if (klog_line_count < KLOG_MAX_LINES) {
     klog_line_count++;
   }
+  klog_lines_written++;
 
   /* Reset current line */
   klog_current_pos = 0;
@@ -72,6 +74,8 @@ static void klog_putc(char c) {
 
 /* Public API for Terminal */
 int klog_get_line_count(void) { return klog_line_count; }
+
+uint32_t klog_get_lines_written(void) { return klog_lines_written; }
 
 const char *klog_get_line(int index) {
   if (index < 0 || index >= klog_line_count)

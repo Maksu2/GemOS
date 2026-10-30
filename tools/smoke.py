@@ -11,7 +11,7 @@ the monitor:
     full frame (the kernel logs how many frames of each kind it drew),
     and no trace of the arrow on the wallpaper,
   * the clock in the topbar shows a new minute by itself (QEMU's clock
-    starts a few seconds before one),
+    starts a few seconds before one), and the Log Viewer new log lines,
   * UTERM.ELF, ABOUT.ELF and UTEXTEDIT.ELF are started from the topbar menus,
     open their console window, close on Esc and are reaped with exit=0,
   * windows open between the topbar and the dock, a second one moves off
@@ -253,6 +253,7 @@ EDITOR_BOX_COLS = (6, 77)
 EDITOR_STATUS_ROWS = (26, 26)
 EDITOR_MENU = (MENU_APPS, menu_item(130, 3))     # Apps -> Text Editor
 EXPLORER_MENU = (MENU_APPS, menu_item(130, 0))   # Apps -> File Explorer
+LOG_VIEWER_MENU = (MENU_APPS, menu_item(130, 2))  # Apps -> Log Viewer
 
 
 def explorer_entry(window, index):
@@ -860,6 +861,47 @@ class Smoke:
         self.check(issue is None, "frames: the clock shows the new minute by "
                    "itself", "clock-before.png, clock-after.png, %s"
                    % (issue or "%.1f s after the minute" % seconds))
+
+    def log_viewer(self):
+        """The Log Viewer shows new log lines by itself: the GUI loop asks
+        it once a second whether the log grew, and the kernel logs
+        "[GFX] Frames" lines meanwhile. No input is sent while the test
+        waits; then the close button closes the window."""
+        placed_re = re.compile(r"\[WM\] Placed " + Window.GEOMETRY)
+        before = len(placed_re.findall(self.log_text()))
+        self.pointer.home()
+        self.pointer.move_to(LOG_VIEWER_MENU[0])
+        self.pointer.click()
+        time.sleep(0.4)
+        self.pointer.move_to(LOG_VIEWER_MENU[1])
+        self.pointer.click()
+        placed = self.wait_for(lambda t: list(placed_re.finditer(t))[before:],
+                               self.args.app_timeout)
+        if not placed:
+            raise SmokeError("the Log Viewer opened no window")
+        window = Window.parse(placed[0])
+        # the first frame with the window rasterizes its font (up to 2 s
+        # under TCG): the log is compared once it is on the screen and its
+        # frames are logged
+        issue, _ = self.watch_screen(
+            "log-viewer", lambda image: title_bar_problem(image, window),
+            WINDOW_TIMEOUT)
+        if issue:
+            raise SmokeError("the Log Viewer window is not on the screen: %s"
+                             % issue)
+        time.sleep(FRAMES_LOG_DELAY)
+        first = self.screendump("log-viewer", save=False).logical_area(
+            window.client())
+        issue, seconds = self.watch_screen(
+            "log-viewer", lambda image: None
+            if image.logical_area(window.client()) != first
+            else "the log in the window is the same", 6.0)
+        self.check(issue is None, "frames: the Log Viewer shows new log lines "
+                   "by itself", "log-viewer.png, %s"
+                   % (issue or "%.1f s, no input" % seconds))
+        self.pointer.home()
+        self.pointer.move_to(window.close_button())
+        self.pointer.click()
 
     def console_window(self, pid):
         """The window of a hosted app, from its "[CONSOLE] Opened" line."""
@@ -1680,6 +1722,7 @@ class Smoke:
                     self.args.editor):
                 self.cursor_frames()
                 self.clock()
+                self.log_viewer()
             if self.args.selftest:
                 self.selftest(boot)
             elif self.args.stress:

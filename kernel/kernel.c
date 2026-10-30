@@ -449,11 +449,13 @@ void kernel_main(const boot_info_t *loader_info) {
       kernel_shutdown(backbuffer, vbe_buffer, buffer_size, use_page_flip);
     }
 
-    /* The clock in the topbar only changes when a frame draws it */
+    /* The clock in the topbar and what some apps show (the Log Viewer's
+     * log) change without an event: they are read only while a frame
+     * draws them */
     uint64_t now = timer_get_ticks();
     if (now - clock_checked_at >= 1000) {
       clock_checked_at = now;
-      if (topbar_clock_changed()) {
+      if (topbar_clock_changed() || app_manager_changed()) {
         pending_redraw = true;
       }
     }

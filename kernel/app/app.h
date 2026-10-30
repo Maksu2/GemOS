@@ -5,6 +5,7 @@
 #include "../gui/window/window.h"
 #include "../include/event.h"
 #include "../ui/menu.h"
+#include <stdbool.h>
 
 typedef struct app {
   const char *name;
@@ -19,6 +20,10 @@ typedef struct app {
   void (*handle_event)(window_t *win, event_t *ev);
   int (*request_close)(window_t *win);
   void (*close)(window_t *win);
+  /* Optional, for content that changes without an event: whether the
+   * app's windows would look different now. The GUI loop asks once a
+   * second and draws a frame if so. */
+  bool (*changed)(void);
 } app_t;
 
 #endif
