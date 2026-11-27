@@ -74,7 +74,7 @@ def boot_package(launcher, environment, output, disk, create_folder):
             env=dict(environment, GEMOS_TEST_PORT=str(address[1]),
                      GEMOS_TEST_SERIAL=run.serial_log))
         try:
-            run.monitor = smoke.Monitor(address, timeout=90)
+            run.monitor = smoke.Monitor(address, timeout=90, process=run.qemu)
             run.pointer = smoke.Pointer(run.monitor)
             if not run.boot() or "[GemFS] Mounted GemFS" not in run.log_text():
                 raise smoke.SmokeError("GemOS did not reach the desktop with the packaged disk")
@@ -91,10 +91,12 @@ def boot_package(launcher, environment, output, disk, create_folder):
                       "the created folder is present on the data disk")
             if not all(result[0] for result in run.results):
                 raise smoke.SmokeError("packaged launcher test failed")
-        except (OSError, smoke.SmokeError):
+        except (OSError, smoke.SmokeError) as error:
             if run.monitor:
                 run.save_diagnostics()
-            raise
+            launcher_log = (output / "launcher.log").read_bytes()[-2400:].decode(errors="replace").strip()
+            message = f"{error}\n{launcher_log}" if launcher_log else str(error)
+            raise smoke.SmokeError(message) from error
         finally:
             run.stop_qemu()
 
@@ -128,4 +130,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, smoke.SmokeError) as error:
+        print(error, file=sys.stderr)
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            message = str(error).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+            print(f"::error::{message}")
+        sys.exit(1)

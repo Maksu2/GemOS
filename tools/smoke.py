@@ -590,7 +590,7 @@ class Monitor:
 
     PROMPT = b"(qemu) "
 
-    def __init__(self, address, timeout=30.0):
+    def __init__(self, address, timeout=30.0, process=None):
         deadline = time.monotonic() + timeout
         family = socket.AF_INET if isinstance(address, tuple) else socket.AF_UNIX
         while True:
@@ -600,6 +600,8 @@ class Monitor:
                 break
             except OSError:
                 self.sock.close()
+                if process is not None and process.poll() is not None:
+                    raise SmokeError(f"QEMU launcher exited with status {process.returncode} before the monitor opened")
                 if time.monotonic() > deadline:
                     raise SmokeError("QEMU monitor socket did not appear")
                 time.sleep(0.1)
@@ -879,7 +881,7 @@ class Smoke:
         self.qemu = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                                      stdout=self.qemu_log,
                                      stderr=subprocess.STDOUT)
-        self.monitor = Monitor(sock)
+        self.monitor = Monitor(sock, process=self.qemu)
         self.pointer = Pointer(self.monitor)
 
     def stop_qemu(self):

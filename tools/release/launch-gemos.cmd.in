@@ -43,7 +43,13 @@ function Expand-Image([string]$payload, [string]$path, [string]$expected) {
         $gzip.Dispose()
         $inputStream.Dispose()
     }
-    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $expected) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($path))).Replace('-', '')
+    } finally {
+        $sha.Dispose()
+    }
+    if ($hash -ne $expected) {
         throw "Checksum mismatch for $path."
     }
 }
@@ -57,7 +63,7 @@ try {
         if (!$qemu) {
             $winget = Get-Command winget.exe -CommandType Application -ErrorAction SilentlyContinue
             if (!$winget) { throw 'Install QEMU from https://www.qemu.org/download/ and run this file again.' }
-            Write-Host 'Installing QEMU with WinGet. The installer may ask for confirmation.'
+            [Console]::WriteLine('Installing QEMU with WinGet. The installer may ask for confirmation.')
             & $winget.Source install --id SoftwareFreedomConservancy.QEMU --exact --source winget --accept-source-agreements --accept-package-agreements
             if ($LASTEXITCODE -ne 0) { throw 'WinGet could not install QEMU.' }
             $qemu = Find-Qemu
@@ -81,7 +87,7 @@ try {
         catch [IO.IOException] { if (![IO.File]::Exists($disk)) { throw } }
     }
 
-    Write-Host "GemOS stores files in $disk"
+    [Console]::WriteLine("GemOS stores files in $disk")
     Push-Location -LiteralPath $directory
     try {
         & $qemu -accel tcg -m 128M -boot a `
