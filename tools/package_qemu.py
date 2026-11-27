@@ -17,9 +17,9 @@ import zipfile
 TOOLS = Path(__file__).resolve().parent
 ROOT = TOOLS.parent
 PACKAGES = {
-    "Apple-Silicon": "Uruchom GemOS.command",
-    "Windows-x64": "Uruchom GemOS.cmd",
-    "Linux": "uruchom-gemos.sh",
+    "Apple-Silicon": "RunGemOS.command",
+    "Windows-x64": "RunGemOS.bat",
+    "Linux": "RunGemOS.sh",
 }
 
 
@@ -30,7 +30,7 @@ def payload(data):
 def write_package(directory, platform, version, values):
     launcher = PACKAGES[platform]
     windows = platform == "Windows-x64"
-    template = TOOLS / "release" / ("launch-gemos.cmd.in" if windows else "launch-gemos.sh.in")
+    template = TOOLS / "release" / ("launch-gemos.bat.in" if windows else "launch-gemos.sh.in")
     content = template.read_text(encoding="utf-8")
     for key, value in values.items():
         content = content.replace("@" + key + "@", value)

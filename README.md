@@ -18,9 +18,9 @@ Pick your platform and extract its ZIP. Each package contains one launcher with 
 
 | Host | Download | Start |
 | --- | --- | --- |
-| Apple Silicon Mac | `GemOS-Apple-Silicon-*.zip` | Double-click `Uruchom GemOS.command` |
-| Windows x64 | `GemOS-Windows-x64-*.zip` | Double-click `Uruchom GemOS.cmd` |
-| Linux | `GemOS-Linux-*.zip` | Run `./uruchom-gemos.sh` |
+| Apple Silicon Mac | `GemOS-Apple-Silicon-*.zip` | Double-click `RunGemOS.command` |
+| Windows x64 | `GemOS-Windows-x64-*.zip` | Double-click `RunGemOS.bat` |
+| Linux | `GemOS-Linux-*.zip` | Run `./RunGemOS.sh` |
 
 The Mac launcher installs QEMU through Homebrew when needed. The Windows launcher uses WinGet when available. Linux uses the distribution's QEMU with desktop display support. On Debian or Ubuntu install `qemu-system-x86` and `qemu-system-gui`.
 
