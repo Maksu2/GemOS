@@ -1,35 +1,40 @@
-# GemOS
+<div align="center">
+  <h1>GemOS</h1>
+  <p><strong>A 32-bit x86 desktop operating system written in C and assembly</strong></p>
+  <p>
+    <a href="https://github.com/Maksu2/GemOS/releases"><img alt="Download GemOS" src="https://img.shields.io/badge/Download-GemOS-B45436?style=for-the-badge&logo=github"></a>
+    <a href="https://github.com/Maksu2/GemOS/actions/workflows/ci.yml"><img alt="CI runs" src="https://img.shields.io/badge/CI-QEMU-202123?style=for-the-badge&logo=githubactions"></a>
+    <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/License-MIT-595751?style=for-the-badge"></a>
+  </p>
+  <img src="docs/assets/screenshots/release-desktop.png" alt="GemOS graphite desktop with File Explorer, About GemOS and the dock" width="900">
+  <p><a href="#download-and-run">Download and run</a> · <a href="#current-userland">Apps</a> · <a href="#build-run-and-debug">Build from source</a> · <a href="https://github.com/Maksu2/GemOS/wiki">Wiki</a></p>
+</div>
 
-From-scratch 32-bit desktop operating system for x86, written in C and assembly.
+GemOS has its own bootloader, kernel, GemFS storage and desktop shell. The Terminal, About and text editor run in isolated user processes. The graphite desktop uses flat windows and a rust accent to mark focus and selection.
 
-[Project site](http://gemos.maksu.online) • [Wiki](https://github.com/Maksu2/GemOS/wiki) • [Repository](https://github.com/Maksu2/GemOS)
+## Download and run
 
-<p align="center">
-  <img src="docs/assets/screenshots/desktop-overview.png" alt="GemOS desktop overview" width="900">
-</p>
+Pick your platform and extract its ZIP. Each package contains one launcher with both disk images embedded. [GitHub Releases](https://github.com/Maksu2/GemOS/releases)
 
-<table>
-  <tr>
-    <td><img src="docs/assets/screenshots/uterm.png" alt="UTERM userland terminal" width="280"></td>
-    <td><img src="docs/assets/screenshots/about.png" alt="About GemOS userland app" width="280"></td>
-    <td><img src="docs/assets/screenshots/utextedit.png" alt="UTEXTEDIT userland text editor" width="280"></td>
-  </tr>
-  <tr>
-    <td><strong>UTERM.ELF</strong><br>Hosted userland terminal</td>
-    <td><strong>ABOUT.ELF</strong><br>Small informational userland app</td>
-    <td><strong>UTEXTEDIT.ELF</strong><br>Userland text editor with open and save</td>
-  </tr>
-</table>
+| Host | Download | Start |
+| --- | --- | --- |
+| Apple Silicon Mac | `GemOS-Apple-Silicon-*.zip` | Double-click `Uruchom GemOS.command` |
+| Windows x64 | `GemOS-Windows-x64-*.zip` | Double-click `Uruchom GemOS.cmd` |
+| Linux | `GemOS-Linux-*.zip` | Run `./uruchom-gemos.sh` |
 
-GemOS is a classic desktop-style operating system built end-to-end: bootloader, protected-mode bring-up, kernel, memory management, interrupt path, graphics stack, filesystem, scheduler, Ring 3 transition and now practical userland applications.
+The Mac launcher installs QEMU through Homebrew when needed. The Windows launcher uses WinGet when available. Linux uses the distribution's QEMU with desktop display support. On Debian or Ubuntu install `qemu-system-x86` and `qemu-system-gui`.
 
-The project goal is not novelty for its own sake. The goal is to build a calm, coherent, technically honest system where architecture comes first and big rewrites are earned, not assumed.
+Open **Apps → File Explorer**, make a folder and press **F2** to rename it. Use **GemOS → Shutdown** at the end of a session. The next launcher reuses your data disk from the same location.
 
-## Why this project matters
+| Host | Persistent data disk |
+| --- | --- |
+| macOS | `~/Library/Application Support/GemOS/data.img` |
+| Windows | `%LOCALAPPDATA%\GemOS\data.img` |
+| Linux | `~/.local/share/GemOS/data.img` or `$XDG_DATA_HOME/GemOS/data.img` |
 
-- It owns the whole path from the boot sector to the desktop.
-- It treats “boring is success” as an engineering rule, not a slogan.
-- It is already past the fake userland stage: isolated Ring 3 processes run real apps while the desktop remains stable.
+### Bootable ISO
+
+`GemOS-*.iso` boots as a CD-ROM in an x86 VM with a legacy BIOS. Allocate 128 MB of RAM and select CD boot. A separate IDE disk formatted as GemFS gives the desktop writable storage. `SHA256SUMS.txt` covers the three ZIPs and the ISO.
 
 ## What works now
 
@@ -114,7 +119,7 @@ userland apps: UTERM.ELF, ABOUT.ELF, UTEXTEDIT.ELF
 | `ABOUT.ELF` | Stable | Small polished userland app with timed updates and clean close flow |
 | `UTEXTEDIT.ELF` | Usable | Hosted editor that opens and saves text files (up to 8 KB) on GemFS, asks before unsaved changes are lost, and opens the file the File Explorer hands it |
 
-## Build / Run / Debug
+## Build, run and debug
 
 ### Tooling
 
@@ -154,7 +159,19 @@ tools/mkgemfs ls build/data.img /   # list, cat, put, mkdir, rm, check on the ho
 make run-hdd      # the same, booting from the hard disk image
 ```
 
-`tools/smoke.sh` prints one PASS/FAIL line per check and saves serial logs and screenshots in the corresponding directory under `build/`. GitHub Actions runs smoke, editor, stress, boot matrix, kernel self-tests and the Explorer suite on pushes, pull requests and merge-queue checks. The Explorer suite runs at 1920×1080 and at 1280×800 with 32 MB RAM, 4 MB VRAM, a Pentium II CPU without FXSR and throttled writes. The **PR checks** job requires every suite to pass. Each test job uploads its transcript, serial logs and screenshots.
+`tools/smoke.sh` reports each check and saves serial logs and screenshots under `build/`. GitHub Actions runs smoke, the editor and Explorer tests, stress, the boot matrix and the kernel self-tests on pushes, pull requests and merge-queue checks. The Explorer suite covers 1920×1080 and a 1280×800 configuration with 32 MB RAM, 4 MB VRAM, a Pentium II CPU without FXSR and throttled disk writes. Each job uploads its logs and screenshots.
+
+### Build the release packages
+
+Install `genisoimage` to create the bootable CD image. Package the same floppy image you tested with QEMU.
+
+```bash
+make all
+python3 tools/package_qemu.py --version dev
+python3 tools/test_qemu_package.py
+```
+
+Actions packages the boot image from the smoke and editor job. The launchers run on macOS arm64, Windows x64 and Linux runners, with a second boot that checks the data disk. Linux also boots the packaged ISO and exercises Explorer. Green **PR checks** publishes the tested packages as a run artifact. Pushing a `v` tag also publishes the assets as a GitHub prerelease after the checks pass.
 
 `make selftest` builds `build/selftest/gemos.img`, a kernel with `kernel/selftest.c`: it checks that heap corruption is detected, that broken ELF files are rejected, that every exception a ring 3 program can raise ends only that program and that each task keeps its FPU state. It exercises GemFS (directories, a 100 KB file, replacing, a failed write, errors, recursive delete) and runs `FILETEST.ELF`, an 83 KB program started from GemFS that writes and reads files through the syscalls and must be refused when it tries to overwrite `UTERM.ELF`. With disk writes slowed down, `LONGIO.ELF` checks long file syscalls: the clock, other tasks and the GUI loop go on during one, three processes share two files without seeing half of a write, and a process killed half way through a write leaves the file as it was. The harness boots it twice on the same disks, so the second boot checks what the first one wrote. Last, it overflows its own kernel stack on purpose to show the guard page at work.
 
@@ -182,7 +199,7 @@ userland/   user-space binaries, runtime and shared helpers
 include/    freestanding C headers and the userland ABI (include/gemos)
 lib/        freestanding support code
 assets/     system font (Inter) and its license
-tools/      QEMU smoke test and mkgemfs (GemFS disks on the host)
+tools/      QEMU tests, release packaging, and mkgemfs (GemFS disks on the host)
 docs/       GitHub Pages site, the code audit and the GemFS format
 ```
 

@@ -1,0 +1,105 @@
+#!/bin/bash
+# GemOS @VERSION@. The two disk images are embedded as gzip and base64.
+@LICENSES@
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+umask 077
+
+fail() {
+    printf '\n%s\n' "$1" >&2
+    if [[ -t 0 ]]; then
+        printf 'Press Enter to close. ' >&2
+        read -r reply || true
+    fi
+    exit 1
+}
+
+platform="$(uname -s)"
+case "$platform" in
+    Darwin) default_directory="$HOME/Library/Application Support/GemOS" ;;
+    Linux) default_directory="${XDG_DATA_HOME:-$HOME/.local/share}/GemOS" ;;
+    *) fail "Use the GemOS package for your operating system." ;;
+esac
+
+trap 'fail "GemOS could not start. See the message above."' ERR
+mkdir -p "${GEMOS_QEMU_DIR:-$default_directory}"
+cd "${GEMOS_QEMU_DIR:-$default_directory}"
+scratch="$(mktemp -d "$PWD/.launch.XXXXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
+
+find_qemu() {
+    local binary
+    for binary in /opt/homebrew/bin/qemu-system-i386 /opt/homebrew/bin/qemu-system-x86_64; do
+        if [[ -x "$binary" ]]; then
+            printf '%s\n' "$binary"
+            return
+        fi
+    done
+    command -v qemu-system-i386 || command -v qemu-system-x86_64
+}
+
+if [[ -n "${QEMU:-}" ]]; then
+    qemu="$(command -v "$QEMU")" || fail "Cannot find the QEMU program specified by QEMU."
+elif ! qemu="$(find_qemu)"; then
+    [[ "$platform" == Darwin ]] || fail "Install QEMU with desktop display support and run this file again. On Debian or Ubuntu use sudo apt install qemu-system-x86 qemu-system-gui."
+
+    if ! brew_bin="$(command -v brew)"; then
+        printf 'Installing Homebrew. Its installer may ask for confirmation.\n'
+        curl -fsSL --retry 2 --proto '=https' \
+            'https://raw.githubusercontent.com/Homebrew/install/e09ddecb4d4f4a3e776c00c62e010276133d1eed/install.sh' \
+            -o "$scratch/install-homebrew.sh" || fail "Could not download the Homebrew installer."
+        arch -arm64 /bin/bash "$scratch/install-homebrew.sh" || fail "Homebrew installation stopped."
+        brew_bin="$(command -v brew)" || fail "Cannot find Homebrew after installation."
+    fi
+
+    printf 'Installing QEMU with Homebrew.\n'
+    "$brew_bin" install qemu || fail "Homebrew could not install QEMU."
+    qemu="$(find_qemu)" || fail "Cannot find the x86 QEMU program after installation."
+fi
+
+decode_base64() {
+    if [[ "$platform" == Darwin ]]; then
+        base64 -D
+    else
+        base64 -d
+    fi
+}
+
+boot_payload() {
+    decode_base64 <<'GEMOS_BOOT_GZIP'
+@BOOT64@
+GEMOS_BOOT_GZIP
+}
+
+data_payload() {
+    decode_base64 <<'GEMOS_DATA_GZIP'
+@DATA64@
+GEMOS_DATA_GZIP
+}
+
+extract_image() {
+    local payload="$1" out="$2" expected="$3" sum
+    "$payload" | gzip -dc > "$out" || fail "Could not unpack ${out##*/}."
+    if [[ "$platform" == Darwin ]]; then
+        sum="$(shasum -a 256 "$out")"
+    else
+        sum="$(sha256sum "$out")"
+    fi
+    [[ "${sum%% *}" == "$expected" ]] || fail "Checksum mismatch for ${out##*/}."
+}
+
+extract_image boot_payload "$scratch/gemos.img" '@BOOT_SHA@'
+if [[ ! -f data.img ]]; then
+    [[ ! -e data.img && ! -L data.img ]] || fail "The path $PWD/data.img is occupied."
+    extract_image data_payload "$scratch/data.img" '@DATA_SHA@'
+    # A hard link publishes the complete disk and leaves an existing file intact.
+    if ! ln "$scratch/data.img" . 2>/dev/null && [[ ! -f data.img ]]; then
+        fail "Could not create the data disk in $PWD."
+    fi
+fi
+
+printf 'GemOS stores files in %s/data.img\n' "$PWD"
+"$qemu" -accel tcg -m 128M -boot a \
+    -drive "file=${scratch##*/}/gemos.img,if=floppy,format=raw,readonly=on" \
+    -drive 'file=data.img,if=ide,index=0,format=raw' || fail "QEMU exited with an error. See the message above."

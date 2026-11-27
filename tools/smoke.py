@@ -590,12 +590,13 @@ class Monitor:
 
     PROMPT = b"(qemu) "
 
-    def __init__(self, path, timeout=30.0):
+    def __init__(self, address, timeout=30.0):
         deadline = time.monotonic() + timeout
+        family = socket.AF_INET if isinstance(address, tuple) else socket.AF_UNIX
         while True:
+            self.sock = socket.socket(family, socket.SOCK_STREAM)
             try:
-                self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                self.sock.connect(path)
+                self.sock.connect(address)
                 break
             except OSError:
                 self.sock.close()
@@ -837,6 +838,10 @@ class Smoke:
             # the data disk behind it
             cmd += ["-drive", disk % (self.disks["boot"], 0), "-boot", "c"]
             index = 1
+        elif self.args.boot == "cdrom":
+            cmd += ["-drive", "file=%s,if=ide,index=2,media=cdrom,readonly=on,format=raw"
+                    % self.disks["boot"], "-boot", "d"]
+            index = 0
         else:
             cmd += ["-drive", "file=%s,if=floppy,format=raw"
                     % self.disks["boot"]]
@@ -917,7 +922,8 @@ class Smoke:
 
     def screendump(self, name, save=True):
         ppm = os.path.join(self.out, name + ".ppm")
-        self.monitor.cmd("screendump %s" % ppm)
+        monitor_path = ppm.replace(os.sep, "/").replace("\\", "\\\\").replace('"', '\\"')
+        self.monitor.cmd('screendump "%s"' % monitor_path)
         width, height, pixels = read_ppm(ppm)
         if save:
             write_png(os.path.join(self.out, name + ".png"), width, height,
@@ -2364,10 +2370,9 @@ def main():
     parser.add_argument("--selftest", action="store_true",
                         help="check the report of the self-test image "
                         "(--image build/selftest/gemos.img)")
-    parser.add_argument("--boot", choices=("floppy", "hdd"),
+    parser.add_argument("--boot", choices=("floppy", "hdd", "cdrom"),
                         default="floppy",
-                        help="boot device (--image is the floppy or the "
-                        "hard disk image)")
+                        help="boot device for --image")
     parser.add_argument("--memory", type=int, default=128, metavar="MB")
     parser.add_argument("--no-data-disk", action="store_true")
     parser.add_argument("--data-disk", choices=("gemfs", "unsigned", "damaged"),

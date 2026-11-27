@@ -42,6 +42,14 @@ jobs:
         shell: bash
         run: tools/smoke.sh --no-build --editor 2>&1 | tee build/ci/editor.log
 
+      - name: Preserve the tested boot image
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-qemu-image
+          path: build/gemos.img
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Upload smoke artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -55,6 +63,108 @@ jobs:
             build/editor/*.png
             build/editor/*.log
             build/editor/*.txt
+          if-no-files-found: ignore
+
+  qemu-packages:
+    name: Build QEMU packages
+    needs: build-and-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tested-qemu-image
+          path: build/release-input
+
+      - name: Install ISO builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends genisoimage
+
+      - name: Package the tested image
+        shell: bash
+        run: |
+          version="${GITHUB_SHA:0:12}"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            version="$GITHUB_REF_NAME"
+          fi
+          python3 tools/package_qemu.py --image build/release-input/gemos.img --version "$version"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qemu-package-candidates
+          path: build/release/
+          if-no-files-found: error
+          retention-days: 3
+
+  package-smoke:
+    name: QEMU package (${{ matrix.platform }})
+    needs: qemu-packages
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Apple Silicon
+            runner: macos-15
+          - platform: Windows x64
+            runner: windows-2025
+          - platform: Linux
+            runner: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: qemu-package-candidates
+          path: build/release
+
+      - name: Install QEMU on Apple Silicon
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          test "$(uname -m)" = arm64
+          brew install qemu
+
+      - name: Install QEMU on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install qemu --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          (Join-Path $env:ProgramFiles 'qemu') >> $env:GITHUB_PATH
+
+      - name: Install QEMU on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+
+      - name: Start the packaged launcher and check its saved data
+        run: python tools/test_qemu_package.py
+
+      - name: Boot the packaged ISO and test Explorer
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          iso=(build/release/*.iso)
+          python tools/smoke.py --boot cdrom --image "${iso[0]}" --out build/iso-smoke \
+            --explorer --expect-unchanged boot
+
+      - name: Upload package test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ runner.os }}-logs
+          path: |
+            build/package-smoke/**/*.log
+            build/package-smoke/**/*.png
+            build/iso-smoke/*.log
+            build/iso-smoke/*.png
           if-no-files-found: ignore
 
   stress:
@@ -235,7 +345,7 @@ jobs:
   pr-checks:
     name: PR checks
     if: always()
-    needs: [build-and-smoke, stress, explorer, matrix, selftest]
+    needs: [build-and-smoke, stress, explorer, matrix, selftest, package-smoke]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
@@ -244,6 +354,7 @@ jobs:
       EXPLORER_RESULT: ${{ needs.explorer.result }}
       MATRIX_RESULT: ${{ needs.matrix.result }}
       SELFTEST_RESULT: ${{ needs.selftest.result }}
+      PACKAGE_RESULT: ${{ needs.package-smoke.result }}
     steps:
       - name: Report and require all QEMU suites
         shell: bash
@@ -255,10 +366,66 @@ jobs:
               'Stress (25 cycles)' "$STRESS_RESULT" \
               'Explorer (both modes)' "$EXPLORER_RESULT" \
               'Boot matrix' "$MATRIX_RESULT" \
-              'Kernel self-test' "$SELFTEST_RESULT"
+              'Kernel self-test' "$SELFTEST_RESULT" \
+              'Launchers and bootable ISO' "$PACKAGE_RESULT"
           } >> "$GITHUB_STEP_SUMMARY"
           test "$SMOKE_EDITOR_RESULT" = success &&
             test "$STRESS_RESULT" = success &&
             test "$EXPLORER_RESULT" = success &&
             test "$MATRIX_RESULT" = success &&
-            test "$SELFTEST_RESULT" = success
+            test "$SELFTEST_RESULT" = success &&
+            test "$PACKAGE_RESULT" = success
+
+  publish-packages:
+    name: Publish tested run artifacts
+    needs: pr-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: qemu-package-candidates
+          path: build/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GemOS-QEMU-packages
+          path: build/release/
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    needs: publish-packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: GemOS-QEMU-packages
+          path: build/release
+      - name: Verify and publish the release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd build/release && sha256sum -c SHA256SUMS.txt)
+          assets=(build/release/*.zip build/release/*.iso build/release/SHA256SUMS.txt)
+          state=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null) || state=
+          case "$state" in
+            false) gh release view "$GITHUB_REF_NAME" --json url --jq .url ;;
+            true)
+              gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+              gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease
+              ;;
+            *)
+              cat tools/release/notes.md > "$RUNNER_TEMP/release-notes.md"
+              printf '\n[CI results](%s/%s/actions/runs/%s)\n' \
+                "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$RUNNER_TEMP/release-notes.md"
+              gh release create "$GITHUB_REF_NAME" --verify-tag --prerelease \
+                --title "GemOS $GITHUB_REF_NAME (QEMU)" --notes-file "$RUNNER_TEMP/release-notes.md" \
+                "${assets[@]}"
+              ;;
+          esac

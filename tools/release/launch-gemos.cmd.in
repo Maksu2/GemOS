@@ -1,0 +1,99 @@
+@echo off
+setlocal DisableDelayedExpansion
+set "GEMOS_LAUNCHER_PATH=%~f0"
+powershell.exe -NoProfile -Command "$source = [IO.File]::ReadAllText($env:GEMOS_LAUNCHER_PATH); & ([scriptblock]::Create(($source -split '\r?\n# GEMOS POWERSHELL\r?\n', 2)[1]))"
+set "GEMOS_LAUNCHER_EXIT=%ERRORLEVEL%"
+if not "%GEMOS_LAUNCHER_EXIT%"=="0" pause
+exit /b %GEMOS_LAUNCHER_EXIT%
+# GEMOS POWERSHELL
+# GemOS @VERSION@. The two disk images are embedded as gzip and base64.
+@LICENSES@
+$ErrorActionPreference = 'Stop'
+
+$bootPayload = @'
+@BOOT64@
+'@
+$dataPayload = @'
+@DATA64@
+'@
+
+function Find-Qemu {
+    $folders = @($env:ProgramFiles, "${env:ProgramFiles(x86)}",
+                 (Join-Path $env:LOCALAPPDATA 'Programs'))
+    foreach ($name in 'qemu-system-i386.exe', 'qemu-system-x86_64.exe') {
+        $command = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
+        if ($command) { return $command.Source }
+        foreach ($folder in $folders) {
+            if (!$folder) { continue }
+            $path = Join-Path $folder "qemu\$name"
+            if (Test-Path -LiteralPath $path -PathType Leaf) { return $path }
+        }
+    }
+    return $null
+}
+
+function Expand-Image([string]$payload, [string]$path, [string]$expected) {
+    $inputStream = [IO.MemoryStream]::new([Convert]::FromBase64String($payload))
+    $gzip = [IO.Compression.GzipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+    try {
+        $output = [IO.File]::Create($path)
+        try { $gzip.CopyTo($output) }
+        finally { $output.Dispose() }
+    } finally {
+        $gzip.Dispose()
+        $inputStream.Dispose()
+    }
+    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $expected) {
+        throw "Checksum mismatch for $path."
+    }
+}
+
+$scratch = $null
+try {
+    if ($env:QEMU) {
+        $qemu = (Get-Command $env:QEMU -CommandType Application).Source
+    } else {
+        $qemu = Find-Qemu
+        if (!$qemu) {
+            $winget = Get-Command winget.exe -CommandType Application -ErrorAction SilentlyContinue
+            if (!$winget) { throw 'Install QEMU from https://www.qemu.org/download/ and run this file again.' }
+            Write-Host 'Installing QEMU with WinGet. The installer may ask for confirmation.'
+            & $winget.Source install --id SoftwareFreedomConservancy.QEMU --exact --source winget --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -ne 0) { throw 'WinGet could not install QEMU.' }
+            $qemu = Find-Qemu
+            if (!$qemu) { throw 'Cannot find the x86 QEMU program after installation.' }
+        }
+    }
+
+    $directory = $env:GEMOS_QEMU_DIR
+    if (!$directory) { $directory = Join-Path $env:LOCALAPPDATA 'GemOS' }
+    $directory = [IO.Directory]::CreateDirectory($directory).FullName
+    $scratchName = '.launch.' + [Guid]::NewGuid().ToString('N')
+    $scratch = Join-Path $directory $scratchName
+    [void][IO.Directory]::CreateDirectory($scratch)
+
+    Expand-Image $bootPayload (Join-Path $scratch 'gemos.img') '@BOOT_SHA@'
+    $disk = Join-Path $directory 'data.img'
+    if (![IO.File]::Exists($disk)) {
+        $stagedDisk = Join-Path $scratch 'data.img'
+        Expand-Image $dataPayload $stagedDisk '@DATA_SHA@'
+        try { [IO.File]::Move($stagedDisk, $disk) }
+        catch [IO.IOException] { if (![IO.File]::Exists($disk)) { throw } }
+    }
+
+    Write-Host "GemOS stores files in $disk"
+    Push-Location -LiteralPath $directory
+    try {
+        & $qemu -accel tcg -m 128M -boot a `
+            -drive "file=$scratchName/gemos.img,if=floppy,format=raw,readonly=on" `
+            -drive 'file=data.img,if=ide,index=0,format=raw'
+        if ($LASTEXITCODE -ne 0) { throw "QEMU exited with code $LASTEXITCODE." }
+    } finally {
+        Pop-Location
+    }
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+} finally {
+    if ($scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
+}
