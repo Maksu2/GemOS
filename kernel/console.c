@@ -10,6 +10,7 @@
 #include "include/gui_loop.h"
 #include "include/heap.h"
 #include "process.h"
+#include "ui/theme.h"
 #include "../include/gemos/syscall_abi.h"
 
 #include <stddef.h>
@@ -26,12 +27,12 @@
 #define CONSOLE_LINE_HEIGHT 15
 #define CONSOLE_CHAR_WIDTH 8
 #define CONSOLE_PADDING 8
-#define CONSOLE_BG_COLOR 0x111111
-#define CONSOLE_TEXT_COLOR 0xD8D8D8
-#define CONSOLE_ACCENT_COLOR 0x9FD7FF
-#define CONSOLE_DIM_COLOR 0x8C8C8C
-#define CONSOLE_STATUS_COLOR 0xB8FFD8
-#define CONSOLE_ERROR_COLOR 0xFF8A8A
+#define CONSOLE_BG_COLOR UI_DESKTOP
+#define CONSOLE_TEXT_COLOR UI_PAPER
+#define CONSOLE_ACCENT_COLOR 0xE4A48D
+#define CONSOLE_DIM_COLOR UI_BAR_MUTED
+#define CONSOLE_STATUS_COLOR UI_PAPER
+#define CONSOLE_ERROR_COLOR 0xFF9D8A
 #define CONSOLE_SURFACE_CELLS GEMOS_CONSOLE_MAX_CELLS
 
 typedef enum {
@@ -525,6 +526,11 @@ int console_open(uint32_t owner_pid, const char *title, uint32_t cols,
   window_set_title(win, session->title);
   win->flags = WINDOW_FLAG_NO_RESIZE;
   win->app = &console_window_app;
+  if (strcmp(session->title, "About GemOS") == 0) {
+    win->icon = &icon_about;
+  } else if (strcmp(session->title, "Text Editor") == 0) {
+    win->icon = &icon_textedit;
+  }
   win->user_data = session;
 
   wm_add_window(win);

@@ -1,0 +1,20 @@
+#ifndef UI_THEME_H
+#define UI_THEME_H
+
+#define UI_DESKTOP 0x17181A
+#define UI_BAR 0x202123
+#define UI_BAR_BORDER 0x515052
+#define UI_BAR_MUTED 0xAAA7A0
+
+#define UI_PAPER 0xF1EFE8
+#define UI_PAPER_SHADED 0xE7E4DC
+#define UI_INK 0x191A1B
+#define UI_MUTED 0x595751
+#define UI_RULE 0xBFBBB0
+#define UI_FRAME 0x8D8981
+
+#define UI_ACCENT 0xB45436
+#define UI_SELECTION 0xEADED3
+#define UI_ERROR 0x953F32
+
+#endif

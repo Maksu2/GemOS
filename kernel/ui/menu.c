@@ -2,17 +2,12 @@
 #include "../../drivers/serial.h"
 #include "../gfx/font/font.h"
 #include "../gfx/primitives.h"
+#include "../include/gui_loop.h"
+#include "theme.h"
 #include <gemos/console_abi.h>
 #include <string.h>
 #include "ui_scale.h"
 #include <stddef.h>
-
-/* Colors */
-#define COR_MENU_BG 0xF0F0F0
-#define COR_MENU_BORDER 0x404040
-#define COR_MENU_HOVER 0x000080
-#define COR_MENU_TEXT 0x000000
-#define COR_MENU_TEXT_HOVER 0xFFFFFF
 
 /* Global active menu */
 static menu_t *active_menu = NULL;
@@ -78,6 +73,7 @@ void menu_add_item(menu_t *menu, const char *label, menu_action_t action) {
 void menu_show(menu_t *menu, int x, int y) {
   if (!menu)
     return;
+  menu_hide();
   active_menu = menu;
   active_menu->x = x;
   active_menu->y = y;
@@ -106,30 +102,18 @@ void menu_render(gfx_context_t *ctx) {
   int w = active_menu->width;
   int h = active_menu->height;
 
-  /* 1. Shadow / Border */
-  gfx_fill_rect(ctx, x, y, w, h, COR_MENU_BORDER);
-
-  /* 2. Background */
-  gfx_fill_rect(ctx, x + 1, y + 1, w - 2, h - 2, COR_MENU_BG);
-
-  /* 3. Items */
+  gfx_fill_rect(ctx, x, y, w, h, UI_PAPER);
+  gfx_draw_rect(ctx, x, y, w, h, UI_FRAME);
   int item_y = y + 1;
 
   for (int i = 0; i < active_menu->item_count; i++) {
-    uint32_t bg_color = COR_MENU_BG;
-    uint32_t txt_color = COR_MENU_TEXT;
-
     if (i == active_menu->hover_index) {
-      bg_color = COR_MENU_HOVER;
-      txt_color = COR_MENU_TEXT_HOVER;
-
-      /* Draw Selection Rect */
-      gfx_fill_rect(ctx, x + 1, item_y, w - 2, MENU_ITEM_HEIGHT, bg_color);
+      gfx_fill_rect(ctx, x + 1, item_y, w - 2, MENU_ITEM_HEIGHT, UI_SELECTION);
+      gfx_fill_rect(ctx, x + 1, item_y, 2, MENU_ITEM_HEIGHT, UI_ACCENT);
     }
 
-    /* Draw Text centered vertically */
-    font_draw_text(ctx, x + 10, item_y + 4, active_menu->items[i].label, 14,
-                   txt_color);
+    font_draw_text_fit(ctx, x + 10, item_y + 4, active_menu->items[i].label,
+                       14, UI_INK, w - 18);
 
     item_y += MENU_ITEM_HEIGHT;
   }
@@ -181,6 +165,7 @@ bool menu_handle_event(event_t *event) {
     /* Input events are LOGICAL now */
     int mx = event->data.mouse.x;
     int my = event->data.mouse.y;
+    int previous_hover = active_menu->hover_index;
 
     /* Check bounds logical */
     if (mx >= active_menu->x && mx < active_menu->x + active_menu->width &&
@@ -198,6 +183,10 @@ bool menu_handle_event(event_t *event) {
       active_menu->hover_index = -1;
     }
 
+    if (active_menu->hover_index != previous_hover) {
+      kernel_damage(active_menu->x, active_menu->y, active_menu->width,
+                    active_menu->height);
+    }
     /* Windows get no hover events while a menu is open */
     return true;
   } else if (event->type == EVENT_MOUSE_CLICK) {
@@ -235,9 +224,7 @@ bool menu_handle_event(event_t *event) {
       /* Click outside -> Close Menu */
       menu_hide();
 
-      /* The click is consumed: it does not reach the window, desktop or
-       * topbar item underneath (clicking another topbar menu only closes
-       * the open one). */
+      /* A click on the work area dismisses the menu. */
       return true;
     }
   }

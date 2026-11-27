@@ -87,6 +87,9 @@ reference to a free block or inode:
   old blocks. A crash keeps either the old or the new contents.
 - A new file or directory gets its inode written before the directory entry
   that points to it.
+- A rename within a directory updates the name in the sector containing its
+  directory entry. The inode and its allocated blocks stay in place. The
+  kernel checks for name collisions and path length before writing.
 - Deleting removes the directory entry first, then frees the blocks and the
   inode. A directory is deleted with everything in it.
 

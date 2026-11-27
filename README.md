@@ -65,8 +65,9 @@ The project goal is not novelty for its own sake. The goal is to build a calm, c
 - PS/2 keyboard and mouse
 - TrueType font rendering
 - window manager: new windows open between the topbar and the dock and cascade, dragging keeps the title bar reachable, text is clipped to its window
-- topbar, dock, menus and focus model; Shutdown waits for the file system to finish writing and turns the machine off (ACPI on QEMU and Bochs), or halts and says it is safe to turn it off
-- File Explorer: folders, opens text files in the editor and starts programs from the disk
+- graphite desktop with light windows, a rust-colored focus marker and a dock with window titles and icons
+- Shutdown waits for the file system to finish writing. It turns the machine off with ACPI on QEMU and Bochs, or halts and says it is safe to turn it off
+- File Explorer lists names and types, opens text files in the editor and starts programs from disk. Scroll with the scrollbar, arrow keys, Page Up, Page Down, Home or End. Use New Folder to enter a folder name and F2 to rename the selected file or folder
 - ATA PIO with IDENTIFY, timeouts and error checks; without a data disk the system runs without a file system
 - GemFS v3 on a whole disk: a superblock with a checksum, a block bitmap, inodes and directories, files up to about 4 MB. The kernel mounts only a disk with a valid superblock, never formats one and never writes to a disk it has not mounted; `tools/mkgemfs` makes and inspects disks on the host
 - writes are ordered so that a crash keeps every file whole: at worst it leaves blocks and inodes that nothing uses, and the next mount frees them
@@ -141,6 +142,7 @@ make all          # build/gemos.img (floppy) and build/gemos-hdd.img
 tools/smoke.sh    # build, boot headless in QEMU, start UTERM/ABOUT/UTEXTEDIT, shut down
 tools/smoke.sh --editor   # UTEXTEDIT with files: save as, reopen from the File Explorer,
                           # the unsaved-changes question, a refused save over a program
+tools/smoke.sh --explorer # create and rename entries, then reboot and check the same disk
 tools/smoke.sh --stress   # 25 cycles of opening, typing into and closing them
 tools/smoke.sh --matrix   # smoke test on 32/64/256 MB, no data disk, 4 MB VRAM, hard disk boot,
                           # disks without GemFS that must stay unchanged, a second boot,
@@ -152,7 +154,7 @@ tools/mkgemfs ls build/data.img /   # list, cat, put, mkdir, rm, check on the ho
 make run-hdd      # the same, booting from the hard disk image
 ```
 
-`tools/smoke.sh` prints one PASS/FAIL line per check and keeps the serial log and screenshots in `build/smoke/` (`build/stress/`, `build/matrix/<variant>/`, `build/selftest-run/`). CI runs `make all`, the smoke test, the stress test, the matrix and the self-test on every push and pull request.
+`tools/smoke.sh` prints one PASS/FAIL line per check and saves serial logs and screenshots in the corresponding directory under `build/`. GitHub Actions runs smoke, editor, stress, boot matrix, kernel self-tests and the Explorer suite on pushes, pull requests and merge-queue checks. The Explorer suite runs at 1920×1080 and at 1280×800 with 32 MB RAM, 4 MB VRAM, a Pentium II CPU without FXSR and throttled writes. The **PR checks** job requires every suite to pass. Each test job uploads its transcript, serial logs and screenshots.
 
 `make selftest` builds `build/selftest/gemos.img`, a kernel with `kernel/selftest.c`: it checks that heap corruption is detected, that broken ELF files are rejected, that every exception a ring 3 program can raise ends only that program and that each task keeps its FPU state. It exercises GemFS (directories, a 100 KB file, replacing, a failed write, errors, recursive delete) and runs `FILETEST.ELF`, an 83 KB program started from GemFS that writes and reads files through the syscalls and must be refused when it tries to overwrite `UTERM.ELF`. With disk writes slowed down, `LONGIO.ELF` checks long file syscalls: the clock, other tasks and the GUI loop go on during one, three processes share two files without seeing half of a write, and a process killed half way through a write leaves the file as it was. The harness boots it twice on the same disks, so the second boot checks what the first one wrote. Last, it overflows its own kernel stack on purpose to show the guard page at work.
 

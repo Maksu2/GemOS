@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
@@ -11,7 +12,7 @@ jobs:
   build-and-smoke:
     name: make all + QEMU smoke test
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -23,17 +24,23 @@ jobs:
       # No i686-elf cross compiler on the runner: the Makefile falls back
       # to the host gcc with -m32.
       - name: Build
+        id: build
+        shell: bash
         run: |
+          mkdir -p build/ci
           make info
-          make all
+          make -j"$(nproc)" all 2>&1 | tee build/ci/build.log
 
       - name: Smoke test
-        run: tools/smoke.sh --no-build
+        shell: bash
+        run: tools/smoke.sh --no-build 2>&1 | tee build/ci/smoke.log
 
       # UTEXTEDIT.ELF with files: unsaved-changes question, save as, reopen
       # from the File Explorer, save, discard, a refused save over a program
       - name: Text editor test
-        run: tools/smoke.sh --no-build --editor
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: tools/smoke.sh --no-build --editor 2>&1 | tee build/ci/editor.log
 
       - name: Upload smoke artifacts
         if: always()
@@ -41,6 +48,7 @@ jobs:
         with:
           name: smoke-artifacts
           path: |
+            build/ci/*.log
             build/smoke/*.png
             build/smoke/*.log
             build/smoke/*.txt
@@ -62,11 +70,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
 
       - name: Build
-        run: make all
+        shell: bash
+        run: |
+          mkdir -p build/ci
+          make -j"$(nproc)" all 2>&1 | tee build/ci/build.log
 
       # 25 cycles of opening, typing into and closing all three programs
       - name: Stress test
-        run: tools/smoke.sh --no-build --stress
+        shell: bash
+        run: tools/smoke.sh --no-build --stress 2>&1 | tee build/ci/stress.log
 
       - name: Upload stress artifacts
         if: always()
@@ -74,9 +86,73 @@ jobs:
         with:
           name: stress-artifacts
           path: |
+            build/ci/*.log
             build/stress/*.png
             build/stress/*.log
             build/stress/*.txt
+          if-no-files-found: ignore
+
+  explorer:
+    name: Explorer (${{ matrix.mode }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: 1080p
+            resolution: 1920x1080
+            memory: 128
+            vram: 16
+            cpu: qemu32
+            slow_writes: 0
+            fpu_log: '\[FPU\] Per-task state with FXSAVE'
+          - mode: legacy PC
+            resolution: 1280x800
+            memory: 32
+            vram: 4
+            cpu: pentium2,-fxsr
+            slow_writes: 12
+            fpu_log: '\[FPU\] Per-task state with FNSAVE'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nasm and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
+
+      - name: Build
+        shell: bash
+        run: |
+          mkdir -p build/ci
+          make -j"$(nproc)" all 2>&1 | tee build/ci/build.log
+
+      - name: Create and rename entries, then reboot the same disk
+        shell: bash
+        env:
+          GEMOS_CPU: ${{ matrix.cpu }}
+          GEMOS_MEMORY: ${{ matrix.memory }}
+          GEMOS_VRAM: ${{ matrix.vram }}
+          GEMOS_RESOLUTION: ${{ matrix.resolution }}
+          GEMOS_SLOW_WRITES: ${{ matrix.slow_writes }}
+          GEMOS_FPU_LOG: ${{ matrix.fpu_log }}
+        run: |
+          python3 tools/smoke.py --explorer --out build/explorer --timeout 300 \
+            --cpu "$GEMOS_CPU" --memory "$GEMOS_MEMORY" --vga-mem "$GEMOS_VRAM" \
+            --resolution "$GEMOS_RESOLUTION" --slow-writes "$GEMOS_SLOW_WRITES" \
+            --expect-log "$GEMOS_FPU_LOG" 2>&1 | tee build/ci/explorer.log
+
+      - name: Upload Explorer artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: explorer-${{ matrix.resolution }}-artifacts
+          path: |
+            build/ci/*.log
+            build/explorer/*.png
+            build/explorer/*.log
+            build/explorer/registers.txt
           if-no-files-found: ignore
 
   matrix:
@@ -92,14 +168,18 @@ jobs:
           sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
 
       - name: Build
-        run: make all
+        shell: bash
+        run: |
+          mkdir -p build/ci
+          make -j"$(nproc)" all 2>&1 | tee build/ci/build.log
 
       # 32/64/256 MB, no data disk, 4 MB VRAM, boot from the hard disk image,
       # a data disk without GemFS or with a damaged superblock (must stay
       # byte for byte unchanged), a second boot that must write nothing,
       # a disk that writes slowly
       - name: Smoke test on every machine variant
-        run: tools/smoke.sh --no-build --matrix
+        shell: bash
+        run: tools/smoke.sh --no-build --matrix 2>&1 | tee build/ci/matrix.log
 
       - name: Upload matrix artifacts
         if: always()
@@ -107,6 +187,7 @@ jobs:
         with:
           name: matrix-artifacts
           path: |
+            build/ci/*.log
             build/matrix/*/*.png
             build/matrix/*/*.log
             build/matrix/*/*.txt
@@ -124,13 +205,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
 
+      - name: Build the self-test image
+        shell: bash
+        run: |
+          mkdir -p build/ci
+          make -j"$(nproc)" selftest 2>&1 | tee build/ci/build.log
+
       # Heap, pool, ELF loader, GemFS and the file syscalls, FPU state,
       # every exception a program can raise from Ring 3, and a kernel
       # stack overflow that must end in the double fault handler
-      # (kernel/selftest.c); two boots on the same disks, so files
-      # written on the first must be there on the second
+      # (kernel/selftest.c). Also check Explorer during a slow write and
+      # verify on the second boot that the files from the first survived.
       - name: Self-test
-        run: tools/smoke.sh --selftest
+        shell: bash
+        run: tools/smoke.sh --no-build --selftest 2>&1 | tee build/ci/selftest.log
 
       - name: Upload self-test artifacts
         if: always()
@@ -138,7 +226,39 @@ jobs:
         with:
           name: selftest-artifacts
           path: |
+            build/ci/*.log
             build/selftest-run/*.png
             build/selftest-run/*.log
             build/selftest-run/*.txt
           if-no-files-found: ignore
+
+  pr-checks:
+    name: PR checks
+    if: always()
+    needs: [build-and-smoke, stress, explorer, matrix, selftest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      SMOKE_EDITOR_RESULT: ${{ needs.build-and-smoke.result }}
+      STRESS_RESULT: ${{ needs.stress.result }}
+      EXPLORER_RESULT: ${{ needs.explorer.result }}
+      MATRIX_RESULT: ${{ needs.matrix.result }}
+      SELFTEST_RESULT: ${{ needs.selftest.result }}
+    steps:
+      - name: Report and require all QEMU suites
+        shell: bash
+        run: |
+          {
+            printf '%s\n' '### GemOS QEMU checks' '' '| Job | Result |' '| --- | --- |'
+            printf '| %s | %s |\n' \
+              'Smoke and editor' "$SMOKE_EDITOR_RESULT" \
+              'Stress (25 cycles)' "$STRESS_RESULT" \
+              'Explorer (both modes)' "$EXPLORER_RESULT" \
+              'Boot matrix' "$MATRIX_RESULT" \
+              'Kernel self-test' "$SELFTEST_RESULT"
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$SMOKE_EDITOR_RESULT" = success &&
+            test "$STRESS_RESULT" = success &&
+            test "$EXPLORER_RESULT" = success &&
+            test "$MATRIX_RESULT" = success &&
+            test "$SELFTEST_RESULT" = success

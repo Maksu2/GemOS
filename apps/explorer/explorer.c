@@ -1,77 +1,121 @@
 #include "explorer.h"
-#include "../../drivers/serial.h"
 #include "../../kernel/app/app_manager.h"
 #include "../../kernel/fs/gemfs.h"
 #include "../../kernel/gfx/font/font.h"
+#include "../../kernel/gfx/icons.h"
 #include "../../kernel/gfx/primitives.h"
 #include "../../kernel/gui/wm/wm.h"
 #include "../../kernel/include/gui_loop.h"
 #include "../../kernel/include/heap.h"
-#include "../../kernel/gfx/icons.h"
+#include "../../kernel/memory/kstack.h"
 #include "../../kernel/process.h"
+#include "../../kernel/scheduler.h"
+#include "../../kernel/ui/theme.h"
+#include <gemos/console_abi.h>
 #include <stddef.h>
 #include <string.h>
 
-#define GRID_COLS 5
-#define GRID_CELL_W 80
-#define GRID_CELL_H 70
-#define ICON_SIZE 32
-#define TOP_BAR_H 30
+#define TOOLBAR_HEIGHT 32
+#define HEADER_HEIGHT 25
+#define ROW_HEIGHT 24
+#define FOOTER_HEIGHT 24
+#define TYPE_WIDTH 108
+#define SCROLL_WIDTH 14
+#define ITEM_FONT 13
 
-#define EXPLORER_MAX_ENTRIES 60
+/* Overlapping chunks cover the viewport at any supported VBE height. The
+ * reader still counts every entry, so scrolling can reach the last one. */
+#define CACHE_STEP 32
+#define CACHE_SIZE 96
 
 static app_t explorer_app;
+static unsigned open_windows;
 static char current_path[GEMFS_PATH_MAX] = "/";
-static int selected_id = -1; /* index into entries[] */
-static int hover_id = -1;
+static char status[GEMFS_NAME_MAX + 26];
+static bool status_error;
+static int first_row;
+static int selected = -1;
+static window_t *scroll_drag_window;
+static int scroll_drag_offset;
 
-/* The shown folder, reread when the file system changes */
-static gemfs_entry_t entries[EXPLORER_MAX_ENTRIES];
-static int entry_count;
-static char listed_path[GEMFS_PATH_MAX];
+static gemfs_entry_t entries[CACHE_SIZE];
+static int cached_first;
+static int cached_count;
+static int total_count;
 static uint32_t listed_generation;
 static bool listed;
+static bool listing_failed;
 
-/* Why the last file did not open, shown in red in place of the path until
- * the next click; empty when there is nothing to report */
-static char status[GEMFS_NAME_MAX + 24];
+/* The worker owns each queued request until it publishes the result. */
+static int worker_task = -1;
+static struct {
+  char path[GEMFS_PATH_MAX];
+  gemfs_entry_t entries[CACHE_SIZE];
+  int first;
+  int seen;
+  int count;
+  int result;
+  uint32_t generation;
+  enum { LIST_IDLE, LIST_PENDING, LIST_READY } state;
+} listing;
 
-/* Drag State */
-static int drag_src_id = -1;
-static bool is_dragging = false;
-static int drag_mx = 0;
-static int drag_my = 0;
-static window_t *drag_win_ref = NULL; /* To unproject coords */
+static struct {
+  window_t *window;
+  enum { NAME_IDLE, NAME_INPUT, NAME_PENDING, NAME_READY } state;
+  bool rename;
+  char path[GEMFS_PATH_MAX];
+  char name[GEMFS_NAME_MAX + 2]; /* One extra byte lets us reject overlong input. */
+  size_t caret;
+  bool select_all;
+  int result;
+} name_prompt;
 
-/* Colors */
-#define COL_BG 0xFFFFFF
-#define COL_SELECTION 0xCCE5FF
-#define COL_FOLDER 0xFFD700
-#define COL_FILE 0xDDDDDD
-#define COL_TEXT 0x000000
-#define COL_ERROR 0xC00000
+typedef struct {
+  rect_t list;
+  rect_t track;
+  int rows;
+  int last_top;
+} explorer_view_t;
 
-/* Helper: Check extension, in any case (suffix in lower case) */
+static explorer_view_t explorer_view(const window_t *win) {
+  rect_t client = win->client_rect;
+  int height = client.h - TOOLBAR_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT;
+  int rows = height > 0 ? height / ROW_HEIGHT : 0;
+  int last_top = total_count > rows ? total_count - rows : 0;
+  int y = client.y + TOOLBAR_HEIGHT + HEADER_HEIGHT;
+  int width = client.w - SCROLL_WIDTH;
+  return (explorer_view_t){
+      .list = {client.x, y, width, rows * ROW_HEIGHT},
+      .track = {client.x + width, y, SCROLL_WIDTH, rows * ROW_HEIGHT},
+      .rows = rows,
+      .last_top = last_top,
+  };
+}
+
+static rect_t explorer_up_button(const window_t *win) {
+  return (rect_t){win->client_rect.x + 8, win->client_rect.y + 4, 38, 24};
+}
+
+static rect_t explorer_new_button(const window_t *win) {
+  rect_t client = win->client_rect;
+  return (rect_t){client.x + client.w - 106, client.y + 4, 98, 24};
+}
+
 static bool strends(const char *str, const char *suffix) {
-  if (!str || !suffix)
+  size_t length = strlen(str);
+  size_t tail = strlen(suffix);
+  if (length < tail) {
     return false;
-  int l1 = 0;
-  while (str[l1])
-    l1++;
-  int l2 = 0;
-  while (suffix[l2])
-    l2++;
-  if (l2 > l1)
-    return false;
-  const char *sub = str + (l1 - l2);
-  while (*sub && *suffix) {
-    char c = *sub;
-    if (c >= 'A' && c <= 'Z')
-      c = (char)(c - 'A' + 'a');
-    if (c != *suffix)
+  }
+  str += length - tail;
+  while (*suffix) {
+    char ch = *str++;
+    if (ch >= 'A' && ch <= 'Z') {
+      ch = (char)(ch + 'a' - 'A');
+    }
+    if (ch != *suffix++) {
       return false;
-    sub++;
-    suffix++;
+    }
   }
   return true;
 }
@@ -80,30 +124,27 @@ static bool is_text_file(const char *name) {
   return strends(name, ".gemtext") || strends(name, ".txt");
 }
 
-/* status = first + second, cut to fit */
-static void explorer_set_status(const char *first, const char *second) {
-  size_t length = strlen(first);
-
-  if (length >= sizeof(status)) {
-    length = sizeof(status) - 1;
+static void explorer_status(const char *prefix, const char *detail, bool error) {
+  size_t used = strlen(prefix);
+  if (used > sizeof(status) - 1) {
+    used = sizeof(status) - 1;
   }
-  memcpy(status, first, length);
-  status[length] = '\0';
-  strncpy(status + length, second, sizeof(status) - 1 - length);
+  memcpy(status, prefix, used);
+  strncpy(status + used, detail, sizeof(status) - 1 - used);
   status[sizeof(status) - 1] = '\0';
+  status_error = error;
 }
 
-/* dir + "/" + name into out; 0 if it does not fit */
-static bool explorer_join(char out[GEMFS_PATH_MAX], const char *dir,
-                          const char *name) {
-  size_t dir_length = strlen(dir);
-  size_t name_length = strlen(name);
-  bool root = dir_length == 1 && dir[0] == '/';
+/* Append a name to the current path, with one separating slash. */
+static bool explorer_join(char out[GEMFS_PATH_MAX], const char *name) {
+  size_t dir_length = strlen(current_path);
+  bool root = dir_length == 1;
 
-  if (dir_length + name_length + (root ? 0 : 1) >= GEMFS_PATH_MAX) {
+  if (dir_length + strlen(name) + (root ? 0 : 1) >= GEMFS_PATH_MAX) {
+    explorer_status("Path too long: ", name, true);
     return false;
   }
-  strcpy(out, dir);
+  strcpy(out, current_path);
   if (!root) {
     strcat(out, "/");
   }
@@ -111,260 +152,664 @@ static bool explorer_join(char out[GEMFS_PATH_MAX], const char *dir,
   return true;
 }
 
+static const gemfs_entry_t *explorer_entry(int index) {
+  int slot = index - cached_first;
+  return slot >= 0 && slot < cached_count ? &entries[slot] : NULL;
+}
+
 static void explorer_collect(void *ctx, const gemfs_entry_t *entry) {
   (void)ctx;
-  if (entry_count < EXPLORER_MAX_ENTRIES) {
-    entries[entry_count++] = *entry;
+  if (listing.seen++ >= listing.first && listing.count < CACHE_SIZE) {
+    listing.entries[listing.count++] = *entry;
   }
 }
 
-static void explorer_refresh(void) {
-  if (listed && listed_generation == gemfs_generation() &&
-      strcmp(listed_path, current_path) == 0) {
+static void explorer_worker(void) {
+  for (;;) {
+    if (name_prompt.state == NAME_PENDING) {
+      name_prompt.result = name_prompt.rename
+                               ? gemfs_rename(name_prompt.path, name_prompt.name)
+                               : gemfs_mkdir(name_prompt.path);
+      name_prompt.state = NAME_READY;
+      scheduler_wake(TASK_GUI);
+      continue;
+    }
+    if (listing.state == LIST_PENDING) {
+      listing.seen = 0;
+      listing.count = 0;
+      listing.result = gemfs_list(listing.path, explorer_collect, NULL,
+                                  &listing.generation);
+      listing.state = LIST_READY;
+      scheduler_wake(TASK_GUI);
+      continue;
+    }
+    scheduler_block_current(0);
+    scheduler_yield();
+  }
+}
+
+static void explorer_dismiss_name(void) {
+  name_prompt.window = NULL;
+  if (name_prompt.state == NAME_INPUT) {
+    name_prompt.state = NAME_IDLE;
+  }
+}
+
+static void explorer_invalidate_listing(void) {
+  explorer_dismiss_name();
+  listed = false;
+  cached_count = 0;
+  total_count = 0;
+  first_row = 0;
+  selected = -1;
+  status[0] = '\0';
+  wm_damage_app_clients(&explorer_app);
+}
+
+static void explorer_publish_listing(void) {
+  listing.state = LIST_IDLE;
+  if (open_windows == 0 || strcmp(listing.path, current_path) != 0) {
     return;
   }
-  entry_count = 0;
-  if (gemfs_list(current_path, explorer_collect, NULL) < 0 &&
-      strcmp(current_path, "/") != 0) {
-    /* the folder is gone: back to the root */
+
+  bool failed = listing.result < 0;
+  if (failed && strcmp(current_path, "/") != 0) {
     strcpy(current_path, "/");
-    entry_count = 0;
-    (void)gemfs_list(current_path, explorer_collect, NULL);
+    explorer_invalidate_listing();
+    return;
   }
-  if (!listed || strcmp(listed_path, current_path) != 0) {
-    selected_id = -1;
-    hover_id = -1;
+
+  int count = failed ? 0 : listing.count;
+  int total = failed ? 0 : listing.result;
+  size_t bytes = (size_t)count * sizeof(entries[0]);
+  bool changed = cached_first != listing.first || cached_count != count ||
+                 total_count != total ||
+                 memcmp(entries, listing.entries, bytes) != 0;
+  if (listed && listed_generation != listing.generation && changed) {
+    selected = -1;
   }
-  strcpy(listed_path, current_path);
-  listed_generation = gemfs_generation();
+  if (changed) {
+    memcpy(entries, listing.entries, bytes);
+    cached_first = listing.first;
+    cached_count = count;
+    total_count = total;
+  }
+  if (first_row >= total_count) {
+    first_row = total_count > 0 ? total_count - 1 : 0;
+  }
+  if (changed || !listed || listing_failed != failed) {
+    wm_damage_app_clients(&explorer_app);
+  }
   listed = true;
+  listed_generation = listing.generation;
+  listing_failed = failed;
+}
+
+static void explorer_publish_name(void) {
+  if (!name_prompt.window || name_prompt.result == GEMFS_OK) {
+    if (name_prompt.result == GEMFS_OK && listed_generation != gemfs_generation()) {
+      cached_count = 0;
+      selected = -1;
+    }
+    if (name_prompt.window) {
+      explorer_status(name_prompt.rename ? "Renamed to " : "Created ",
+                      name_prompt.name, false);
+    }
+    name_prompt.window = NULL;
+    name_prompt.state = NAME_IDLE;
+  } else {
+    explorer_status(name_prompt.rename ? "Rename: " : "New Folder: ",
+                    gemfs_error(name_prompt.result), true);
+    name_prompt.state = NAME_INPUT;
+  }
+  wm_damage_app_clients(&explorer_app);
+}
+
+void explorer_update(void) {
+  if (listing.state == LIST_READY) {
+    explorer_publish_listing();
+  }
+  if (name_prompt.state == NAME_READY) {
+    explorer_publish_name();
+  }
+  if (!open_windows || worker_task < 0 || !gemfs_available()) {
+    return;
+  }
+
+  window_t *active = wm_get_focused_window();
+  if (active && active->app == &explorer_app) {
+    int last_top = explorer_view(active).last_top;
+    if (first_row > last_top) {
+      first_row = last_top;
+      wm_damage_app_clients(&explorer_app);
+    }
+  }
+
+  int first = first_row - first_row % CACHE_STEP;
+  if (listing.state == LIST_IDLE &&
+      (!listed || cached_first != first ||
+       listed_generation != gemfs_generation())) {
+    strcpy(listing.path, current_path);
+    listing.first = first;
+    listing.state = LIST_PENDING;
+    scheduler_wake((uint32_t)worker_task);
+  }
+}
+
+#ifdef GEMOS_SELFTEST
+bool explorer_listing_pending(void) { return listing.state == LIST_PENDING; }
+
+bool explorer_has_current_entry(const char *name) {
+  if (listed && !listing_failed && listed_generation == gemfs_generation()) {
+    for (int i = 0; i < cached_count; ++i) {
+      if (strcmp(entries[i].name, name) == 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+#endif
+
+static void explorer_button(gfx_context_t *ctx, rect_t box, const char *label,
+                            uint32_t ink) {
+  gfx_draw_rect(ctx, box.x, box.y, box.w, box.h, UI_RULE);
+  font_draw_text(ctx, box.x + 8, box.y + 4, label, ITEM_FONT, ink);
+}
+
+typedef struct {
+  rect_t field;
+  rect_t accept;
+  rect_t cancel;
+} name_controls_t;
+
+static name_controls_t explorer_name_controls(const window_t *win) {
+  rect_t client = win->client_rect;
+  int y = client.y + 4;
+  int right = client.x + client.w - 8;
+  return (name_controls_t){
+      .field = {client.x + 96, y, client.w - 218, 24},
+      .accept = {right - 106, y, 38, 24},
+      .cancel = {right - 60, y, 60, 24},
+  };
+}
+
+static int explorer_name_prefix_width(size_t length) {
+  char prefix[sizeof(name_prompt.name)];
+  memcpy(prefix, name_prompt.name, length);
+  prefix[length] = '\0';
+  return font_text_width(prefix, ITEM_FONT);
+}
+
+static int explorer_name_text_x(rect_t field, int caret_width) {
+  int hidden = caret_width - (field.w - 13);
+  return field.x + 6 - (hidden > 0 ? hidden : 0);
+}
+
+static void explorer_name_toolbar(window_t *win) {
+  gfx_context_t *ctx = &win->ctx;
+  name_controls_t controls = explorer_name_controls(win);
+  rect_t field = controls.field;
+  bool editing = name_prompt.state == NAME_INPUT;
+  uint32_t ink = editing ? UI_INK : UI_MUTED;
+  font_draw_text(ctx, win->client_rect.x + 8, field.y + 4,
+                 name_prompt.rename ? "Rename" : "New Folder", ITEM_FONT,
+                 UI_INK);
+  gfx_draw_rect(ctx, field.x, field.y, field.w, field.h,
+                editing ? UI_ACCENT : UI_RULE);
+  explorer_button(ctx, controls.accept, "OK", ink);
+  explorer_button(ctx, controls.cancel, "Cancel", ink);
+
+  int caret_width = explorer_name_prefix_width(name_prompt.caret);
+  int text_x = explorer_name_text_x(field, caret_width);
+  gfx_context_t clipped = *ctx;
+  gfx_set_clip(&clipped, field.x + 6, field.y + 3, field.w - 12, field.h - 6);
+  if (editing && name_prompt.select_all) {
+    gfx_fill_rect(&clipped, text_x, field.y + 3,
+                  font_text_width(name_prompt.name, ITEM_FONT), field.h - 6,
+                  UI_SELECTION);
+  }
+  font_draw_text(&clipped, text_x, field.y + 4, name_prompt.name, ITEM_FONT, ink);
+  if (editing && !name_prompt.select_all) {
+    gfx_fill_rect(&clipped, text_x + caret_width, field.y + 4, 1, field.h - 8,
+                  UI_ACCENT);
+  }
+}
+
+static void explorer_toolbar(window_t *win) {
+  gfx_context_t *ctx = &win->ctx;
+  rect_t client = win->client_rect;
+  rect_t up = explorer_up_button(win);
+  rect_t create = explorer_new_button(win);
+  int path_x = up.x + up.w + 12;
+
+  gfx_fill_rect(ctx, client.x, client.y + TOOLBAR_HEIGHT - 1, client.w, 1,
+                UI_RULE);
+  if (name_prompt.window == win) {
+    explorer_name_toolbar(win);
+    return;
+  }
+  explorer_button(ctx, up, "Up", current_path[1] ? UI_INK : UI_MUTED);
+  explorer_button(ctx, create, "New Folder",
+                  gemfs_available() && worker_task >= 0 ? UI_INK : UI_MUTED);
+  font_draw_text_fit(ctx, path_x, client.y + 8, current_path, ITEM_FONT, UI_INK,
+                     create.x - 8 - path_x);
+}
+
+static rect_t explorer_thumb(explorer_view_t view) {
+  int height = view.track.h * view.rows / total_count;
+  if (height < 16) {
+    height = 16;
+  }
+  if (height > view.track.h) {
+    height = view.track.h;
+  }
+  int top = first_row < view.last_top ? first_row : view.last_top;
+  int y = view.track.y + (view.track.h - height) * top / view.last_top;
+  return (rect_t){view.track.x + 3, y, view.track.w - 6, height};
+}
+
+static void explorer_draw_entry(gfx_context_t *ctx, rect_t row, int type_x,
+                                const gemfs_entry_t *entry, bool active) {
+  bool folder = entry->type == GEMFS_TYPE_DIR;
+  bool text = is_text_file(entry->name);
+  bool program = strends(entry->name, ".elf");
+  const icon_t *icon = &icon_generic_file;
+  const char *type = "File";
+  if (folder) {
+    icon = &icon_folder;
+    type = "Folder";
+  } else if (text) {
+    icon = &icon_textfile;
+    type = "Text file";
+  } else if (program) {
+    icon = &icon_terminal;
+    type = "Program";
+  }
+
+  if (active) {
+    gfx_fill_rect(ctx, row.x, row.y, row.w, row.h, UI_SELECTION);
+    gfx_fill_rect(ctx, row.x, row.y, 2, row.h, UI_ACCENT);
+  }
+  gfx_fill_rect(ctx, row.x + 10, row.y + row.h - 1, row.w - 20, 1, UI_RULE);
+  icon_draw_outline(ctx, row.x + 11, row.y + 4, icon, UI_INK);
+  font_draw_text_fit(ctx, row.x + 38, row.y + 4, entry->name, ITEM_FONT,
+                     UI_INK, type_x - row.x - 46);
+  font_draw_text_fit(ctx, type_x, row.y + 4, type, ITEM_FONT, UI_MUTED,
+                     row.x + row.w - type_x - 8);
+}
+
+static void explorer_draw_list(window_t *win, explorer_view_t view) {
+  gfx_context_t *ctx = &win->ctx;
+  int type_x = view.list.x + view.list.w - TYPE_WIDTH;
+  int header_y = view.list.y - HEADER_HEIGHT;
+
+  font_draw_text(ctx, view.list.x + 10, header_y + 5, "Name", ITEM_FONT, UI_MUTED);
+  font_draw_text(ctx, type_x, header_y + 5, "Type", ITEM_FONT, UI_MUTED);
+  gfx_fill_rect(ctx, view.list.x + 10, view.list.y - 1, view.list.w - 20, 1,
+                UI_RULE);
+  for (int row = 0; row < view.rows && first_row + row < total_count; ++row) {
+    int index = first_row + row;
+    const gemfs_entry_t *entry = explorer_entry(index);
+    if (entry) {
+      rect_t line = {view.list.x, view.list.y + row * ROW_HEIGHT,
+                     view.list.w, ROW_HEIGHT};
+      explorer_draw_entry(ctx, line, type_x, entry, index == selected);
+    }
+  }
+  if (view.last_top > 0 && view.rows > 0) {
+    rect_t thumb = explorer_thumb(view);
+    gfx_fill_rect(ctx, view.track.x, view.track.y, view.track.w, view.track.h,
+                  UI_PAPER_SHADED);
+    gfx_fill_rect(ctx, thumb.x, thumb.y, thumb.w, thumb.h, UI_FRAME);
+  }
+}
+
+static void explorer_draw_footer(window_t *win) {
+  gfx_context_t *ctx = &win->ctx;
+  rect_t client = win->client_rect;
+  int y = client.y + client.h - FOOTER_HEIGHT;
+  gfx_fill_rect(ctx, client.x, y, client.w, FOOTER_HEIGHT, UI_PAPER_SHADED);
+  gfx_fill_rect(ctx, client.x, y, client.w, 1, UI_RULE);
+  if (status[0] && status_error) {
+    gfx_fill_rect(ctx, client.x, y + 1, 2, FOOTER_HEIGHT - 1, UI_ERROR);
+  }
+
+  char label[20];
+  char *out = label + 10;
+  unsigned count = (unsigned)total_count;
+  strcpy(out, total_count == 1 ? " item" : " items");
+  do {
+    *--out = (char)('0' + count % 10);
+    count /= 10;
+  } while (count);
+  font_draw_text(ctx, client.x + 10, y + 4, out, ITEM_FONT, UI_MUTED);
+
+  const gemfs_entry_t *entry = explorer_entry(selected);
+  const char *info = entry ? entry->name : "";
+  uint32_t ink = UI_MUTED;
+  if (status[0]) {
+    info = status;
+    ink = status_error ? UI_ERROR : UI_INK;
+  } else if (!gemfs_available()) {
+    info = "No file system";
+  } else if (worker_task < 0 || (listed && listing_failed)) {
+    info = "Could not read folder";
+    ink = UI_ERROR;
+  } else if (!listed || (first_row < total_count && !explorer_entry(first_row))) {
+    info = "Reading folder...";
+  }
+  font_draw_text_fit(ctx, client.x + 116, y + 4, info, ITEM_FONT, ink,
+                     client.w - 126);
 }
 
 static void explorer_render(window_t *win) {
-  int ox = win->client_rect.x;
-  int oy = win->client_rect.y;
+  rect_t client = win->client_rect;
+  gfx_fill_rect(&win->ctx, client.x, client.y, client.w, client.h, UI_PAPER);
+  explorer_toolbar(win);
+  explorer_draw_list(win, explorer_view(win));
+  explorer_draw_footer(win);
+}
 
-  /* Background */
-  gfx_fill_rect(&win->ctx, ox, oy, win->client_rect.w, win->client_rect.h,
-                COL_BG);
+static void explorer_scroll_to(explorer_view_t view, int top) {
+  int clamped = top < 0 ? 0 : top > view.last_top ? view.last_top : top;
+  if (first_row != clamped) {
+    first_row = clamped;
+    wm_damage_app_clients(&explorer_app);
+  }
+}
 
-  /* Toolbar */
-  gfx_fill_rect(&win->ctx, ox, oy, win->client_rect.w, TOP_BAR_H, 0xE0E0E0);
-
-  /* Up Button */
-  gfx_draw_rect(&win->ctx, ox + 5, oy + 5, 40, 20, 0x808080);
-  font_draw_text(&win->ctx, ox + 15, oy + 8, "UP", 12, COL_TEXT);
-
-  /* New Folder Button */
-  gfx_draw_rect(&win->ctx, ox + 55, oy + 5, 80, 20, 0x808080);
-  font_draw_text(&win->ctx, ox + 60, oy + 8, "New Folder", 12, COL_TEXT);
-
-  /* Path/Status */
-  explorer_refresh();
-  if (status[0] != '\0') {
-    font_draw_text(&win->ctx, ox + 150, oy + 8, status, 12, COL_ERROR);
+static void explorer_parent(void) {
+  char *slash = strrchr(current_path, '/');
+  if (slash != current_path) {
+    *slash = '\0';
+  } else if (current_path[1]) {
+    strcpy(current_path, "/");
   } else {
-    font_draw_text(&win->ctx, ox + 150, oy + 8,
-                   gemfs_available() ? current_path : "No file system", 12,
-                   0x404040);
+    return;
   }
+  explorer_invalidate_listing();
+}
 
-  /* Grid Area */
-  int start_y = oy + TOP_BAR_H + 10;
-  int start_x = ox + 10;
-
-  for (int i = 0; i < entry_count; i++) {
-    const char *name = entries[i].name;
-
-    /* Calculate Grid Pos */
-    int col = i % GRID_COLS;
-    int row = i / GRID_COLS;
-    int x = start_x + col * GRID_CELL_W;
-    int y = start_y + row * GRID_CELL_H;
-
-    /* Selection/Hover BG */
-    if (i == selected_id || i == hover_id) {
-      gfx_fill_rect(&win->ctx, x, y, GRID_CELL_W - 5, GRID_CELL_H - 5,
-                    COL_SELECTION);
-    }
-
-    /* Icon - select based on type and extension */
-    const icon_t *file_icon;
-    if (entries[i].type == GEMFS_TYPE_DIR) {
-      file_icon = &icon_folder;
-    } else if (is_text_file(name)) {
-      file_icon = &icon_textfile;
-    } else {
-      file_icon = &icon_generic_file;
-    }
-    gfx_blit_icon(&win->ctx, x + (GRID_CELL_W - 32) / 2, y + 2, file_icon);
-
-    /* Name (Turncate to fit?) */
-    font_draw_text(&win->ctx, x + 5, y + 42, name, 10, COL_TEXT);
+static void explorer_begin_name(window_t *win, bool rename) {
+  if (worker_task < 0 || !gemfs_available() || name_prompt.state == NAME_PENDING ||
+      name_prompt.state == NAME_READY) {
+    return;
   }
+  const gemfs_entry_t *entry = rename ? explorer_entry(selected) : NULL;
+  if (rename && (!entry || !explorer_join(name_prompt.path, entry->name))) {
+    wm_damage_app_clients(&explorer_app);
+    return;
+  }
+  name_prompt.window = win;
+  name_prompt.state = NAME_INPUT;
+  name_prompt.rename = rename;
+  strcpy(name_prompt.name, entry ? entry->name : "");
+  name_prompt.caret = 0;
+  name_prompt.select_all = rename;
+  status[0] = '\0';
+  wm_damage_app_clients(&explorer_app);
+}
 
-  /* Drag Overlay */
-  if (is_dragging && drag_src_id >= 0) {
-    int d_x = drag_mx - 16;
-    int d_y = drag_my - 16;
-    /* Draw Ghost Icon */
-    gfx_draw_rect(&win->ctx, d_x, d_y, 32, 32, 0x000000);
+static void explorer_submit_name(void) {
+  if (!gemfs_name_valid(name_prompt.name)) {
+    const char *message = strlen(name_prompt.name) > GEMFS_NAME_MAX
+                              ? "Name is longer than 55 characters"
+                              : "Enter a valid name";
+    explorer_status("", message, true);
+  } else if (name_prompt.rename || explorer_join(name_prompt.path, name_prompt.name)) {
+    explorer_status("", "Saving...", false);
+    name_prompt.state = NAME_PENDING;
+    scheduler_wake((uint32_t)worker_task);
+  }
+  wm_damage_app_clients(&explorer_app);
+}
+
+static void explorer_cancel_name(void) {
+  explorer_dismiss_name();
+  status[0] = '\0';
+  wm_damage_app_clients(&explorer_app);
+}
+
+static void explorer_name_click(const window_t *win, int x, int y) {
+  name_controls_t controls = explorer_name_controls(win);
+  if (rect_contains(&controls.accept, x, y)) {
+    explorer_submit_name();
+  } else if (rect_contains(&controls.cancel, x, y)) {
+    explorer_cancel_name();
+  } else if (rect_contains(&controls.field, x, y)) {
+    int caret_width = explorer_name_prefix_width(name_prompt.caret);
+    int offset = x - explorer_name_text_x(controls.field, caret_width);
+    size_t first = 0;
+    size_t last = strlen(name_prompt.name);
+    while (first < last) {
+      size_t middle = first + (last - first) / 2;
+      if (explorer_name_prefix_width(middle + 1) <= offset) {
+        first = middle + 1;
+      } else {
+        last = middle;
+      }
+    }
+    name_prompt.caret = first;
+    name_prompt.select_all = false;
+    wm_damage_app_clients(&explorer_app);
   }
 }
 
-static int explorer_hit_test(window_t *win, int mx, int my) {
-  /* Adjusted for client rect */
-  /* int rx = mx - win->client_rect.x; */
-  int ry = my - win->client_rect.y;
-
-  if (ry < TOP_BAR_H)
-    return -2; /* Toolbar area */
-
-  int start_y = win->client_rect.y + TOP_BAR_H + 10;
-  int start_x = win->client_rect.x + 10;
-
-  explorer_refresh();
-  for (int i = 0; i < entry_count; i++) {
-    int col = i % GRID_COLS;
-    int row = i / GRID_COLS;
-    int x = start_x + col * GRID_CELL_W;
-    int y = start_y + row * GRID_CELL_H;
-
-    if (mx >= x && mx < x + GRID_CELL_W - 5 && my >= y &&
-        my < y + GRID_CELL_H - 5) {
-      return i;
-    }
+static void explorer_name_key(uint8_t key, uint32_t modifiers) {
+  if (key == GEMOS_KEY_ESC) {
+    explorer_cancel_name();
+    return;
   }
-  return -1;
-}
-
-static void explorer_handle_event(window_t *win, event_t *ev) {
-  if (ev->type == EVENT_MOUSE_MOVE) {
-    int id = explorer_hit_test(win, ev->data.mouse.x, ev->data.mouse.y);
-    if (!is_dragging) {
-      if (id != hover_id) {
-        hover_id = id;
-        /* the light under the pointer moves */
-        kernel_damage(win->client_rect.x, win->client_rect.y,
-                      win->client_rect.w, win->client_rect.h);
-      }
-    } else {
-      drag_mx = ev->data.mouse.x;
-      drag_my = ev->data.mouse.y;
-      hover_id = id; // Update hover for drop target feedback
-      /* the drag outline follows the pointer */
-      kernel_damage(win->client_rect.x, win->client_rect.y,
-                    win->client_rect.w, win->client_rect.h);
+  if (key == GEMOS_KEY_ENTER) {
+    explorer_submit_name();
+    return;
+  }
+  if (modifiers & (GEMOS_KEYMOD_CTRL | GEMOS_KEYMOD_ALT)) {
+    if ((modifiers & GEMOS_KEYMOD_CTRL) && (key == 'a' || key == 'A')) {
+      name_prompt.caret = 0;
+      name_prompt.select_all = true;
+      wm_damage_app_clients(&explorer_app);
     }
-  } else if (ev->type == EVENT_MOUSE_CLICK) {
-    int mx = ev->data.mouse.x;
-    int my = ev->data.mouse.y;
+    return;
+  }
 
-    status[0] = '\0';
-
-    /* Check Toolbar */
-    int rx = mx - win->client_rect.x;
-    int ry = my - win->client_rect.y;
-    if (ry < TOP_BAR_H && ry > 0) {
-      if (rx > 5 && rx < 45) { /* UP */
-        char *slash = strrchr(current_path, '/');
-
-        if (slash != NULL && slash != current_path) {
-          *slash = '\0'; /* "/a/b" -> "/a" */
-        } else {
-          strcpy(current_path, "/");
-        }
-      } else if (rx > 55 && rx < 135) { /* New Folder */
-        char path[GEMFS_PATH_MAX];
-
-        if (explorer_join(path, current_path, "New Folder")) {
-          (void)gemfs_mkdir(path);
-        }
-      }
+  size_t length = strlen(name_prompt.name);
+  size_t caret = name_prompt.caret;
+  if (key == GEMOS_KEY_HOME || key == GEMOS_KEY_LEFT) {
+    caret = key == GEMOS_KEY_LEFT && caret > 0 ? caret - 1 : 0;
+  } else if (key == GEMOS_KEY_END || key == GEMOS_KEY_RIGHT) {
+    caret = key == GEMOS_KEY_RIGHT && !name_prompt.select_all && caret < length
+                ? caret + 1 : length;
+  } else {
+    bool printable = key >= 0x20 && key <= 0x7e;
+    if (!printable && key != GEMOS_KEY_BACKSPACE && key != GEMOS_KEY_DELETE) {
       return;
     }
+    if (name_prompt.select_all) {
+      name_prompt.name[0] = '\0';
+      caret = 0;
+      length = 0;
+    }
+    if (printable && length + 1 < sizeof(name_prompt.name)) {
+      memmove(name_prompt.name + caret + 1, name_prompt.name + caret,
+              length - caret + 1);
+      name_prompt.name[caret++] = (char)key;
+    } else if (key == GEMOS_KEY_BACKSPACE && caret > 0) {
+      memmove(name_prompt.name + caret - 1, name_prompt.name + caret,
+              length - caret + 1);
+      caret--;
+    } else if (key == GEMOS_KEY_DELETE && caret < length) {
+      memmove(name_prompt.name + caret, name_prompt.name + caret + 1,
+              length - caret);
+    }
+    status[0] = '\0';
+  }
+  name_prompt.caret = caret;
+  name_prompt.select_all = false;
+  wm_damage_app_clients(&explorer_app);
+}
 
-    int id = explorer_hit_test(win, mx, my);
+static void explorer_open_entry(int index) {
+  const gemfs_entry_t *entry = explorer_entry(index);
+  char path[GEMFS_PATH_MAX];
+  if (!entry || !explorer_join(path, entry->name)) {
+    return;
+  }
 
-    /* Double Click Logic (Simplified: Check previous select time?)
-       For now: Click = Select. If already Selected = Open.
-    */
-    if (id >= 0) {
-      if (selected_id == id) {
-        /* OPEN */
-        char path[GEMFS_PATH_MAX];
-        const char *name = entries[id].name;
+  if (entry->type == GEMFS_TYPE_DIR) {
+    strcpy(current_path, path);
+    explorer_invalidate_listing();
+    return;
+  }
 
-        if (!explorer_join(path, current_path, name)) {
-          return;
-        }
-        if (entries[id].type == GEMFS_TYPE_DIR) {
-          strcpy(current_path, path);
-        } else {
-          /* one click opens one copy: the next click selects again */
-          selected_id = -1;
-          if (is_text_file(name)) {
-            /* FILE ASSOCIATION */
-            app_open_with_file("Text Editor", path);
-          } else if (strends(name, ".elf")) {
-            if (process_spawn_user_from_file(path) < 0) {
-              explorer_set_status("Could not start ", name);
-            }
-          } else {
-            explorer_set_status("No program opens ", name);
-          }
-        }
-      } else {
-        selected_id = id;
-        /* Start Drag Potential */
-        drag_src_id = id;
-        is_dragging = true;
-        drag_win_ref = win;
-        drag_mx = mx;
-        drag_my = my;
-      }
+  selected = -1;
+  if (is_text_file(entry->name)) {
+    app_open_with_file("Text Editor", path);
+  } else if (strends(entry->name, ".elf")) {
+    if (process_spawn_user_from_file(path) < 0) {
+      explorer_status("Could not start ", entry->name, true);
+    }
+  } else {
+    explorer_status("No program opens ", entry->name, true);
+  }
+  wm_damage_app_clients(&explorer_app);
+}
+
+static void explorer_click(window_t *win, explorer_view_t view, int x, int y) {
+  rect_t up = explorer_up_button(win);
+  rect_t create = explorer_new_button(win);
+  status[0] = '\0';
+  if (rect_contains(&up, x, y)) {
+    explorer_parent();
+  } else if (rect_contains(&create, x, y)) {
+    explorer_begin_name(win, false);
+  } else if (view.last_top > 0 && view.rows > 0 &&
+             rect_contains(&view.track, x, y)) {
+    rect_t thumb = explorer_thumb(view);
+    if (y >= thumb.y && y < thumb.y + thumb.h) {
+      scroll_drag_window = win;
+      scroll_drag_offset = y - thumb.y;
     } else {
-      selected_id = -1;
+      int direction = y < thumb.y ? -1 : 1;
+      explorer_scroll_to(view, first_row + direction * view.rows);
     }
-  } else if (ev->type == EVENT_MOUSE_RELEASE) {
-    if (is_dragging) {
-      int target_id =
-          explorer_hit_test(win, ev->data.mouse.x, ev->data.mouse.y);
-      if (target_id >= 0 && entries[target_id].type == GEMFS_TYPE_DIR &&
-          target_id != drag_src_id) {
-        /* MOVE drag_src_id to target_id */
-        /* Need gemfs_move(src, dest_parent) - NOT IMPLEMENTED API yet.
-           For now, just log valid drop. */
-        serial_print(
-            "[Explorer] Dropped on folder (Move not implemented API)\n");
+  } else if (rect_contains(&view.list, x, y)) {
+    int index = first_row + (y - view.list.y) / ROW_HEIGHT;
+    if (explorer_entry(index)) {
+      if (selected == index) {
+        explorer_open_entry(index);
+      } else {
+        selected = index;
       }
-      is_dragging = false;
-      drag_src_id = -1;
     }
+  }
+  wm_damage_app_clients(&explorer_app);
+}
+
+static void explorer_key(window_t *win, explorer_view_t view, uint8_t key) {
+  switch (key) {
+  case GEMOS_KEY_UP:
+    explorer_scroll_to(view, first_row - 1);
+    break;
+  case GEMOS_KEY_DOWN:
+    explorer_scroll_to(view, first_row + 1);
+    break;
+  case GEMOS_KEY_PAGE_UP:
+    explorer_scroll_to(view, first_row - view.rows);
+    break;
+  case GEMOS_KEY_PAGE_DOWN:
+    explorer_scroll_to(view, first_row + view.rows);
+    break;
+  case GEMOS_KEY_HOME:
+    explorer_scroll_to(view, 0);
+    break;
+  case GEMOS_KEY_END:
+    explorer_scroll_to(view, view.last_top);
+    break;
+  case GEMOS_KEY_ENTER:
+    explorer_open_entry(selected);
+    break;
+  case GEMOS_KEY_F2:
+    explorer_begin_name(win, true);
+    break;
+  case GEMOS_KEY_BACKSPACE:
+    explorer_parent();
+    break;
+  }
+}
+
+static void explorer_handle_event(window_t *win, event_t *event) {
+  if (event->type == EVENT_MOUSE_RELEASE && scroll_drag_window == win) {
+    scroll_drag_window = NULL;
+    return;
+  }
+  if (name_prompt.window == win) {
+    if (name_prompt.state == NAME_INPUT) {
+      if (event->type == EVENT_KEY_PRESS) {
+        explorer_name_key((uint8_t)event->data.key.character,
+                          event->data.key.modifiers);
+      } else if (event->type == EVENT_MOUSE_CLICK) {
+        explorer_name_click(win, event->data.mouse.x, event->data.mouse.y);
+      }
+    }
+    return;
+  }
+  explorer_view_t view = explorer_view(win);
+  if (event->type == EVENT_MOUSE_CLICK) {
+    explorer_click(win, view, event->data.mouse.x, event->data.mouse.y);
+  } else if (event->type == EVENT_MOUSE_MOVE && scroll_drag_window == win &&
+             view.last_top > 0 && view.rows > 0) {
+    int span = view.track.h - explorer_thumb(view).h;
+    if (span > 0) {
+      int offset = event->data.mouse.y - view.track.y - scroll_drag_offset;
+      int clamped = offset < 0 ? 0 : offset > span ? span : offset;
+      explorer_scroll_to(view, (clamped * view.last_top + span / 2) / span);
+    }
+  } else if (event->type == EVENT_KEY_PRESS) {
+    explorer_key(win, view, (uint8_t)event->data.key.character);
   }
 }
 
 static void explorer_open(void) {
   window_t *win = (window_t *)kalloc(sizeof(window_t));
-  if (!win)
+  if (!win) {
     return;
+  }
 
-  window_init(win, 100, 100, 450, 400);
+  window_init(win, 100, 100, 520, 400);
   win->app = &explorer_app;
   window_set_title(win, "File Explorer");
   wm_add_window(win);
+  open_windows++;
+}
+
+static void explorer_close(window_t *win) {
+  if (name_prompt.window == win) {
+    explorer_cancel_name();
+  }
+  if (scroll_drag_window == win) {
+    scroll_drag_window = NULL;
+  }
+  open_windows--;
+  kfree(win);
 }
 
 void explorer_init(void) {
+  int stack_slot = kstack_alloc();
+  if (stack_slot >= 0) {
+    worker_task = task_create_kernel(explorer_worker, kstack_top(stack_slot));
+    if (worker_task < 0) {
+      kstack_free(stack_slot);
+    }
+  }
+
   explorer_app.name = "File Explorer";
   explorer_app.icon = &icon_folder;
-  explorer_app.init = NULL;
   explorer_app.open = explorer_open;
-  explorer_app.open_file = NULL; /* Can't open explorer with file yet */
   explorer_app.render = explorer_render;
   explorer_app.handle_event = explorer_handle_event;
-  explorer_app.close = NULL;
-  explorer_app.menu = NULL;
+  explorer_app.close = explorer_close;
 
   app_register(&explorer_app);
 }

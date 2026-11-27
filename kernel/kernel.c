@@ -5,6 +5,7 @@
 #include "../drivers/power.h"
 #include "../drivers/serial.h"
 #include "../drivers/vbe.h"
+#include "../apps/explorer/explorer.h"
 #include "console.h"
 #include "fpu.h"
 #include "gdt.h"
@@ -412,7 +413,6 @@ void kernel_main(const boot_info_t *loader_info) {
   extern void utextedit_launcher_register(void);
   utextedit_launcher_register();
 
-  extern void explorer_init(void);
   explorer_init();
 
   serial_print("[BOOT] Window Manager Active\n");
@@ -448,16 +448,12 @@ void kernel_main(const boot_info_t *loader_info) {
          * the open menu lights up the item under the pointer, and the
          * window manager (a window dragged) and the apps (hover) ask for a
          * frame themselves. */
-        /* 1. Menu Handling (Highest Priority) */
-        if (menu_handle_event(&ev)) {
-          pending_redraw = true;
-        }
-        /* 1.5 Dock Handling */
-        else if (dock_handle_event(&ev)) {
-          pending_redraw = true;
-        } else {
-          /* Pass Move to WM (for dragging) */
-          wm_handle_event(&ev);
+        if (!menu_handle_event(&ev)) {
+          if (dock_handle_event(&ev)) {
+            pending_redraw = true;
+          } else {
+            wm_handle_event(&ev);
+          }
         }
 
         cursor_moved = true;
@@ -469,19 +465,9 @@ void kernel_main(const boot_info_t *loader_info) {
           wm_handle_event(&ev);
         }
 
-        /* 1. Menu Handling */
-        if (menu_handle_event(&ev)) {
-          /* Consumed by Menu */
-        }
-        /* 1.5 Dock Handling */
-        else if (dock_handle_event(&ev)) {
-          /* Consumed by Dock */
-        }
-        /* 2. Top Bar */
-        else if (topbar_handle_event(&ev)) {
-          /* Handled by Top Bar */
-        } else if (ev.type == EVENT_MOUSE_CLICK) {
-          /* 3. WM */
+        /* Topbar clicks can switch an open menu in one action. */
+        if (!topbar_handle_event(&ev) && !menu_handle_event(&ev) &&
+            !dock_handle_event(&ev) && ev.type == EVENT_MOUSE_CLICK) {
           wm_handle_event(&ev);
         }
 
@@ -503,6 +489,8 @@ void kernel_main(const boot_info_t *loader_info) {
     if (shutdown_requested) {
       kernel_shutdown(backbuffer, vbe_buffer, buffer_size, use_page_flip);
     }
+
+    explorer_update();
 
     /* The clock in the topbar and what some apps show (the Log Viewer's
      * log) change without an event: they are read only while a frame

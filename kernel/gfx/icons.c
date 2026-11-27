@@ -317,3 +317,33 @@ static const uint32_t icon_generic_data[32 * 32] = {
 #undef PG
 #undef FL
 const icon_t icon_generic_file = {32, 32, icon_generic_data};
+
+void icon_draw_outline(gfx_context_t *ctx, int x, int y, const icon_t *icon,
+                       uint32_t ink) {
+  if (icon == &icon_folder) {
+    gfx_draw_rect(ctx, x + 1, y + 4, 14, 11, ink);
+    gfx_draw_line(ctx, x + 2, y + 2, x + 6, y + 2, ink);
+    gfx_draw_line(ctx, x + 1, y + 3, x + 1, y + 4, ink);
+    gfx_draw_line(ctx, x + 6, y + 2, x + 8, y + 4, ink);
+  } else if (icon == &icon_terminal) {
+    gfx_draw_rect(ctx, x + 1, y + 2, 14, 12, ink);
+    gfx_draw_line(ctx, x + 4, y + 5, x + 7, y + 8, ink);
+    gfx_draw_line(ctx, x + 7, y + 8, x + 4, y + 11, ink);
+    gfx_draw_line(ctx, x + 9, y + 11, x + 12, y + 11, ink);
+  } else if (icon == &icon_about) {
+    gfx_draw_rect(ctx, x + 2, y + 2, 12, 12, ink);
+    gfx_put_pixel(ctx, x + 8, y + 5, ink);
+    gfx_draw_line(ctx, x + 8, y + 7, x + 8, y + 11, ink);
+  } else if (icon == &icon_generic_file || icon == &icon_textfile ||
+             icon == &icon_textedit) {
+    gfx_draw_rect(ctx, x + 3, y + 1, 10, 14, ink);
+    if (icon != &icon_generic_file) {
+      gfx_draw_line(ctx, x + 5, y + 6, x + 10, y + 6, ink);
+      gfx_draw_line(ctx, x + 5, y + 9, x + 10, y + 9, ink);
+      gfx_draw_line(ctx, x + 5, y + 12, x + 8, y + 12, ink);
+    }
+  } else {
+    gfx_draw_rect(ctx, x + 1, y + 2, 14, 12, ink);
+    gfx_draw_line(ctx, x + 1, y + 5, x + 14, y + 5, ink);
+  }
+}

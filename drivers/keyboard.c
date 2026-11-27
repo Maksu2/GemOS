@@ -36,7 +36,7 @@ static char scancode_lower[128] = {
     ',', '.', '/', 0, /* Right Shift */
     '*', 0, /* Alt */
     GEMOS_KEY_SPACE, 0, /* Caps Lock */
-    /* F1-F10, etc. ignored */
+    [0x3C] = GEMOS_KEY_F2,
 };
 
 /* Uppercase/shifted scancode map */
@@ -51,6 +51,7 @@ static char scancode_upper[128] = {
     '<', '>', '?', 0, /* Right Shift */
     '*', 0, /* Alt */
     GEMOS_KEY_SPACE, 0, /* Caps Lock */
+    [0x3C] = GEMOS_KEY_F2,
 };
 
 static uint32_t keyboard_modifiers(void) {
@@ -141,6 +142,12 @@ void keyboard_callback(registers_t *regs) {
         key = GEMOS_KEY_HOME;
       else if (scancode == 0x4F)
         key = GEMOS_KEY_END;
+      else if (scancode == 0x49)
+        key = GEMOS_KEY_PAGE_UP;
+      else if (scancode == 0x51)
+        key = GEMOS_KEY_PAGE_DOWN;
+      else if (scancode == 0x53)
+        key = GEMOS_KEY_DELETE;
 
       if (key != 0) {
         event_t ev;

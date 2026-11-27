@@ -2,6 +2,7 @@
 #define WINDOW_H
 
 #include "../../gfx/context.h"
+#include "../../gfx/primitives.h"
 #include "../../gfx/rect.h"
 #include <stdbool.h>
 
@@ -37,6 +38,7 @@ typedef struct window {
 
   // App Link
   struct app *app; // Forward declared implicitly or explicit
+  const icon_t *icon; /* Optional override for a hosted window */
   void *user_data;
 
   // Graphics Context

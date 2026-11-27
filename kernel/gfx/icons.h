@@ -20,4 +20,8 @@ extern const icon_t icon_folder;
 extern const icon_t icon_textfile;
 extern const icon_t icon_generic_file;
 
+/* Draw a 16x16 monochrome symbol for this icon. */
+void icon_draw_outline(gfx_context_t *ctx, int x, int y, const icon_t *icon,
+                       uint32_t ink);
+
 #endif /* ICONS_H */

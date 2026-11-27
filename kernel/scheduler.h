@@ -5,7 +5,7 @@
 
 struct process;
 
-#define MAX_TASKS       16
+#define MAX_TASKS       17           /* GUI, Explorer disk reader, 15 other tasks */
 #define TASK_STACK_SIZE (16 * 1024)  /* 16 KB per task */
 #define TASK_QUANTUM    10           /* ticks per task, 10ms @ 1000 Hz */
 #define TASK_GUI        0            /* task 0: the GUI loop in kernel_main */
@@ -51,10 +51,8 @@ extern void scheduler_irq0_stub(void);
 
 void     scheduler_init(void);
 int      task_create_user(struct process *process, uint32_t initial_esp);
-#ifdef GEMOS_SELFTEST
-/* A kernel task that starts in entry() on the given stack (self-test). */
+/* A kernel task that starts in entry() on the given guarded stack. */
 int      task_create_kernel(void (*entry)(void), uintptr_t stack_top);
-#endif
 
 /* Called from assembly stub — returns new ESP to switch to */
 uint32_t scheduler_tick(uint32_t current_esp);

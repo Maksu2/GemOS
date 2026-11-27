@@ -118,11 +118,20 @@ int gemfs_write_user(const char *path, uint32_t size, gemfs_source_t source,
 
 int gemfs_mkdir(const char *path);
 
+/* Checks one component of a path. */
+int gemfs_name_valid(const char *name);
+
+/* Rename an entry in its directory. A different existing entry is never
+ * replaced. Seeded system files keep their names. */
+int gemfs_rename(const char *path, const char *new_name);
+
 /* Delete a file, or a directory with everything in it. */
 int gemfs_delete(const char *path);
 
-/* Call fn for every entry of a directory; returns the number of entries. */
-int gemfs_list(const char *path, gemfs_list_fn_t fn, void *ctx);
+/* Call fn for every entry of a directory; returns the number of entries.
+ * If requested, capture the generation while still holding the lock. */
+int gemfs_list(const char *path, gemfs_list_fn_t fn, void *ctx,
+               uint32_t *listed_generation);
 
 int gemfs_usage(gemfs_usage_t *usage);
 

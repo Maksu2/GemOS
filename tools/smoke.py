@@ -68,7 +68,8 @@ button ask before unsaved text is lost (a box lined up with the console
 grid appears over the text, Esc cancels it), Y saves under a new name, the
 File Explorer opens that file in the editor, which saves it again, N
 discards, and saving over UTERM.ELF shows an error; the file is then read
-on the host.
+on the host. It also pages and drags the Explorer scrollbar through a
+110-entry directory, then opens the last file.
 
 With --stress N it runs a load test instead: N cycles of opening all
 three programs from the menus, typing into them and moving the mouse while
@@ -104,6 +105,17 @@ import zlib
 # Smaller modes use ui_scale 1.0; --resolution changes both.
 UI_SCALE = 2
 SCREEN_SIZE = (1920, 1080)
+
+# The colors used by the desktop and its widgets (kernel/ui/theme.h).
+DESKTOP_RGB = (0x17, 0x18, 0x1A)
+BAR_RGB = (0x20, 0x21, 0x23)
+PAPER_RGB = (0xF1, 0xEF, 0xE8)
+INK_RGB = (0x19, 0x1A, 0x1B)
+ACCENT_RGB = (0xB4, 0x54, 0x36)
+SELECTION_RGB = (0xEA, 0xDE, 0xD3)
+FRAME_RGB = (0x8D, 0x89, 0x81)
+ERROR_RGB = (0x95, 0x3F, 0x32)
+DOCK_HEIGHT = 32
 
 
 def set_resolution(width, height):
@@ -196,13 +208,19 @@ class Window:
         return "%dx%d at (%d,%d)" % (self.w, self.h, self.x, self.y)
 
     # Points on the window (kernel/gui/wm/wm.c: 1 px border, 26 px title
-    # bar, 16 px buttons 6 px from the right edge and 5 px below the top).
+    # bar and 20 px controls with a 2 px gap).
     def title_bar(self):
         """On the title bar, away from the title text and the buttons."""
         return (self.x + self.w - 100, self.y + 3)
 
     def close_button(self):
-        return (self.x + self.w - 14, self.y + 13)
+        return (self.x + self.w - 15, self.y + 14)
+
+    def minimize_button(self):
+        return (self.x + self.w - 59, self.y + 14)
+
+    def focus_rule(self):
+        return (self.x + self.w - 100, self.y + 25)
 
     def client(self):
         return (self.x + 4, self.y + 28, self.x + self.w - 4,
@@ -217,11 +235,10 @@ class Window:
         return (x + 2, y + 1, x + 6, y + 12)
 
     def inked_cells(self, image, row, cols):
-        """The columns of a console row whose cell has a pixel other than
-        the background, 0x111111."""
+        """The columns of a console row whose cell differs from the background."""
         def inked(col):
             area = image.logical_area(self.console_cell(row, col))
-            return any(area[i:i + 3] != b"\x11\x11\x11"
+            return any(area[i:i + 3] != bytes(DESKTOP_RGB)
                        for i in range(0, len(area), 3))
         return [col for col in cols if inked(col)]
 
@@ -273,22 +290,29 @@ EXPLORER_MENU = (MENU_APPS, menu_item(130, 0))   # Apps -> File Explorer
 LOG_VIEWER_MENU = (MENU_APPS, menu_item(130, 2))  # Apps -> Log Viewer
 
 
-def explorer_entry(window, index):
-    """The middle of the icon of an entry in the File Explorer
-    (apps/explorer/explorer.c): a grid of 80x70 cells, five in a row, from
-    10 px into the client area below a 30 px toolbar, with 32 px icons
-    2 px below the top of the cell. On a new disk / lists the programs as
-    the kernel puts them there: USRSMOKE.ELF, UTERM.ELF, ABOUT.ELF,
-    UTEXTEDIT.ELF (kernel/process.c), then the files the tests save."""
-    x = window.x + 1 + 10 + 80 * (index % 5)
-    y = window.y + 27 + 30 + 10 + 70 * (index // 5)
-    return (x + 40, y + 18)
+EXPLORER_ROW_HEIGHT = 24
+
+
+def explorer_list_y(window):
+    # 27 px of window chrome, 32 px toolbar, 25 px column header.
+    return window.y + 27 + 32 + 25
+
+
+def explorer_entry(window, row):
+    """Click inside a visible row of the Explorer."""
+    return (window.x + 65, explorer_list_y(window) + row * EXPLORER_ROW_HEIGHT + 12)
 
 
 EXPLORER_USRSMOKE = 0
 EXPLORER_ABOUT = 2
-EXPLORER_FIRST_FILE = 4
-EXPLORER_SELECTION = (0xCC, 0xE5, 0xFF)  # COL_SELECTION
+EDITOR_NOTE_ROW = 5  # /Projects, four built-in programs, then the saved file
+EXPLORER_DIR = "/Projects"
+EXPLORER_ITEMS = 110
+EXPLORER_LAST_FILE = "/Projects/NOTE-110.TXT"
+RENAME_DIR = "/My Work"
+RENAME_FILE = RENAME_DIR + "/final notes.txt"
+RENAME_FILES = {"draft.txt": b"The original draft.\n",
+                "taken.txt": b"Keep this other file.\n"}
 EDITOR_FILE = "/notes.txt"
 EDITOR_SAVED = b"first line +more\nsecond"
 # QEMU sendkey names of the characters the test types
@@ -478,10 +502,10 @@ def sha256(path):
 
 
 def title_bar_problem(image, window):
-    r, g, b = image.logical_rgb(window.title_bar())
-    if b > 150 and b > r + 60:
+    color = image.logical_rgb(window.focus_rule())
+    if color == ACCENT_RGB:
         return None
-    return "probe #%02x%02x%02x after %.0f s" % (r, g, b, WINDOW_TIMEOUT)
+    return "active title rule is #%02x%02x%02x" % color
 
 
 def interleaved_lines(text):
@@ -685,6 +709,37 @@ class Smoke:
             with open(self.disks["spare"], "wb") as f:
                 f.write(random_bytes(SPARE_DISK_SIZE, 0x5A5E))
 
+    def prepare_explorer_directory(self):
+        disk = self.disks.get("data")
+        if not disk:
+            raise SmokeError("the editor test needs a GemFS disk")
+        note = os.path.join(self.out, "fixture.txt")
+        with open(note, "w") as stream:
+            stream.write("Explorer pagination test.\n")
+
+        def require(*args):
+            result = mkgemfs(*args)
+            if result.returncode:
+                raise SmokeError(result.stderr.decode(errors="replace").strip())
+
+        require("mkdir", disk, EXPLORER_DIR)
+        for index in range(1, EXPLORER_ITEMS + 1):
+            name = "NOTE-%03d.TXT" % index
+            if index == 1:
+                name = "NOTE-001-" + "W" * 40 + ".TXT"
+            require("put", disk, note, EXPLORER_DIR + "/" + name)
+
+    def prepare_explorer_names(self):
+        disk = self.disks.get("data")
+        if not disk or self.args.data_disk != "gemfs":
+            raise SmokeError("the Explorer test needs a GemFS disk")
+        mkgemfs("mkdir", disk, "/Work").check_returncode()
+        for name, data in RENAME_FILES.items():
+            source = os.path.join(self.out, name)
+            with open(source, "wb") as stream:
+                stream.write(data)
+            mkgemfs("put", disk, source, "/Work/" + name).check_returncode()
+
     def snapshot_disks(self):
         self.hashes = {name: sha256(path) for name, path in self.disks.items()}
 
@@ -800,6 +855,8 @@ class Smoke:
             # (-global VGA.vgamem_mb leaves the machine without a VGA)
             cmd += ["-vga", "none",
                     "-device", "VGA,vgamem_mb=%d" % self.args.vga_mem]
+        if self.args.cpu:
+            cmd += ["-cpu", self.args.cpu]
         now = time.gmtime()
         cmd += ["-rtc", "base=%04d-%02d-%02dT%02d:%02d:%02d"
                 % (now[:5] + (60 - CLOCK_FLIP,))]
@@ -902,11 +959,11 @@ class Smoke:
             wall = image.logical_rgb(wallpaper)
             if (image.width, image.height) != SCREEN_SIZE:
                 return "screen is %dx%d" % (image.width, image.height)
-            if bar != (0x20, 0x20, 0x20):
+            if bar != BAR_RGB:
                 return "topbar pixel is #%02x%02x%02x" % bar
-            if image.logical_rgb(dock) != (0x20, 0x20, 0x20):
+            if image.logical_rgb(dock) != BAR_RGB:
                 return "dock pixel is #%02x%02x%02x" % image.logical_rgb(dock)
-            if wall in ((0, 0, 0), bar):
+            if wall != DESKTOP_RGB:
                 return "wallpaper pixel is #%02x%02x%02x" % wall
             return None
 
@@ -927,7 +984,7 @@ class Smoke:
     def cursor_frames(self):
         """A mouse move that changes nothing else draws only the cursor
         again: no full frame, and no trace of the arrow where it was (the
-        wallpaper is a vertical gradient, one colour per row)."""
+        wallpaper is a solid color)."""
         full0, partial0, cursor0 = self.frame_counts()
         self.pointer.home()
         for point in CURSOR_PATH:
@@ -948,16 +1005,16 @@ class Smoke:
         y1 = (py + CURSOR_SIZE[1] + 2) * s
         stride = image.width * 3
         bad = []
-        for y in range(30 * s, (SCREEN_SIZE[1] // s - 50) * s):
+        for y in range(30 * s, (SCREEN_SIZE[1] // s - DOCK_HEIGHT - 2) * s):
             row = image.pixels[y * stride:(y + 1) * stride]
             if y0 <= y < y1:
                 row = row[:x0 * 3] + row[x1 * 3:]
-            if row != row[:3] * (len(row) // 3):
+            if row != bytes(DESKTOP_RGB) * (len(row) // 3):
                 bad.append(y // s)
         self.check(not bad, "frames: no trace of the cursor on the wallpaper",
                    "cursor-moved.png, %s" % (
                        "rows with other pixels: %s" % spans(sorted(set(bad)))
-                       if bad else "every row one colour"))
+                       if bad else "solid desktop"))
 
     def clock(self):
         """The clock in the topbar shows the new minute by itself: the GUI
@@ -976,6 +1033,52 @@ class Smoke:
         self.check(issue is None, "frames: the clock shows the new minute by "
                    "itself", "clock-before.png, clock-after.png, %s"
                    % (issue or "%.1f s after the minute" % seconds))
+
+    def menu_hover_frames(self):
+        """Hover over two items without replacing the whole frame."""
+        samples = (menu_item(18, 0), menu_item(18, 1))
+
+        def highlight_problem(image, item):
+            colors = tuple(image.logical_rgb(point) for point in samples)
+            expected = (SELECTION_RGB, PAPER_RGB)
+            if item == 1:
+                expected = expected[::-1]
+            return None if colors == expected else "menu item highlight did not move"
+
+        self.pointer.home()
+        self.pointer.move_to(MENU_GEMOS)
+        self.pointer.click()
+        self.pointer.move_to(menu_item(60, 0))
+        issue, _ = self.watch_screen(
+            "menu-first", lambda image: highlight_problem(image, 0),
+            self.args.app_timeout,
+        )
+        if self.check(issue is None, "menu: first item highlights", issue or ""):
+            full0, partial0, _ = self.frame_counts()
+            self.pointer.move_to(menu_item(60, 1))
+            issue, _ = self.watch_screen(
+                "menu-second", lambda image: highlight_problem(image, 1),
+                self.args.app_timeout,
+            )
+            self.check(issue is None, "menu: the highlight moves to the second item",
+                       issue or "")
+            full1, partial1, _ = self.frame_counts()
+            self.check(full1 == full0 and partial1 > partial0,
+                       "frames: menu hover draws a partial frame",
+                       "%d full, %d partial" % (full1 - full0, partial1 - partial0))
+        self.pointer.move_to(MENU_APPS)
+        self.pointer.click()
+        issue, _ = self.watch_screen(
+            "menu-switched",
+            lambda image: None
+            if image.logical_rgb((18, 41)) == DESKTOP_RGB
+            and image.logical_rgb((95, 41)) == PAPER_RGB
+            else "Apps did not replace the GemOS menu",
+            self.args.app_timeout,
+        )
+        self.check(issue is None, "menu: a single click switches the open menu",
+                   issue or "")
+        self.monitor.cmd("sendkey esc")
 
     def log_viewer(self):
         """The Log Viewer shows new log lines by itself: the GUI loop asks
@@ -1177,22 +1280,25 @@ class Smoke:
                                           "%.1f s, no input" % seconds))
 
     # -- window placement ------------------------------------------------------
-    def open_about(self):
-        """ABOUT.ELF from the GemOS menu; its PID and window."""
+    def open_hosted_app(self, name, menu, item):
+        """Start an app from a menu and return its PID and window."""
         opened_re = re.compile(r"\[CONSOLE\] Opened PID=(\d+) handle=\d+ " +
                                Window.GEOMETRY)
         before = len(opened_re.findall(self.log_text()))
         self.pointer.home()
-        self.pointer.move_to(MENU_GEMOS)
+        self.pointer.move_to(menu)
         self.pointer.click()
         time.sleep(0.4)
-        self.pointer.move_to(menu_item(60, 0))
+        self.pointer.move_to(item)
         self.pointer.click()
         opened = self.wait_for(lambda t: list(opened_re.finditer(t))[before:],
                                self.args.app_timeout)
         if not opened:
-            raise SmokeError("windows: ABOUT.ELF opened no window")
+            raise SmokeError("windows: %s opened no window" % name)
         return opened[0].group(1), Window.parse(opened[0])
+
+    def open_about(self):
+        return self.open_hosted_app(*APPS[1][:3])
 
     def drag_title_bar(self, window, point):
         """Drag the window by its title bar until the mouse is at point; the
@@ -1226,8 +1332,9 @@ class Smoke:
                    "one's corner", "%s, then %s" % (first, second))
 
         bottom = area.y + area.h - 27  # lowest top: the title bar stays
+        height = SCREEN_SIZE[1] // UI_SCALE
         dropped = self.drag_title_bar(second, (second.title_bar()[0],
-                                               area.y + area.h + 40))
+                                               height - DOCK_HEIGHT // 2))
         self.check(dropped is not None and dropped.y == bottom,
                    "windows: dragged onto the dock, the title bar stays "
                    "above it", "dropped %s" % dropped)
@@ -1280,9 +1387,63 @@ class Smoke:
         self.editor_ended(pid, "the grid test closes it", since)
 
     # -- File Explorer -----------------------------------------------------------
+    def window_focus(self):
+        """A hidden Explorer cannot close itself or keep the Terminal unfocused."""
+        explorer = self.open_explorer()
+        pid, terminal = self.open_hosted_app(*APPS[0][:3])
+        width, height = (v // UI_SCALE for v in SCREEN_SIZE)
+        dock = (16, height - DOCK_HEIGHT // 2)  # Explorer was registered first
+        outside = (width - 20, 48)
+
+        def click(point):
+            self.pointer.move_to(point)
+            self.pointer.click()
+
+        click(dock)
+        self.check_window_drawn("focus: Explorer selected in the dock", explorer,
+                                "focus-before-minimize")
+        click(explorer.minimize_button())
+        self.pointer.move_to(outside)
+        if not self.check_window_drawn("focus: Terminal after minimizing Explorer",
+                                       terminal, "focus-after-minimize"):
+            raise SmokeError("minimizing an active window did not transfer focus")
+
+        area = terminal.client()
+        before = self.screendump("focus-baseline", save=False).logical_area(area)
+        since = len(self.log_text())
+        click(explorer.close_button())  # the hidden window used to close here
+        self.pointer.move_to(outside)
+        self.type_text("help\n")
+        issue, _ = self.watch_screen(
+            "focus-terminal-input",
+            lambda image: None if title_bar_problem(image, terminal) is None
+            and image.logical_area(area) != before
+            else "the terminal did not receive input",
+            self.args.app_timeout,
+        )
+        self.check(issue is None and "[WM] Close Window" not in self.log_text()[since:],
+                   "focus: the click and keyboard input reach the visible Terminal",
+                   issue or "")
+
+        # Close the Terminal while Explorer is still hidden, then click
+        # the wallpaper at the hidden window's former close button.
+        self.monitor.cmd("sendkey esc")
+        ended = self.wait_for(lambda text: "[PROC] Reaped PID=%s exit=0" % pid in text,
+                              self.args.app_timeout)
+        if not self.check(bool(ended), "focus: Esc closes the focused Terminal"):
+            raise SmokeError("could not reach the desktop with only Explorer minimized")
+        since = len(self.log_text())
+        click(explorer.close_button())
+        click(dock)
+        restored = self.check_window_drawn("focus: Explorer restored from the dock",
+                                           explorer, "focus-restored")
+        self.check(restored and "[WM] Close Window" not in self.log_text()[since:],
+                   "focus: a click on the wallpaper leaves the hidden Explorer intact")
+        if restored:
+            click(explorer.close_button())
+
     def open_explorer(self):
-        """The File Explorer from the Apps menu; its window, once it has had
-        time to draw (its first frame rasterizes its font sizes)."""
+        """Open the File Explorer and wait for its root entries to appear."""
         placed_re = re.compile(r"\[WM\] Placed " + Window.GEOMETRY)
         before = len(placed_re.findall(self.log_text()))
         self.pointer.home()
@@ -1295,46 +1456,49 @@ class Smoke:
                                self.args.app_timeout)
         if not placed:
             raise SmokeError("the File Explorer opened no window")
-        time.sleep(1.5)
-        return Window.parse(placed[0])
+        window = Window.parse(placed[0])
+        row_y = explorer_list_y(window)
+        icon = (window.x + 11, row_y + 4, window.x + 29, row_y + 20)
+
+        def listing_problem(image):
+            issue = title_bar_problem(image, window)
+            if issue:
+                return issue
+            if bytes(INK_RGB) not in image.logical_area(icon):
+                return "the first file icon has not appeared"
+            return None
+
+        issue, seconds = self.watch_screen("explorer-ready", listing_problem,
+                                           self.args.app_timeout)
+        if issue:
+            raise SmokeError("File Explorer: " + issue)
+        self.check(True, "explorer: the root listing appeared",
+                   "explorer-ready.png, %.1f s" % seconds)
+        return window
 
     def file_explorer(self):
-        """The File Explorer starts the programs on GemFS: a click selects
-        an entry and, once the button is up, leaves no drag outline on the
-        screen; a click on the selected entry starts the program."""
+        """Select a row and launch a program from the disk."""
         if "[GemFS] Mounted" not in self.log_text():
             print("SKIP  explorer: no file system, no programs to start",
                   flush=True)
             return
+        self.window_focus()
         explorer = self.open_explorer()
         about = explorer_entry(explorer, EXPLORER_ABOUT)
-        aside = (explorer.x + explorer.w // 2, explorer.y + explorer.h - 60)
         self.pointer.home()
         self.pointer.move_to(about)
         self.pointer.click()                   # select
-        self.pointer.move_to(aside)            # off the entries
-        time.sleep(0.5)
-        image = self.screendump("explorer-selected")
-        width, height = (v // UI_SCALE for v in SCREEN_SIZE)
-        dock = image.logical_area((0, height - 48, width, height))
-        missing = sum(1 for i in range(0, len(dock), 3)
-                      if dock[i:i + 3] == b"\xff\x40\x40")
-        self.check(missing == 0, "explorer: its dock icon is not the red "
-                   "placeholder of an app without one",
-                   "%d placeholder pixels in the dock" % missing)
-        cell = image.logical_rgb((about[0] - 36, about[1] - 14))
-        # explorer_render draws a drag as the black outline of a 32 px
-        # square around the pointer: count black pixels on its top edge
-        black = 0
-        for x, y in (about, aside):
-            edge = image.logical_area((x - 16, y - 16, x + 16, y - 15))
-            black += sum(1 for i in range(0, len(edge), 3)
-                         if edge[i:i + 3] == b"\x00\x00\x00")
-        self.check(cell == EXPLORER_SELECTION and black == 0,
-                   "explorer: a click selects ABOUT.ELF and leaves no drag "
-                   "outline", "explorer-selected.png, cell #%02x%02x%02x, "
-                   "%d black pixels where an outline would be"
-                   % (cell + (black,)))
+        self.pointer.move_to((explorer.x + 40, explorer.y + explorer.h - 60))
+        issue, _ = self.watch_screen(
+            "explorer-selected",
+            lambda image: None
+            if image.logical_rgb((explorer.x + 1, about[1])) == ACCENT_RGB
+            and image.logical_rgb((explorer.x + 5, about[1])) == SELECTION_RGB
+            else "the selected row lost its marker after release",
+            WINDOW_TIMEOUT,
+        )
+        self.check(issue is None, "explorer: a click selects the ABOUT.ELF row",
+                   issue or "explorer-selected.png")
 
         def open_about():
             self.pointer.move_to(about)
@@ -1592,7 +1756,7 @@ class Smoke:
         # the File Explorer opens the file in the editor
         def open_from_explorer():
             explorer = self.open_explorer()
-            self.pointer.move_to(explorer_entry(explorer, EXPLORER_FIRST_FILE))
+            self.pointer.move_to(explorer_entry(explorer, EDITOR_NOTE_ROW))
             self.pointer.click()           # select
             time.sleep(0.5)
             self.pointer.click()           # open
@@ -1676,9 +1840,232 @@ class Smoke:
         names = sorted(line.split()[-1] for line in
                        result.stdout.decode(errors="replace").splitlines())
         wanted = sorted(["ABOUT.ELF", "USRSMOKE.ELF", "UTERM.ELF",
-                         "UTEXTEDIT.ELF", EDITOR_FILE.lstrip("/")])
+                         "UTEXTEDIT.ELF", EDITOR_FILE.lstrip("/"), "Projects/"])
         self.check(names == wanted, "disk: no other files were saved",
                    ", ".join(names))
+
+    def explorer_scroll(self):
+        """Browse a full directory with the keyboard and the scrollbar."""
+        window = self.open_explorer()
+        self.pointer.move_to(explorer_entry(window, 0))
+        self.pointer.click()
+        self.pointer.click()
+        self.pointer.move_to((SCREEN_SIZE[0] // UI_SCALE - 20, 45))
+
+        y = explorer_list_y(window)
+        # Client height is window height minus 28 px. Toolbar, column header
+        # and footer overhead are 32, 25 and 24 px respectively.
+        rows = (window.h - 28 - 32 - 25 - 24) // EXPLORER_ROW_HEIGHT
+        bottom = y + rows * EXPLORER_ROW_HEIGHT
+        rail = window.x + window.w - 8
+        first_name = (window.x + 38, y + 2, window.x + 208, y + 21)
+
+        def top_thumb(image):
+            if image.logical_rgb((rail, y + 6)) != FRAME_RGB:
+                return "the directory has not appeared"
+            return None
+
+        issue, _ = self.watch_screen("explorer-large-folder", top_thumb,
+                                     self.args.app_timeout)
+        if not self.check(issue is None, "explorer: the large folder has a scrollbar",
+                          issue or ""):
+            return
+        image = self.screendump("explorer-large-folder", save=False)
+        column_x = window.x + window.w - 127
+        first_type = image.logical_area((column_x, y + 2, rail - 10, y + 21))
+        second_type = image.logical_area((column_x, y + 26, rail - 10, y + 45))
+        self.check(first_type == second_type,
+                   "explorer: a long name stays inside the Name column")
+
+        baseline = image.logical_area(first_name)
+        self.monitor.cmd("sendkey pgdn")
+        issue, _ = self.watch_screen(
+            "explorer-page-down",
+            lambda image: None if image.logical_area(first_name) != baseline
+            and image.logical_rgb((rail, y + 6)) != FRAME_RGB
+            else "Page Down has not advanced to the next page",
+            self.args.app_timeout,
+        )
+        self.check(issue is None, "explorer: Page Down advances the list", issue or "")
+        self.monitor.cmd("sendkey home")
+        issue, _ = self.watch_screen("explorer-home", top_thumb,
+                                     self.args.app_timeout)
+        if not self.check(issue is None, "explorer: Home returns to the first row",
+                          issue or ""):
+            return
+
+        self.pointer.move_to((rail, y + 6))
+        self.pointer.press()
+        self.pointer.move_to((rail, bottom - 2))
+        self.pointer.release()
+        icon = (window.x + 11, bottom - 21, window.x + 29, bottom - 4)
+        issue, _ = self.watch_screen(
+            "explorer-last-page",
+            lambda image: None if image.logical_rgb((rail + 1, bottom - 12)) == FRAME_RGB
+            and bytes(INK_RGB) in image.logical_area(icon)
+            else "the last page has not appeared",
+            self.args.app_timeout,
+        )
+        if not self.check(issue is None, "explorer: dragging the thumb reaches the last page",
+                          issue or ""):
+            return
+
+        def open_last():
+            self.pointer.move_to(explorer_entry(window, rows - 1))
+            self.pointer.click()
+            self.pointer.click()
+
+        pid, _ = self.start_editor(open_last, "the last row")
+        if pid is not None:
+            self.check("[UTEXTEDIT] Spawned PID=%s for %s" % (pid, EXPLORER_LAST_FILE)
+                       in self.log_text(), "explorer: the last of 110 files opens")
+            since = len(self.log_text())
+            self.monitor.cmd("sendkey esc")
+            self.editor_ended(pid, "the last file closes", since)
+
+    # -- Explorer name operations --------------------------------------------
+    def explorer_screen(self, shot, what, probe):
+        issue, _ = self.watch_screen(shot, lambda image: None if probe(image)
+                                     else what, self.args.app_timeout)
+        if not self.check(issue is None, "explorer: " + what, issue or shot + ".png"):
+            raise SmokeError(what)
+
+    def explorer_name_screen(self, window, shot, what, editing=True,
+                             error=False, prefilled=False):
+        # Toolbar name field and the error line on the footer.
+        field = (window.x + 98, window.y + 31)
+        footer = (window.x + 1, window.y + window.h - 18)
+        selection = (field[0] + 6, field[1] + 3)
+
+        def probe(image):
+            return (image.logical_rgb(field) == (ACCENT_RGB if editing else PAPER_RGB)
+                    and (image.logical_rgb(footer) == ERROR_RGB) == error
+                    and (not prefilled or image.logical_rgb(selection) == SELECTION_RGB))
+
+        self.explorer_screen(shot, what, probe)
+
+    def explorer_new_folder(self, window):
+        self.pointer.move_to((window.x + window.w - 53, window.y + 42))
+        self.pointer.click()
+
+    def explorer_select_row(self, window, row):
+        self.pointer.move_to(explorer_entry(window, row))
+        self.pointer.click()
+
+    def explorer_enter_work(self, window):
+        # The root's first entry was seeded as /Work. A rename keeps its slot.
+        self.explorer_select_row(window, 0)
+        self.monitor.cmd("sendkey ret")
+        y = explorer_list_y(window) + EXPLORER_ROW_HEIGHT
+        area = (window.x + 11, y + 4, window.x + 29, y + 20)
+        # Two entries in the subdirectory. The empty third row distinguishes
+        # the contents from the root even if the previous frame is still visible.
+        empty_y = y + EXPLORER_ROW_HEIGHT
+        empty = (window.x + 11, empty_y + 4, window.x + 29, empty_y + 20)
+        self.explorer_screen("work-list", "the renamed folder opens", lambda image:
+                             bytes(INK_RGB) in image.logical_area(area)
+                             and bytes(INK_RGB) not in image.logical_area(empty))
+
+    def explorer_names(self):
+        window = self.open_explorer()
+        self.explorer_new_folder(window)
+        self.explorer_name_screen(window, "new-folder", "New Folder shows the input")
+        self.type_text("cancelled")
+        self.monitor.cmd("sendkey esc")
+        self.explorer_name_screen(window, "cancel-create", "Escape cancels creation",
+                                  editing=False)
+
+        self.explorer_new_folder(window)
+        self.monitor.cmd("sendkey ret")
+        self.explorer_name_screen(window, "empty-name", "an empty name is rejected", error=True)
+        self.type_text("bad/name")
+        self.explorer_name_screen(window, "edit-invalid", "editing clears the error")
+        self.monitor.cmd("sendkey ret")
+        self.explorer_name_screen(window, "invalid-name", "a slash is rejected", error=True)
+        self.monitor.cmd("sendkey ctrl-a")
+        self.type_text("w" * 56)
+        self.explorer_name_screen(window, "edit-long", "the long name can be edited")
+        self.monitor.cmd("sendkey ret")
+        self.explorer_name_screen(window, "long-name", "56 letters are rejected", error=True)
+        self.monitor.cmd("sendkey ctrl-a")
+        self.type_text("Work")
+        self.explorer_name_screen(window, "edit-taken", "the same field accepts a correction")
+        self.monitor.cmd("sendkey ret")
+        self.explorer_name_screen(window, "existing-folder", "an existing folder name is rejected",
+                                  error=True)
+        self.monitor.cmd("sendkey ctrl-a")
+        self.type_text("New Notes")
+        self.pointer.move_to((window.x + window.w - 96, window.y + 42))
+        self.pointer.click()  # OK also submits the same prompt.
+        self.explorer_name_screen(window, "created-folder", "a named folder is created",
+                                  editing=False)
+        _, y = explorer_entry(window, 5)  # /Work and the four built-in programs came first.
+        icon = (window.x + 11, y - 8, window.x + 29, y + 8)
+        self.explorer_screen("created-row", "the new folder appears without input",
+                             lambda image: bytes(INK_RGB) in image.logical_area(icon))
+
+        self.explorer_select_row(window, 0)
+        self.monitor.cmd("sendkey f2")
+        self.explorer_name_screen(window, "rename-folder", "F2 prefills the folder name",
+                                  prefilled=True)
+        self.type_text(RENAME_DIR[1:])
+        self.monitor.cmd("sendkey ret")
+        self.explorer_name_screen(window, "renamed-folder", "Enter renames the folder",
+                                  editing=False)
+        y = explorer_list_y(window)
+        first_icon = (window.x + 11, y + 4, window.x + 29, y + 20)
+        self.explorer_screen("renamed-row", "the renamed folder appears without input",
+                             lambda image: bytes(INK_RGB) in image.logical_area(first_icon))
+        self.explorer_enter_work(window)
+        self.explorer_select_row(window, 0)
+        self.monitor.cmd("sendkey f2")
+        self.explorer_name_screen(window, "rename-file", "F2 prefills the file name",
+                                  prefilled=True)
+        self.type_text("taken.txt\n")
+        self.explorer_name_screen(window, "rename-collision", "a rename cannot replace another file",
+                                  error=True)
+        self.monitor.cmd("sendkey ctrl-a")
+        self.type_text("xinal notes.txt")
+        self.monitor.cmd("sendkey home")
+        self.monitor.cmd("sendkey delete")
+        self.type_text("f\n")
+        self.explorer_name_screen(window, "renamed-file", "the corrected file name is saved",
+                                  editing=False)
+
+    def explorer_names_reboot(self):
+        self.check("[PROC] Programs on GemFS: 0 seeded, 4 up to date" in self.log_text(),
+                   "explorer: reboot kept the built-in programs")
+        window = self.open_explorer()
+        self.explorer_enter_work(window)
+
+        def open_file():
+            self.explorer_select_row(window, 0)
+            self.monitor.cmd("sendkey ret")
+
+        pid, _ = self.start_editor(open_file, "renamed file after reboot")
+        if pid is not None:
+            self.check("[UTEXTEDIT] Spawned PID=%s for %s" % (pid, RENAME_FILE)
+                       in self.log_text(), "explorer: the editor gets the renamed path")
+            since = len(self.log_text())
+            self.monitor.cmd("sendkey esc")
+            self.editor_ended(pid, "the renamed file closes", since)
+
+    def check_explorer_names(self):
+        disk = self.disks["data"]
+        for path, entries in [("/", {"My Work/", "New Notes/", "ABOUT.ELF", "UTERM.ELF",
+                                     "USRSMOKE.ELF", "UTEXTEDIT.ELF"}),
+                              (RENAME_DIR, {"final notes.txt", "taken.txt"}),
+                              ("/New Notes", set())]:
+            result = mkgemfs("ls", disk, path)
+            names = {line.split(maxsplit=3)[3]
+                     for line in result.stdout.decode().splitlines() if line}
+            self.check(result.returncode == 0 and names == entries,
+                       "disk: expected names in " + path, ", ".join(sorted(names)))
+        for path, saved in [(RENAME_FILE, RENAME_FILES["draft.txt"]),
+                            (RENAME_DIR + "/taken.txt", RENAME_FILES["taken.txt"])]:
+            result = mkgemfs("cat", disk, path)
+            self.check(result.returncode == 0 and result.stdout == saved,
+                       "disk: content preserved in " + path)
 
     # -- self-test -------------------------------------------------------------
     def selftest(self, boot):
@@ -1714,6 +2101,12 @@ class Smoke:
                    "%s: all %d checks passed" % (label, total),
                    "; ".join(failed[:3]) if failed else
                    "%d PASS lines" % len(passed))
+        explorer_checks = {
+            "explorer: GUI runs while a folder read waits for a write",
+            "explorer: shows the current folder after the write",
+        }
+        self.check(explorer_checks.issubset(passed),
+                   label + ": Explorer regression checks both ran and passed")
         if boot == 1:
             self.check(any(line.startswith("fs: wrote " + PERSIST_NOTE)
                            for line in passed),
@@ -1883,18 +2276,31 @@ class Smoke:
 
     def run(self):
         self.prepare_disks()
+        if self.args.editor:
+            self.prepare_explorer_directory()
+        if self.args.explorer:
+            self.prepare_explorer_names()
         if self.args.preboot:
             self.preboot()
         if self.args.leftovers:
             self.crash_leftovers()
         self.snapshot_disks()
-        boots = 2 if self.args.selftest else 1
+        boots = 2 if self.args.selftest or self.args.explorer else 1
+        reboot_hash = None
         for boot in range(1, boots + 1):
             if boot == 2:
-                self.check_between_boots()
+                if self.args.explorer:
+                    self.check_gemfs("before restarting")
+                    reboot_hash = sha256(self.disks["data"])
+                else:
+                    self.check_between_boots()
             if not self.run_once(boot):
                 return
         self.check_disks()
+        if self.args.explorer:
+            self.check_explorer_names()
+            self.check(sha256(self.disks["data"]) == reboot_hash,
+                       "disk: reboot and reopening the file made no writes")
 
     def run_once(self, boot):
         """One QEMU run of the test; False if it could not finish."""
@@ -1905,9 +2311,10 @@ class Smoke:
                 return False
             self.desktop()
             if not (self.args.selftest or self.args.stress or
-                    self.args.editor):
+                    self.args.editor or self.args.explorer):
                 self.cursor_frames()
                 self.clock()
+                self.menu_hover_frames()
                 self.log_viewer()
             if self.args.selftest:
                 self.selftest(boot)
@@ -1915,6 +2322,12 @@ class Smoke:
                 self.stress()
             elif self.args.editor:
                 self.editor()
+                self.explorer_scroll()
+            elif self.args.explorer:
+                if boot == 1:
+                    self.explorer_names()
+                else:
+                    self.explorer_names_reboot()
             else:
                 for name, menu, item, updates_itself in APPS:
                     self.run_app(name, menu, item, updates_itself)
@@ -1966,6 +2379,8 @@ def main():
                         "to the data disk")
     parser.add_argument("--editor", action="store_true",
                         help="open, edit and save files in UTEXTEDIT.ELF")
+    parser.add_argument("--explorer", action="store_true",
+                        help="create and rename entries, then reopen after a reboot")
     parser.add_argument("--preboot", action="store_true",
                         help="boot once on the new disks before the test")
     parser.add_argument("--leftovers", action="store_true",
@@ -1979,6 +2394,7 @@ def main():
                         "it off")
     parser.add_argument("--vga-mem", type=int, default=0, metavar="MB",
                         help="VRAM of the QEMU VGA (default: QEMU's 16)")
+    parser.add_argument("--cpu", help="QEMU CPU model and feature flags")
     parser.add_argument("--resolution", default="1920x1080",
                         help="screen size the kernel should pick")
     parser.add_argument("--expect-log", action="append", default=[],

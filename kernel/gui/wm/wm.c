@@ -6,6 +6,7 @@
 #include "../../gfx/primitives.h"
 #include "../../ui/dock/dock.h"
 #include "../../ui/focus.h"
+#include "../../ui/theme.h"
 #include "../../ui/ui_scale.h"
 #include "../../include/gui_loop.h"
 #include "../topbar/topbar.h" /* For TOPBAR_HEIGHT */
@@ -14,7 +15,7 @@
 
 // Global state
 static window_t *windows_head = NULL; // Bottom-most window
-static window_t *windows_tail = NULL; // Top-most window (active)
+static window_t *windows_tail = NULL; // Top-most window in the stack
 static window_t *focused_window = NULL;
 static gfx_context_t *wm_screen_ctx = NULL;
 
@@ -41,38 +42,10 @@ static window_t *wm_press_window = NULL;
 #define TITLE_BAR_H WINDOW_TITLE_BAR_H
 #define BORDER_W WINDOW_BORDER_W
 
-/* Shadow */
-#define SHADOW_OFFSET_X 5
-#define SHADOW_OFFSET_Y 5
-#define SHADOW_ALPHA 70
-#define SHADOW_BLUR_RADIUS 8
-#define SHADOW_EXPAND 4 /* Extra pixels around shadow for blur bleed */
-#define SHADOW_DROP 4   /* the shadow drawn: the frame, this far down/right */
-
-/* Colors - Active */
-#define COLOR_TITLE_TOP_ACTIVE 0x2266CC /* Deep blue */
-#define COLOR_TITLE_BOT_ACTIVE 0x4499EE /* Lighter blue */
-#define COLOR_BORDER_ACTIVE 0x1A55AA    /* Border blue */
-
-/* Colors - Inactive */
-#define COLOR_TITLE_TOP_INACTIVE 0x707070 /* Dark gray */
-#define COLOR_TITLE_BOT_INACTIVE 0xA0A0A0 /* Light gray */
-#define COLOR_BORDER_INACTIVE 0x808080    /* Border gray */
-
-#define COLOR_TITLE_TEXT 0xFFFFFF /* White */
-#define COLOR_CLIENT_BG 0xFFFFFF  /* White default */
-
-/* Button Constants */
-#define BTN_SIZE 16
-#define BTN_RIGHT_MARGIN 6
-#define BTN_GAP 4
-#define BTN_Y_OFFSET 5 /* Vertically centered: (26 - 16) / 2 = 5 */
-
-/* Button Colors */
-#define COLOR_BTN_CLOSE 0xCC3333   /* Red */
-#define COLOR_BTN_CLOSE_X 0xFFFFFF /* White X */
-#define COLOR_BTN_NORMAL 0xC0C0C0  /* Light gray bg */
-#define COLOR_BTN_ICON 0x404040    /* Dark icon */
+/* Title bar controls. Drawing and hit testing share these positions. */
+#define BTN_SIZE 20
+#define BTN_RIGHT_MARGIN 5
+#define BTN_GAP 2
 
 /* "[WM] <what> x= y= w= h=", read by tools/smoke.py */
 static void wm_log_rect(const char *what, rect_t rect) {
@@ -111,6 +84,40 @@ static void wm_emit_focus_event(window_t *win) {
     state.app = NULL;
   }
   ui_on_focus_changed(&state);
+}
+
+static bool wm_visible(const window_t *win) {
+  return win->visible && !win->minimized;
+}
+
+static window_t *wm_top_visible(void) {
+  window_t *win = windows_tail;
+  while (win && !wm_visible(win)) {
+    win = win->prev;
+  }
+  return win;
+}
+
+static void wm_set_focus(window_t *win) {
+  if (focused_window == win) {
+    return;
+  }
+  if (focused_window) {
+    focused_window->focused = false;
+    wm_is_dragging = false;
+  }
+  focused_window = win;
+  if (win) {
+    win->focused = true;
+  }
+  wm_emit_focus_event(win);
+}
+
+static rect_t wm_button(const window_t *win, int from_right) {
+  return (rect_t){
+      win->x + win->width - BTN_RIGHT_MARGIN - BTN_SIZE -
+          from_right * (BTN_SIZE + BTN_GAP),
+      win->y + BORDER_W + (TITLE_BAR_H - BTN_SIZE) / 2, BTN_SIZE, BTN_SIZE};
 }
 
 /* Helper to unlink a window safely */
@@ -253,18 +260,10 @@ void wm_remove_window(window_t *win) {
   if (wm_press_window == win) {
     wm_press_window = NULL;
   }
-  if (focused_window == win) {
-    focused_window = win->prev;
-    if (focused_window)
-      focused_window->focused = true;
-
-    if (focused_window)
-      dock_notify_focus(focused_window);
-
-    wm_emit_focus_event(focused_window);
-  }
-
   wm_unlink(win);
+  if (focused_window == win) {
+    wm_set_focus(wm_top_visible());
+  }
 
   if (!(win->flags & WINDOW_FLAG_NO_DOCK)) {
     dock_unregister_window(win);
@@ -276,26 +275,23 @@ void wm_remove_window(window_t *win) {
 }
 
 void wm_focus_window(window_t *win) {
-  if (!win)
+  if (!win || !wm_visible(win))
     return;
 
   if (focused_window == win && windows_tail == win)
     return;
 
-  if (focused_window) {
-    focused_window->focused = false;
-  }
-
-  if (wm_contains(win)) {
-    wm_unlink(win);
-  }
   wm_append(win);
+  wm_set_focus(win);
+}
 
-  focused_window = win;
-  win->focused = true;
-
-  dock_notify_focus(win);
-  wm_emit_focus_event(win);
+void wm_restore_window(window_t *win) {
+  if (!win) {
+    return;
+  }
+  win->minimized = false;
+  win->visible = true;
+  wm_focus_window(win);
 }
 
 window_t *wm_get_focused_window(void) { return focused_window; }
@@ -304,105 +300,52 @@ window_t *wm_get_focused_window(void) { return focused_window; }
  * Rendering
  * =========================================================================*/
 
-static void wm_render_shadow(window_t *win) {
-  /* Skip shadow during drag for instant responsiveness */
-  if (wm_is_dragging)
-    return;
-
-  /* Single solid shadow: offset rectangle, no alpha blending needed.
-   * Alpha blending reads every destination pixel which is catastrophically
-   * slow at Full HD. A solid fill is write-only = ~10× faster. */
-  gfx_reset_clip(&win->ctx);
-  gfx_fill_rect(&win->ctx, win->frame_rect.x + SHADOW_DROP,
-                win->frame_rect.y + SHADOW_DROP, win->frame_rect.w,
-                win->frame_rect.h,
-                0x101018); /* Very dark blue, blends with dark wallpaper */
-}
-
 static void wm_render_decorations(window_t *win) {
-  bool active = win->focused;
+  gfx_context_t *ctx = &win->ctx;
+  uint32_t ink = win->focused ? UI_INK : UI_MUTED;
+  bool resizable = !(win->flags & WINDOW_FLAG_NO_RESIZE);
+  rect_t close = wm_button(win, 0);
+  rect_t leftmost = wm_button(win, resizable ? 2 : 0);
+  int title_x = win->x + 8;
 
-  uint32_t border_color = active ? COLOR_BORDER_ACTIVE : COLOR_BORDER_INACTIVE;
-  uint32_t title_top =
-      active ? COLOR_TITLE_TOP_ACTIVE : COLOR_TITLE_TOP_INACTIVE;
-  uint32_t title_bot =
-      active ? COLOR_TITLE_BOT_ACTIVE : COLOR_TITLE_BOT_INACTIVE;
+  gfx_set_clip(ctx, win->x, win->y, win->width, win->height);
+  gfx_draw_rect(ctx, win->x, win->y, win->width, win->height, UI_FRAME);
+  gfx_fill_rect(ctx, win->x + BORDER_W, win->y + BORDER_W,
+                win->width - 2 * BORDER_W, TITLE_BAR_H,
+                win->focused ? UI_PAPER : UI_PAPER_SHADED);
+  gfx_fill_rect(ctx, win->x + BORDER_W, win->client_rect.y - 2,
+                win->width - 2 * BORDER_W, 2,
+                win->focused ? UI_ACCENT : UI_RULE);
+  font_draw_text_fit(ctx, title_x, win->y + 5, win->title, 14, ink,
+                     leftmost.x - 4 - title_x);
 
-  /* Set clip to frame rect */
-  gfx_set_clip(&win->ctx, win->frame_rect.x, win->frame_rect.y,
-               win->frame_rect.w, win->frame_rect.h);
-
-  /* 1. Border frame */
-  gfx_fill_rect(&win->ctx, win->frame_rect.x, win->frame_rect.y,
-                win->frame_rect.w, win->frame_rect.h, border_color);
-
-  /* 2. Title bar - gradient fill */
-  gfx_gradient_rect_v(&win->ctx, win->x + BORDER_W, win->y + BORDER_W,
-                      win->width - 2 * BORDER_W, TITLE_BAR_H, title_top,
-                      title_bot);
-
-  /* 3. Title text */
-  font_draw_text(&win->ctx, win->x + 8, win->y + 6, win->title, 14,
-                 COLOR_TITLE_TEXT);
-
-  /* 4. Window buttons */
-  int btn_y = win->y + BTN_Y_OFFSET;
-
-  /* Close button (rightmost) - Red circle with white × */
-  int close_x = win->x + win->width - BTN_RIGHT_MARGIN - BTN_SIZE;
-  gfx_fill_circle(&win->ctx, close_x + BTN_SIZE / 2, btn_y + BTN_SIZE / 2,
-                  BTN_SIZE / 2, COLOR_BTN_CLOSE);
-  /* × icon (two diagonal lines) */
-  gfx_draw_line(&win->ctx, close_x + 4, btn_y + 4, close_x + BTN_SIZE - 4,
-                btn_y + BTN_SIZE - 4, COLOR_BTN_CLOSE_X);
-  gfx_draw_line(&win->ctx, close_x + BTN_SIZE - 4, btn_y + 4, close_x + 4,
-                btn_y + BTN_SIZE - 4, COLOR_BTN_CLOSE_X);
-
-  if (!(win->flags & WINDOW_FLAG_NO_RESIZE)) {
-    /* Maximize button - Gray circle with □ */
-    int max_x = close_x - BTN_SIZE - BTN_GAP;
-    gfx_fill_circle(&win->ctx, max_x + BTN_SIZE / 2, btn_y + BTN_SIZE / 2,
-                    BTN_SIZE / 2, COLOR_BTN_NORMAL);
-    /* □ icon */
-    gfx_draw_rect(&win->ctx, max_x + 4, btn_y + 4, BTN_SIZE - 8, BTN_SIZE - 8,
-                  COLOR_BTN_ICON);
-
-    /* Minimize button - Gray circle with ▬ */
-    int min_x = max_x - BTN_SIZE - BTN_GAP;
-    gfx_fill_circle(&win->ctx, min_x + BTN_SIZE / 2, btn_y + BTN_SIZE / 2,
-                    BTN_SIZE / 2, COLOR_BTN_NORMAL);
-    /* ▬ icon (horizontal line in center) */
-    gfx_draw_line(&win->ctx, min_x + 4, btn_y + BTN_SIZE / 2,
-                  min_x + BTN_SIZE - 4, btn_y + BTN_SIZE / 2, COLOR_BTN_ICON);
+  int cx = close.x + BTN_SIZE / 2;
+  int cy = close.y + BTN_SIZE / 2;
+  gfx_draw_line(ctx, cx - 4, cy - 4, cx + 4, cy + 4, ink);
+  gfx_draw_line(ctx, cx - 4, cy + 4, cx + 4, cy - 4, ink);
+  if (resizable) {
+    rect_t max = wm_button(win, 1);
+    rect_t min = wm_button(win, 2);
+    gfx_draw_rect(ctx, max.x + 5, max.y + 5, 10, 10, ink);
+    gfx_draw_line(ctx, min.x + 5, cy + 2, min.x + 14, cy + 2, ink);
   }
 }
 
-void wm_render_window(window_t *win) {
-  if (!win || !win->visible)
-    return;
-
-  /* 1. Shadow (behind everything) */
-  wm_render_shadow(win);
-
-  /* 2. Window decorations (border, title bar, buttons) */
+static void wm_render_window(window_t *win) {
   wm_render_decorations(win);
-
-  /* 3. Client area content */
+  gfx_set_clip(&win->ctx, win->client_rect.x, win->client_rect.y,
+               win->client_rect.w, win->client_rect.h);
   if (win->app && win->app->render) {
-    gfx_set_clip(&win->ctx, win->client_rect.x, win->client_rect.y,
-                 win->client_rect.w, win->client_rect.h);
     win->app->render(win);
   } else {
     gfx_fill_rect(&win->ctx, win->client_rect.x, win->client_rect.y,
-                  win->client_rect.w, win->client_rect.h, COLOR_CLIENT_BG);
+                  win->client_rect.w, win->client_rect.h, UI_PAPER);
   }
 }
 
-/* The window with its shadow touches the part of the frame being drawn */
 static bool wm_in_bound(const window_t *win) {
-  rect_t area = {win->frame_rect.x * ui_scale, win->frame_rect.y * ui_scale,
-                 (win->frame_rect.w + SHADOW_DROP) * ui_scale,
-                 (win->frame_rect.h + SHADOW_DROP) * ui_scale};
+  rect_t area = {win->x * ui_scale, win->y * ui_scale,
+                 win->width * ui_scale, win->height * ui_scale};
   rect_t bound = wm_screen_ctx->bound_rect;
   rect_t out;
 
@@ -427,10 +370,19 @@ void wm_render_all(void) {
   /* Render from Head (Bottom) to Tail (Top), only what the bound touches */
   window_t *curr = windows_head;
   while (curr) {
-    if (wm_in_bound(curr)) {
+    if (wm_visible(curr) && wm_in_bound(curr)) {
       wm_render_window(curr);
     }
     curr = curr->next;
+  }
+}
+
+void wm_damage_app_clients(const struct app *app) {
+  for (window_t *win = windows_head; win; win = win->next) {
+    if (win->app == app && wm_visible(win)) {
+      rect_t client = win->client_rect;
+      kernel_damage(client.x, client.y, client.w, client.h);
+    }
   }
 }
 
@@ -438,101 +390,85 @@ void wm_render_all(void) {
  * Event Handling
  * =========================================================================*/
 
+/* Hit test in front-to-back order. Hidden windows remain in the dock. */
+static window_t *wm_window_at(int x, int y) {
+  for (window_t *win = windows_tail; win; win = win->prev) {
+    if (wm_visible(win) && rect_contains(&win->frame_rect, x, y)) {
+      return win;
+    }
+  }
+  return NULL;
+}
+
+static void wm_toggle_maximize(window_t *win) {
+  rect_t frame = win->restore_rect;
+  if (!win->maximized) {
+    win->restore_rect = win->frame_rect;
+    frame = wm_work_area();
+  }
+  win->x = frame.x;
+  win->y = frame.y;
+  win->width = frame.w;
+  win->height = frame.h;
+  win->maximized = !win->maximized;
+  window_update_rects(win);
+  serial_print("[WM] Toggle Maximize\n");
+}
+
+static void wm_handle_click(event_t *event) {
+  int x = event->data.mouse.x;
+  int y = event->data.mouse.y;
+  window_t *win = wm_window_at(x, y);
+
+  wm_press_window = NULL;
+  if (!win) {
+    wm_set_focus(NULL);
+    return;
+  }
+  wm_focus_window(win);
+
+  rect_t close = wm_button(win, 0);
+  if (rect_contains(&close, x, y)) {
+    if (!win->app || !win->app->request_close || !win->app->request_close(win)) {
+      serial_print("[WM] Close Window\n");
+      wm_remove_window(win);
+    }
+    return;
+  }
+  if (!(win->flags & WINDOW_FLAG_NO_RESIZE)) {
+    rect_t max = wm_button(win, 1);
+    rect_t min = wm_button(win, 2);
+    if (rect_contains(&max, x, y)) {
+      wm_toggle_maximize(win);
+      return;
+    }
+    if (rect_contains(&min, x, y)) {
+      serial_print("[WM] Minimize (Hide)\n");
+      win->minimized = true;
+      win->visible = false;
+      wm_set_focus(wm_top_visible());
+      return;
+    }
+  }
+
+  rect_t title = {win->x, win->y, win->width, BORDER_W + TITLE_BAR_H};
+  if (rect_contains(&title, x, y)) {
+    wm_is_dragging = true;
+    wm_drag_offset_x = win->x - x;
+    wm_drag_offset_y = win->y - y;
+  } else if (rect_contains(&win->client_rect, x, y) && win->app &&
+             win->app->handle_event) {
+    wm_press_window = win;
+    win->app->handle_event(win, event);
+  }
+}
+
 void wm_handle_event(event_t *event) {
   if (!event)
     return;
 
   if (event->type == EVENT_MOUSE_CLICK) {
-    int mx = event->data.mouse.x;
-    int my = event->data.mouse.y;
-
-    window_t *curr = windows_tail;
-
-    wm_press_window = NULL;
-    while (curr) {
-      if (rect_contains(&curr->frame_rect, mx, my)) {
-        if (curr != focused_window) {
-          wm_focus_window(curr);
-        }
-        wm_press_window = curr;
-
-        /* Forward Click to App */
-        if (curr->app && curr->app->handle_event) {
-          curr->app->handle_event(curr, event);
-        }
-
-        /* HIT TEST: Window Controls */
-        int btn_y = curr->y + BTN_Y_OFFSET;
-
-        int close_x = curr->x + curr->width - BTN_RIGHT_MARGIN - BTN_SIZE;
-        int max_x = close_x - BTN_SIZE - BTN_GAP;
-        int min_x = max_x - BTN_SIZE - BTN_GAP;
-
-        rect_t r_close = {close_x, btn_y, BTN_SIZE, BTN_SIZE};
-        rect_t r_max = {max_x, btn_y, BTN_SIZE, BTN_SIZE};
-        rect_t r_min = {min_x, btn_y, BTN_SIZE, BTN_SIZE};
-
-        if (rect_contains(&r_close, mx, my)) {
-          if (curr->app && curr->app->request_close &&
-              curr->app->request_close(curr)) {
-            break;
-          }
-          serial_print("[WM] Close Window\n");
-          wm_remove_window(curr);
-          break;
-        }
-
-        if (!(curr->flags & WINDOW_FLAG_NO_RESIZE)) {
-          if (rect_contains(&r_max, mx, my)) {
-            serial_print("[WM] Toggle Maximize\n");
-            if (curr->maximized) {
-              curr->x = curr->restore_rect.x;
-              curr->y = curr->restore_rect.y;
-              curr->width = curr->restore_rect.w;
-              curr->height = curr->restore_rect.h;
-              curr->maximized = false;
-            } else {
-              rect_t area = wm_work_area();
-
-              curr->restore_rect =
-                  (rect_t){curr->x, curr->y, curr->width, curr->height};
-              curr->x = area.x;
-              curr->y = area.y;
-              curr->width = area.w;
-              curr->height = area.h;
-              curr->maximized = true;
-            }
-            window_update_rects(curr);
-            break;
-          } else if (rect_contains(&r_min, mx, my)) {
-            serial_print("[WM] Minimize (Hide)\n");
-            curr->minimized = true;
-            curr->visible = false;
-            break;
-          }
-        }
-
-        /* Title bar drag */
-        rect_t title_rect = curr->frame_rect;
-        title_rect.h = BORDER_W + TITLE_BAR_H;
-
-        if (rect_contains(&title_rect, mx, my)) {
-          wm_is_dragging = true;
-          wm_drag_offset_x = curr->x - mx;
-          wm_drag_offset_y = curr->y - my;
-        }
-        break;
-      }
-      curr = curr->prev;
-    }
-
-    if (!curr) {
-      if (focused_window) {
-        focused_window->focused = false;
-        focused_window = NULL;
-        wm_emit_focus_event(NULL);
-      }
-    }
+    wm_handle_click(event);
   } else if (event->type == EVENT_MOUSE_MOVE) {
     if (wm_is_dragging && focused_window) {
       int mx = event->data.mouse.x;
@@ -552,15 +488,14 @@ void wm_handle_event(event_t *event) {
       focused_window->y = y < area.y ? area.y : (y > max_y ? max_y : y);
 
       window_update_rects(focused_window);
-      /* the window with its shadow, where it was and where it is now */
-      kernel_damage(was.x, was.y, was.w + SHADOW_DROP, was.h + SHADOW_DROP);
-      kernel_damage(focused_window->frame_rect.x, focused_window->frame_rect.y,
-                    focused_window->frame_rect.w + SHADOW_DROP,
-                    focused_window->frame_rect.h + SHADOW_DROP);
-    } else if (focused_window && focused_window->app &&
-               focused_window->app->handle_event) {
-      /* hover, and drags inside the window */
-      focused_window->app->handle_event(focused_window, event);
+      rect_t frame = focused_window->frame_rect;
+      kernel_damage(was.x, was.y, was.w, was.h);
+      kernel_damage(frame.x, frame.y, frame.w, frame.h);
+    } else {
+      window_t *win = wm_press_window ? wm_press_window : focused_window;
+      if (win && wm_visible(win) && win->app && win->app->handle_event) {
+        win->app->handle_event(win, event);
+      }
     }
   } else if (event->type == EVENT_MOUSE_RELEASE) {
     window_t *pressed = wm_press_window;

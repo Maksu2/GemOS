@@ -22,7 +22,8 @@
  *     processes use two files at once without seeing half of a write, a
  *     process killed half way through a write ends at the next block and
  *     leaves the file as it was, and the GUI task that needs GemFS then
- *     waits with only the holder running;
+ *     waits with only the holder running; the Explorer reads its folder
+ *     in a different task, so the GUI loop keeps running while it waits;
  *   - every exception a Ring 3 program can raise ends only that program
  *     (FAULTS.ELF), while two FPUCHECK.ELF copies and this task keep their
  *     own FPU state;
@@ -34,9 +35,13 @@
  */
 #include "selftest.h"
 
+#include "../apps/explorer/explorer.h"
+#include "app/app_manager.h"
 #include "fs/gemfs.h"
 #include "gfx/context.h"
 #include "gfx/font/font.h"
+#include "gui/wm/wm.h"
+#include "include/gui_loop.h"
 #include "include/heap.h"
 #include "memory/kstack.h"
 #include "memory/paging.h"
@@ -610,11 +615,18 @@ static int selftest_fs_many(void) {
     path[17] = (char)('0' + i % 10U);
     ok = gemfs_write(path, &i, sizeof(i), 0, 0) == (int)sizeof(i);
   }
-  ok = ok && gemfs_list("/selftest/many", NULL, NULL) == (int)FS_MANY &&
+  uint32_t generation = gemfs_generation();
+  selftest_check(ok && gemfs_rename("/selftest/many/f65", "f02") == GEMFS_ERR_EXIST &&
+                     gemfs_generation() == generation &&
+                     gemfs_rename("/selftest/many/f65", "renamed") == GEMFS_OK &&
+                     gemfs_stat("/selftest/many/f65", &stat) == GEMFS_ERR_NOENT &&
+                     gemfs_rename("/selftest/many/renamed", "f65") == GEMFS_OK,
+                 "fs: rename in the second directory block refuses a name in the first");
+  ok = ok && gemfs_list("/selftest/many", NULL, NULL, NULL) == (int)FS_MANY &&
        gemfs_delete("/selftest/many/f03") == GEMFS_OK &&
        gemfs_delete("/selftest/many/f63") == GEMFS_OK &&
        gemfs_delete("/selftest/many/f64") == GEMFS_OK &&
-       gemfs_list("/selftest/many", NULL, NULL) == (int)FS_MANY - 3 &&
+       gemfs_list("/selftest/many", NULL, NULL, NULL) == (int)FS_MANY - 3 &&
        gemfs_write("/selftest/many/f03", "\x03\0\0\0", 4, 0, 0) == 4 &&
        gemfs_write("/selftest/many/f63", "\x3F\0\0\0", 4, 0, 0) == 4;
   for (uint32_t i = 0; i < FS_MANY && ok; ++i) {
@@ -630,7 +642,62 @@ static int selftest_fs_many(void) {
              (int)sizeof(value) &&
          value == i;
   }
-  return ok && gemfs_list("/selftest/many", NULL, NULL) == (int)FS_MANY - 1;
+  return ok && gemfs_list("/selftest/many", NULL, NULL, NULL) == (int)FS_MANY - 1;
+}
+
+static void selftest_fs_rename(const uint8_t *contents) {
+  const char *original = "/selftest/a/b/big.bin";
+  const char *renamed = "/selftest/a/b/saved data.bin";
+  gemfs_stat_t before, after;
+  uint32_t generation = gemfs_generation();
+  gemfs_usage_t usage, renamed_usage;
+  char long_name[GEMFS_NAME_MAX + 2];
+  memset(long_name, 'x', sizeof(long_name) - 1);
+  long_name[sizeof(long_name) - 1] = '\0';
+
+  selftest_check(gemfs_rename(original, "big.bin") == GEMFS_OK &&
+                     gemfs_rename(original, "") == GEMFS_ERR_NAME &&
+                     gemfs_rename(original, "..") == GEMFS_ERR_NAME &&
+                     gemfs_rename(original, "sub/file") == GEMFS_ERR_NAME &&
+                     gemfs_rename(original, long_name) == GEMFS_ERR_NAME &&
+                     gemfs_rename("/", "new root") == GEMFS_ERR_NAME &&
+                     gemfs_rename("/selftest/absent", "new") == GEMFS_ERR_NOENT &&
+                     gemfs_generation() == generation,
+                 "fs: empty, reserved, overlong and missing rename targets leave the disk generation alone");
+
+  selftest_check(gemfs_usage(&usage) == GEMFS_OK &&
+                     gemfs_stat(original, &before) == GEMFS_OK &&
+                     gemfs_rename(original, "saved data.bin") == GEMFS_OK &&
+                     gemfs_generation() == generation + 1U &&
+                     gemfs_stat(original, &after) == GEMFS_ERR_NOENT &&
+                     gemfs_stat(renamed, &after) == GEMFS_OK &&
+                     before.inode == after.inode && before.size == after.size &&
+                     before.flags == after.flags && before.version == after.version &&
+                     selftest_file_is(renamed, contents, FS_BIG_SIZE) &&
+                     gemfs_usage(&renamed_usage) == GEMFS_OK &&
+                     usage.free_blocks == renamed_usage.free_blocks &&
+                     usage.free_inodes == renamed_usage.free_inodes &&
+                     gemfs_rename(renamed, "big.bin") == GEMFS_OK,
+                 "fs: renaming a file with indirect blocks preserves its inode and contents");
+  selftest_check(gemfs_rename("/selftest/a/b/", "renamed dir") == GEMFS_OK &&
+                     gemfs_stat(original, &after) == GEMFS_ERR_NOENT &&
+                     selftest_file_is("/selftest/a/renamed dir/big.bin", contents,
+                                      FS_BIG_SIZE) &&
+                     gemfs_rename("/selftest/a/renamed dir", "b") == GEMFS_OK,
+                 "fs: a renamed directory keeps its descendants");
+
+  char deep[GEMFS_PATH_MAX] = "/selftest/a/b/";
+  size_t prefix = strlen(deep);
+  memset(deep + prefix, 'x', GEMFS_NAME_MAX);
+  deep[prefix + GEMFS_NAME_MAX] = '/';
+  memset(deep + prefix + GEMFS_NAME_MAX + 1, 'y', GEMFS_NAME_MAX);
+  deep[prefix + 2 * GEMFS_NAME_MAX + 1] = '\0';
+  int kept = selftest_mkdirs(deep) &&
+             gemfs_rename("/selftest/a", "longer") == GEMFS_ERR_NAME &&
+             gemfs_stat(deep, &after) == GEMFS_OK;
+  deep[prefix + GEMFS_NAME_MAX] = '\0';
+  selftest_check(kept && gemfs_delete(deep) == GEMFS_OK,
+                 "fs: a rename cannot make a descendant path too long");
 }
 
 static void selftest_fs_api(void) {
@@ -683,6 +750,7 @@ static void selftest_fs_api(void) {
                      with_dirs.free_inodes - after.free_inodes == 1U,
                  "fs: a 100 KB file in /selftest/a/b reads back and takes 25 "
                  "data blocks, the indirect one and a directory block");
+  selftest_fs_rename(big);
 
   ok = gemfs_write("/selftest/a/b/big.bin", big + 1, 5000, 0, 0) == 5000 &&
        gemfs_stat("/selftest/a/b/big.bin", &stat) == GEMFS_OK &&
@@ -707,10 +775,10 @@ static void selftest_fs_api(void) {
                  "fs: a write that fails part way keeps the old contents "
                  "and gives its blocks back");
 
-  ok = gemfs_list("/selftest/a", selftest_keep_entry, NULL) == 1 &&
+  ok = gemfs_list("/selftest/a", selftest_keep_entry, NULL, NULL) == 1 &&
        strcmp(listed_entry.name, "b") == 0 &&
        listed_entry.type == GEMFS_TYPE_DIR &&
-       gemfs_list("/selftest/a/b", selftest_keep_entry, NULL) == 1 &&
+       gemfs_list("/selftest/a/b", selftest_keep_entry, NULL, NULL) == 1 &&
        strcmp(listed_entry.name, "big.bin") == 0 &&
        listed_entry.type == GEMFS_TYPE_FILE;
   selftest_check(ok, "fs: listing /selftest/a and /selftest/a/b");
@@ -732,6 +800,7 @@ static void selftest_fs_api(void) {
                         big + 1) == GEMFS_ERR_DENIED &&
        gemfs_write_user("/selftest/system.txt/", 10, selftest_memory_source,
                         big + 1) == GEMFS_ERR_DENIED &&
+       gemfs_rename("/selftest/system.txt", "renamed.txt") == GEMFS_ERR_DENIED &&
        selftest_file_is("/selftest/system.txt", big, 10) &&
        gemfs_stat("/selftest/X.ELF", &stat) == GEMFS_ERR_NOENT &&
        gemfs_write_user("/selftest/user.txt", 10, selftest_memory_source,
@@ -897,12 +966,63 @@ static int gui_probe_result;
 static int gui_probe_waited;    /* the holder finished its write meanwhile */
 static uint32_t gui_probe_others; /* tasks other than the holder that ran */
 
+/* The window is opened and closed on the GUI task, the same way as a
+ * user opening Explorer from the Apps menu. */
+static volatile enum {
+  EXPLORER_PROBE_IDLE,
+  EXPLORER_PROBE_OPEN,
+  EXPLORER_PROBE_WAIT,
+  EXPLORER_PROBE_CLOSE
+} explorer_probe;
+static window_t *explorer_probe_window;
+static uint32_t explorer_probe_generation;
+static uint32_t explorer_probe_iterations;
+static volatile bool explorer_probe_listed;
+
+static void selftest_explorer_iteration(void) {
+  switch (explorer_probe) {
+  case EXPLORER_PROBE_OPEN: {
+    window_t *before = wm_get_focused_window();
+
+    app_open("File Explorer");
+    explorer_probe_window = wm_get_focused_window();
+    if (explorer_probe_window == before) {
+      explorer_probe_window = NULL;
+    }
+    kernel_request_redraw();
+    explorer_probe = EXPLORER_PROBE_WAIT;
+    break;
+  }
+  case EXPLORER_PROBE_WAIT:
+    if (gemfs_generation() == explorer_probe_generation &&
+        explorer_listing_pending()) {
+      explorer_probe_iterations++;
+    }
+    if (explorer_probe_window && gemfs_generation() != explorer_probe_generation &&
+        explorer_has_current_entry("UTERM.ELF")) {
+      explorer_probe_listed = true;
+    }
+    break;
+  case EXPLORER_PROBE_CLOSE:
+    if (explorer_probe_window) {
+      wm_remove_window(explorer_probe_window);
+      explorer_probe_window = NULL;
+      kernel_request_redraw();
+    }
+    explorer_probe = EXPLORER_PROBE_IDLE;
+    break;
+  case EXPLORER_PROBE_IDLE:
+    break;
+  }
+}
+
 void selftest_gui_iteration(void) {
   uint32_t runs[MAX_TASKS];
   uint32_t generation;
   gemfs_stat_t stat;
 
   gui_iterations++;
+  selftest_explorer_iteration();
   if (gui_probe != 1) {
     return;
   }
@@ -1166,6 +1286,38 @@ static void selftest_longio_gui(void) {
   }
 }
 
+static void selftest_longio_explorer(void) {
+  selftest_exit_t exit;
+  int task;
+  int pid = selftest_spawn_longio(GEMOS_LONGIO_TIMED, &task);
+  bool writing = pid >= 0 && selftest_wait_in_kernel(pid, task);
+
+  explorer_probe_iterations = 0;
+  explorer_probe_listed = false;
+  if (writing) {
+    uint64_t deadline = timer_get_ticks() + SELFTEST_WAIT_MS;
+
+    explorer_probe_generation = gemfs_generation();
+    explorer_probe = EXPLORER_PROBE_OPEN;
+    scheduler_wake(TASK_GUI);
+    while (!explorer_probe_listed && timer_get_ticks() < deadline) {
+      selftest_sleep(2);
+    }
+    explorer_probe = EXPLORER_PROBE_CLOSE;
+    scheduler_wake(TASK_GUI);
+  }
+
+  selftest_check(writing && explorer_probe_iterations >= 2,
+                 "explorer: GUI runs while a folder read waits for a write");
+  bool finished = pid >= 0 && selftest_wait_exit(pid, &exit);
+  selftest_check(explorer_probe_listed && finished && !exit.faulted &&
+                     exit.exit_code > 0,
+                 "explorer: shows the current folder after the write");
+  if (pid >= 0 && !finished) {
+    process_kill_pid((uint32_t)pid, -1);
+  }
+}
+
 static void selftest_longio(void) {
   (void)gemfs_delete(GEMOS_LONGIO_DIR); /* left over from a failed run */
   if (!selftest_check(gemfs_mkdir(GEMOS_LONGIO_DIR) == GEMFS_OK,
@@ -1177,6 +1329,7 @@ static void selftest_longio(void) {
   selftest_longio_together();
   selftest_longio_kill();
   selftest_longio_gui();
+  selftest_longio_explorer();
   ata_set_selftest_delay(0);
   (void)gemfs_delete(GEMOS_LONGIO_DIR);
 }

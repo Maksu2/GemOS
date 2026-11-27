@@ -19,11 +19,14 @@ void wm_remove_window(window_t *win);
 
 /* Focus */
 void wm_focus_window(window_t *win); // Also brings to front
+void wm_restore_window(window_t *win);
 window_t *wm_get_focused_window(void);
 
 /* Rendering */
 // Renders all windows in Z-order (painter's algorithm: back to front)
 void wm_render_all(void);
+/* Redraw the client areas of the app's visible windows. */
+void wm_damage_app_clients(const struct app *app);
 
 /* Input */
 // Determine target window for event and dispatch

@@ -8,14 +8,12 @@
 #include "../../include/gui_loop.h"
 #include "../../ui/focus.h"
 #include "../../ui/menu.h"
+#include "../../ui/theme.h"
 #include "../../ui/ui_scale.h"
 #include "../wm/wm.h"
 #include <stddef.h>
 
-/* Top Bar Colors */
-#define COLOR_TOPBAR_BG 0x202020 /* Dark Gray */
-#define COLOR_TEXT 0xFFFFFF      /* White */
-#define COLOR_HIGHLIGHT 0x505050 /* Lighter Gray for hover/click */
+#define TOPBAR_ITEM_WIDTH 70
 
 /* Menus */
 static menu_t *menu_gemos = NULL;
@@ -70,31 +68,25 @@ void topbar_on_focus_changed(focus_state_t *state) {
   }
 }
 
+static void topbar_draw_menu(gfx_context_t *ctx, int x, const char *label,
+                             const menu_t *menu) {
+  font_draw_text_fit(ctx, x, 6, label, 14, UI_PAPER, TOPBAR_ITEM_WIDTH - 6);
+  if (menu && menu->visible) {
+    gfx_fill_rect(ctx, x, TOPBAR_HEIGHT - 3, TOPBAR_ITEM_WIDTH - 8, 2,
+                  UI_ACCENT);
+  }
+}
+
 void topbar_render(gfx_context_t *ctx) {
   int logical_width = (int)(ctx->width / ui_scale);
 
-  /* 1. Background - dark bar */
-  gfx_fill_rect(ctx, 0, 0, logical_width, TOPBAR_HEIGHT, COLOR_TOPBAR_BG);
-
-  /* Subtle bottom line */
-  gfx_fill_rect(ctx, 0, TOPBAR_HEIGHT - 1, logical_width, 1, 0x404040);
-
-  /* 2. Menu Items (Left) */
-  int x_offset = 12;
-  int spacing = 80;
-
-  /* "GemOS" - Bold, slightly larger */
-  font_draw_text(ctx, x_offset, 6, "GemOS", 16, 0xFFFFFF);
-  x_offset += spacing;
-
-  /* "Apps" */
-  font_draw_text(ctx, x_offset, 8, "Apps", 14, 0xCCCCCC);
-  x_offset += spacing;
-
-  /* Context Aware Menus */
+  gfx_fill_rect(ctx, 0, 0, logical_width, TOPBAR_HEIGHT, UI_BAR);
+  gfx_fill_rect(ctx, 0, TOPBAR_HEIGHT - 1, logical_width, 1, UI_BAR_BORDER);
+  topbar_draw_menu(ctx, 12, "GemOS", menu_gemos);
+  topbar_draw_menu(ctx, 92, "Apps", menu_apps);
   if (active_app_with_menu && active_app_with_menu->menu) {
-    font_draw_text(ctx, x_offset, 8, active_app_with_menu->menu->title, 14,
-                   0xCCCCCC);
+    menu_t *menu = active_app_with_menu->menu;
+    topbar_draw_menu(ctx, 172, menu->title, menu);
   }
 
   /* 3. Clock (Right) - Real Time from RTC */
@@ -113,7 +105,7 @@ void topbar_render(gfx_context_t *ctx) {
   clock_str[4] = '0' + (minutes % 10);
   clock_str[5] = '\0';
 
-  font_draw_text(ctx, clock_x, 8, clock_str, 14, 0xFFFFFF);
+  font_draw_text(ctx, clock_x, 6, clock_str, 14, UI_PAPER);
 }
 
 bool topbar_clock_changed(void) {
@@ -130,24 +122,23 @@ bool topbar_handle_event(event_t *event) {
     if (my < TOPBAR_HEIGHT) {
       if (event->type == EVENT_MOUSE_CLICK) {
         int x = event->data.mouse.x;
+        int origin = 12;
+        menu_t *menu = NULL;
 
-        if (x > 10 && x < 80) {
-          if (menu_is_active())
-            menu_hide();
-          else
-            menu_show(menu_gemos, 12, TOPBAR_HEIGHT);
-        } else if (x > 90 && x < 160) {
-          if (menu_is_active())
-            menu_hide();
-          else
-            menu_show(menu_apps, 92, TOPBAR_HEIGHT);
-        } else if (x > 170 && x < 240) {
-          if (active_app_with_menu && active_app_with_menu->menu) {
-            if (menu_is_active())
-              menu_hide();
-            else
-              menu_show(active_app_with_menu->menu, 172, TOPBAR_HEIGHT);
-          }
+        if (x >= 10 && x < 10 + TOPBAR_ITEM_WIDTH) {
+          menu = menu_gemos;
+        } else if (x >= 90 && x < 90 + TOPBAR_ITEM_WIDTH) {
+          menu = menu_apps;
+          origin = 92;
+        } else if (x >= 170 && x < 170 + TOPBAR_ITEM_WIDTH &&
+                   active_app_with_menu) {
+          menu = active_app_with_menu->menu;
+          origin = 172;
+        }
+        if (menu && !menu->visible) {
+          menu_show(menu, origin, TOPBAR_HEIGHT);
+        } else {
+          menu_hide();
         }
       }
       return true; /* CONSUME EVENT */

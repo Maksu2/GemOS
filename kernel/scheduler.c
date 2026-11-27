@@ -233,7 +233,6 @@ int task_create_user(struct process *process, uint32_t initial_esp) {
     return slot;
 }
 
-#ifdef GEMOS_SELFTEST
 int task_create_kernel(void (*entry)(void), uintptr_t stack_top) {
     int slot;
     uint32_t flags;
@@ -262,7 +261,6 @@ int task_create_kernel(void (*entry)(void), uintptr_t stack_top) {
 
     return slot;
 }
-#endif
 
 /* Pick the next task after the current one has been saved: round-robin over
  * the runnable tasks, the idle task if there are none. */

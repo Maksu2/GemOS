@@ -207,6 +207,47 @@ int font_text_width(const char *text, int size_px) {
   return (int)width / ui_scale;
 }
 
+void font_draw_text_fit(gfx_context_t *ctx, int x, int y, const char *text,
+                        int size_px, uint32_t color, int width) {
+  if (!text || width <= 0) {
+    return;
+  }
+  rect_t area = {x * ui_scale, ctx->clip_rect.y, width * ui_scale,
+                 ctx->clip_rect.h};
+  gfx_context_t clipped = *ctx;
+  if (!rect_intersect(&area, &ctx->clip_rect, &clipped.clip_rect)) {
+    return;
+  }
+
+  if (font_text_width(text, size_px) <= width) {
+    font_draw_text(&clipped, x, y, text, size_px, color);
+    return;
+  }
+
+  int dots = font_text_width("...", size_px);
+  if (dots > width) {
+    return;
+  }
+  int size_phys = size_px * ui_scale;
+  float scale = (float)size_phys / g_font.units_per_em;
+  float room = (float)((width - dots) * ui_scale);
+  char label[128];
+  size_t length = 0;
+  for (; length + 4 < sizeof(label) && text[length] && text[length] != '\n';
+       ++length) {
+    glyph_cache_entry_t *entry =
+        font_glyph((unsigned char)text[length], size_phys, scale);
+    float advance = entry ? (float)entry->advance : (float)size_phys / 2.0f;
+    if (advance > room) {
+      break;
+    }
+    label[length] = text[length];
+    room -= advance;
+  }
+  memcpy(label + length, "...", 4);
+  font_draw_text(&clipped, x, y, label, size_px, color);
+}
+
 void font_draw_cell(gfx_context_t *ctx, int x, int y, int cell_w, char c,
                     int size_px, uint32_t color) {
   if (!g_font_loaded || !g_raster_buf)

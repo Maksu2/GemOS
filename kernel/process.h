@@ -7,7 +7,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define MAX_PROCESSES MAX_TASKS
+/* Also sizes the guarded stack pool for every task besides GUI and idle. */
+#define MAX_PROCESSES (MAX_TASKS - 1)
 
 typedef enum {
   PROC_UNUSED = 0,

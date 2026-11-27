@@ -78,6 +78,7 @@ typedef struct {
 _Static_assert(sizeof(gemfs_super_t) == SECTOR_SIZE, "superblock size");
 _Static_assert(sizeof(gemfs_inode_t) == INODE_SIZE, "inode size");
 _Static_assert(sizeof(gemfs_dirent_t) == ENTRY_SIZE, "entry size");
+_Static_assert(SECTOR_SIZE % ENTRY_SIZE == 0, "entries fit within sectors");
 
 static int fs_device = -1; /* mounted ATA device, -1 = none */
 static gemfs_super_t sb;
@@ -370,6 +371,16 @@ static void inode_release_blocks(const gemfs_inode_t *inode) {
 
 /* -- paths ------------------------------------------------------------------- */
 
+static int name_valid(const char *name, size_t length) {
+  return length > 0 && length <= GEMFS_NAME_MAX &&
+         !(length == 1 && name[0] == '.') &&
+         !(length == 2 && name[0] == '.' && name[1] == '.');
+}
+
+int gemfs_name_valid(const char *name) {
+  return name && name_valid(name, strlen(name)) && !strrchr(name, '/');
+}
+
 /* Check a whole path; *rest points past the leading '/'. */
 static int path_check(const char *path, const char **rest) {
   size_t length;
@@ -397,14 +408,11 @@ static int path_next(const char **path, char name[GEMFS_NAME_MAX + 1]) {
   while (p[length] != '\0' && p[length] != '/') {
     length++;
   }
-  if (length == 0 || length > GEMFS_NAME_MAX) {
+  if (!name_valid(p, length)) {
     return GEMFS_ERR_NAME;
   }
   memcpy(name, p, length);
   name[length] = '\0';
-  if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
-    return GEMFS_ERR_NAME;
-  }
   p += length;
   if (*p == '/') {
     p++; /* one trailing '/' is allowed */
@@ -413,9 +421,14 @@ static int path_next(const char **path, char name[GEMFS_NAME_MAX + 1]) {
   return 1;
 }
 
-/* Look name up in a directory; *number = 0 if it is not there. */
+typedef struct {
+  uint32_t lba;
+  uint32_t offset;
+} dirent_location_t;
+
+/* Look name up in a directory and optionally locate its entry on disk. */
 static int dir_find(const gemfs_inode_t *dir, const char *name,
-                    uint32_t *number, uint32_t *type) {
+                    uint32_t *number, uint32_t *type, dirent_location_t *where) {
   uint32_t blocks = inode_block_count(dir);
 
   *number = 0;
@@ -439,7 +452,14 @@ static int dir_find(const gemfs_inode_t *dir, const char *name,
           return GEMFS_ERR_CORRUPT;
         }
         *number = entry->inode;
-        *type = entry->type;
+        if (type) {
+          *type = entry->type;
+        }
+        if (where) {
+          uint32_t offset = slot * ENTRY_SIZE;
+          where->lba = block * SECTORS_PER_BLOCK + offset / SECTOR_SIZE;
+          where->offset = offset % SECTOR_SIZE;
+        }
         return GEMFS_OK;
       }
     }
@@ -462,7 +482,6 @@ static int path_walk(const char *path, int want_parent, uint32_t *number,
   for (;;) {
     gemfs_inode_t dir;
     uint32_t next;
-    uint32_t type;
 
     result = path_next(&rest, name);
     if (result < 0) {
@@ -487,7 +506,7 @@ static int path_walk(const char *path, int want_parent, uint32_t *number,
       *number = current;
       return GEMFS_OK;
     }
-    result = dir_find(&dir, name, &next, &type);
+    result = dir_find(&dir, name, &next, NULL, NULL);
     if (result != GEMFS_OK) {
       return result;
     }
@@ -1198,7 +1217,7 @@ static int gemfs_write_file(const char *path, uint32_t size,
     result = inode_read(parent, &old);
   }
   if (result == GEMFS_OK) {
-    result = dir_find(&old, name, &existing, &type);
+    result = dir_find(&old, name, &existing, &type, NULL);
   }
   if (result != GEMFS_OK) {
     return result;
@@ -1342,7 +1361,6 @@ static int mkdir_path(const char *path) {
   gemfs_inode_t dir;
   uint32_t parent;
   uint32_t existing;
-  uint32_t type;
   uint32_t number;
   int result;
 
@@ -1355,7 +1373,7 @@ static int mkdir_path(const char *path) {
     result = inode_read(parent, &dir);
   }
   if (result == GEMFS_OK) {
-    result = dir_find(&dir, name, &existing, &type);
+    result = dir_find(&dir, name, &existing, NULL, NULL);
   }
   if (result != GEMFS_OK) {
     return result;
@@ -1389,6 +1407,165 @@ int gemfs_mkdir(const char *path) {
 
   if (result == GEMFS_OK) {
     result = mkdir_path(path);
+    fs_unlock();
+  }
+  return result;
+}
+
+/* A longer directory name must still leave every descendant addressable. */
+static int rename_check_tree(uint32_t number, size_t length) {
+  struct {
+    uint32_t inode;
+    uint32_t next;
+    size_t length;
+  } stack[MAX_DEPTH] = {{number, 0, length}};
+  uint32_t depth = 1;
+  uint32_t directory = 0;
+  uint32_t loaded_block = 0;
+  gemfs_inode_t dir;
+
+  while (depth != 0) {
+    uint32_t level = depth - 1;
+    if (directory != stack[level].inode) {
+      directory = stack[level].inode;
+      int result = inode_read(directory, &dir);
+      if (result != GEMFS_OK) {
+        return result;
+      }
+      if (dir.type != GEMFS_TYPE_DIR || dir.size > DIRECT * GEMFS_BLOCK_SIZE) {
+        return GEMFS_ERR_CORRUPT;
+      }
+    }
+
+    uint32_t index = stack[level].next++;
+    if (index >= inode_block_count(&dir) * ENTRIES_PER_BLOCK) {
+      depth--;
+      continue;
+    }
+    uint32_t block;
+    int result = inode_map(&dir, index / ENTRIES_PER_BLOCK, &block);
+    if (result != GEMFS_OK) {
+      return result;
+    }
+    if (block != loaded_block) {
+      result = block_read(block, dir_buf);
+      if (result != GEMFS_OK) {
+        return result;
+      }
+      loaded_block = block;
+      fs_pause();
+    }
+    const gemfs_dirent_t *entry =
+        (const gemfs_dirent_t *)(dir_buf + index % ENTRIES_PER_BLOCK * ENTRY_SIZE);
+    if (!entry->inode) {
+      continue;
+    }
+    size_t name_length = 0;
+    while (name_length < sizeof(entry->name) && entry->name[name_length]) {
+      name_length++;
+    }
+    if (name_length == sizeof(entry->name) || !gemfs_name_valid(entry->name)) {
+      return GEMFS_ERR_CORRUPT;
+    }
+    length = stack[level].length + 1U + name_length;
+    if (length >= GEMFS_PATH_MAX) {
+      return GEMFS_ERR_NAME;
+    }
+    if (entry->type == GEMFS_TYPE_DIR) {
+      if (depth == MAX_DEPTH) {
+        return GEMFS_ERR_CORRUPT;
+      }
+      stack[depth].inode = entry->inode;
+      stack[depth].next = 0;
+      stack[depth++].length = length;
+    }
+  }
+  return GEMFS_OK;
+}
+
+static int rename_path(const char *path, const char *new_name) {
+  char name[GEMFS_NAME_MAX + 1];
+  gemfs_inode_t dir;
+  gemfs_inode_t inode;
+  dirent_location_t where;
+  uint32_t parent;
+  uint32_t number;
+  uint32_t existing;
+
+  if (fs_device < 0) {
+    return GEMFS_ERR_NOFS;
+  }
+  if (!gemfs_name_valid(new_name)) {
+    return GEMFS_ERR_NAME;
+  }
+  map_block = 0;
+  int result = path_walk(path, 1, &parent, name);
+  if (result == GEMFS_OK) {
+    result = inode_read(parent, &dir);
+  }
+  if (result == GEMFS_OK) {
+    result = dir_find(&dir, name, &number, NULL, &where);
+  }
+  if (result != GEMFS_OK) {
+    return result;
+  }
+  if (!number) {
+    return GEMFS_ERR_NOENT;
+  }
+  if (strcmp(name, new_name) == 0) {
+    return GEMFS_OK;
+  }
+  size_t old_length = strlen(path);
+  if (path[old_length - 1] == '/') {
+    old_length--;
+  }
+  size_t new_length = old_length - strlen(name) + strlen(new_name);
+  if (new_length >= GEMFS_PATH_MAX) {
+    return GEMFS_ERR_NAME;
+  }
+  result = dir_find(&dir, new_name, &existing, NULL, NULL);
+  if (result != GEMFS_OK) {
+    return result;
+  }
+  if (existing) {
+    return GEMFS_ERR_EXIST;
+  }
+  result = inode_read(number, &inode);
+  if (result != GEMFS_OK) {
+    return result;
+  }
+  if (inode.parent != parent ||
+      (inode.type != GEMFS_TYPE_FILE && inode.type != GEMFS_TYPE_DIR)) {
+    return GEMFS_ERR_CORRUPT;
+  }
+  if (inode.flags & GEMFS_FLAG_SYSTEM) {
+    return GEMFS_ERR_DENIED;
+  }
+  if (inode.type == GEMFS_TYPE_DIR && new_length > old_length) {
+    result = rename_check_tree(number, new_length);
+    if (result != GEMFS_OK) {
+      return result;
+    }
+  }
+
+  /* Only the sector with this entry changes. The inode and its blocks stay. */
+  result = dev_read(where.lba, 1, sector_buf);
+  if (result == GEMFS_OK) {
+    gemfs_dirent_t *entry = (gemfs_dirent_t *)(sector_buf + where.offset);
+    strncpy(entry->name, new_name, sizeof(entry->name));
+    result = dev_write(where.lba, 1, sector_buf);
+    if (result == GEMFS_OK) {
+      generation++;
+    }
+  }
+  return result;
+}
+
+int gemfs_rename(const char *path, const char *new_name) {
+  int result = fs_lock();
+
+  if (result == GEMFS_OK) {
+    result = rename_path(path, new_name);
     fs_unlock();
   }
   return result;
@@ -1529,15 +1706,20 @@ static int list_path(const char *path, gemfs_list_fn_t fn, void *ctx) {
       }
       count++;
     }
+    fs_pause();
   }
   return count;
 }
 
-int gemfs_list(const char *path, gemfs_list_fn_t fn, void *ctx) {
+int gemfs_list(const char *path, gemfs_list_fn_t fn, void *ctx,
+               uint32_t *listed_generation) {
   int result = fs_lock();
 
   if (result == GEMFS_OK) {
     result = list_path(path, fn, ctx);
+    if (listed_generation != NULL) {
+      *listed_generation = generation;
+    }
     fs_unlock();
   }
   return result;

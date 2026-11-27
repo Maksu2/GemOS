@@ -18,14 +18,15 @@
 #include "../../kernel/gui/wm/wm.h"
 #include "../../kernel/include/heap.h"
 #include "../../kernel/ui/menu.h"
+#include "../../kernel/ui/theme.h"
 
 /* Application state */
 static app_t terminal_app;
 static menu_t *terminal_menu = NULL;
 
 /* Display configuration */
-#define TERM_BG_COLOR 0x1E1E1E   /* Dark background */
-#define TERM_TEXT_COLOR 0xCCCCCC /* Light gray text */
+#define TERM_BG_COLOR UI_DESKTOP
+#define TERM_TEXT_COLOR UI_PAPER
 #define TERM_FONT_SIZE 11
 #define TERM_LINE_HEIGHT 14
 #define TERM_PADDING 8
