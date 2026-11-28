@@ -8,6 +8,7 @@
 #include "../../gui/wm/wm.h"
 #include "../theme.h"
 #include "../ui_scale.h"
+#include "../../include/gui_loop.h"
 #include <stddef.h>
 
 #define DOCK_MARGIN 8
@@ -20,6 +21,14 @@ static int dock_item_count;
 
 void dock_init(void) { dock_item_count = 0; }
 
+static rect_t dock_area(void);
+
+/* The dock shows every window's title, focus and whether it is hidden */
+void dock_damage(void) {
+  rect_t bar = dock_area();
+  kernel_damage(bar.x, bar.y, bar.w, bar.h);
+}
+
 void dock_register_window(window_t *win) {
   if (!win || dock_item_count >= MAX_DOCK_ITEMS) {
     return;
@@ -30,6 +39,7 @@ void dock_register_window(window_t *win) {
     }
   }
   dock_items[dock_item_count++] = win;
+  dock_damage();
   serial_print("[DOCK] Window Registered\n");
 }
 
@@ -40,6 +50,7 @@ void dock_unregister_window(window_t *win) {
         dock_items[next - 1] = dock_items[next];
       }
       dock_items[--dock_item_count] = NULL;
+      dock_damage();
       serial_print("[DOCK] Window Unregistered\n");
       return;
     }

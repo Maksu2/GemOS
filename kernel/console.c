@@ -83,8 +83,6 @@ static app_t console_window_app;
 static console_session_t console_sessions[CONSOLE_MAX_SESSIONS];
 static uint32_t next_console_handle = 1;
 
-static void console_mark_dirty(void) { kernel_request_redraw(); }
-
 /* What the program shows changed: only its window's client area is drawn
  * again */
 static void console_damage(const console_session_t *session) {
@@ -495,7 +493,6 @@ static void console_window_close(window_t *win) {
     console_release_session(session);
   }
 
-  console_mark_dirty();
   kfree(win);
 }
 
@@ -607,7 +604,6 @@ static int console_create_window(uint32_t owner_pid, const char *title,
   if (graphics) {
     console_window_resized(session);
   }
-  console_mark_dirty();
   serial_print(graphics ? "[WINDOW] Opened PID=" : "[CONSOLE] Opened PID=");
   serial_print_dec(owner_pid);
   serial_print(" handle=");
@@ -806,6 +802,5 @@ void console_destroy_for_pid(uint32_t owner_pid) {
     }
 
     console_release_session(session);
-    console_mark_dirty();
   }
 }

@@ -15,6 +15,8 @@ void app_open(const char *name);
 void app_open_with_file(const char *app_name, const char *path);
 
 /* Some app's windows changed without an event (app_t.changed) */
-bool app_manager_changed(void);
+/* The windows of apps whose content changed without an event (app_t.changed)
+ * are drawn again in the next frame */
+void app_manager_damage_changed(void);
 
 #endif

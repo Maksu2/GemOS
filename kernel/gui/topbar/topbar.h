@@ -15,6 +15,8 @@ void topbar_render(gfx_context_t *ctx);
 
 /* The clock shows another minute than in the last frame drawn */
 bool topbar_clock_changed(void);
+/* Draw the topbar again in the next frame (kernel_damage) */
+void topbar_damage(void);
 
 /*
  * Handle input event.

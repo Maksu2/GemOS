@@ -1,6 +1,7 @@
 #include "topbar.h"
 #include "../../../drivers/rtc.h"
 #include "../../../drivers/serial.h"
+#include "../../../drivers/vbe.h"
 #include "../../app/app.h"
 #include "../../app/app_manager.h"
 #include "../../gfx/font/font.h"
@@ -53,14 +54,22 @@ void topbar_init(void) {
   }
 }
 
+void topbar_damage(void) {
+  kernel_damage(0, 0, (int)(vbe_get_width() / ui_scale), TOPBAR_HEIGHT);
+}
+
 void topbar_on_focus_changed(focus_state_t *state) {
   if (!state)
     return;
 
+  app_t *was = active_app_with_menu;
   if (state->type == FOCUS_WINDOW && state->app && state->app->menu) {
     active_app_with_menu = state->app;
   } else {
     active_app_with_menu = NULL;
+  }
+  if (active_app_with_menu != was) {
+    topbar_damage(); /* the app's menu title appears or goes */
   }
 
   if (menu_is_active()) {

@@ -1137,11 +1137,37 @@ class Smoke:
         self.pointer.move_to(window.close_button())
         self.pointer.click()
 
+    def full_frame_reference(self, name):
+        """A screendump of a full frame: Esc in an open menu is the one
+        input that still draws one (kernel/kernel.c). The pointer goes back
+        where it was, so both pictures have the cursor at the same place."""
+        back = (self.pointer.x, self.pointer.y)
+        full0, _, _ = self.frame_counts()
+        self.pointer.move_to(MENU_GEMOS)
+        self.pointer.click()
+        time.sleep(0.4)
+        self.monitor.cmd("sendkey esc")
+        time.sleep(0.4)
+        self.pointer.move_to(back)
+        full1, _, _ = self.frame_counts()
+        if full1 <= full0:
+            raise SmokeError("frames: Esc in the GemOS menu drew no full frame")
+        return self.screendump(name)
+
+    def same_as_full_frame(self, partial, full):
+        """Pixels that differ between two screendumps, without the clock
+        (it may have shown a new minute meanwhile)."""
+        width = SCREEN_SIZE[0] // UI_SCALE
+        height = SCREEN_SIZE[1] // UI_SCALE
+        return (pixels_changed(partial.logical_area((0, 0, width - 90, 28)),
+                               full.logical_area((0, 0, width - 90, 28))) +
+                pixels_changed(partial.logical_area((0, 28, width, height)),
+                               full.logical_area((0, 28, width, height))))
+
     def partial_frames(self):
         """Typing into UTERM.ELF draws only the window that changed: no
         full frame, and the screen is then exactly what a full frame draws
-        (one is forced with a click on the focused window's title bar,
-        which changes nothing on the screen)."""
+        (full_frame_reference)."""
         name, menu, item, _ = APPS[0]
         opened_re = re.compile(r"\[CONSOLE\] Opened PID=(\d+) handle=\d+ " +
                                Window.GEOMETRY)
@@ -1169,18 +1195,8 @@ class Smoke:
                    "%d full, %d partial frames"
                    % (full1 - full0, partial1 - partial0))
         partial = self.screendump("partial-frames")
-        self.pointer.click()  # on the title bar: a full frame
-        time.sleep(1.0)
-        full = self.screendump("full-frame")
-        # the clock may have shown a new minute meanwhile
-        width = SCREEN_SIZE[0] // UI_SCALE
-        differ = (pixels_changed(partial.logical_area((0, 0, width - 90, 28)),
-                                 full.logical_area((0, 0, width - 90, 28))) +
-                  pixels_changed(
-                      partial.logical_area((0, 28, width,
-                                            SCREEN_SIZE[1] // UI_SCALE)),
-                      full.logical_area((0, 28, width,
-                                         SCREEN_SIZE[1] // UI_SCALE))))
+        full = self.full_frame_reference("full-frame")
+        differ = self.same_as_full_frame(partial, full)
         self.check(differ == 0, "frames: the partial frames drew what a full "
                    "frame draws", "partial-frames.png, full-frame.png, %d "
                    "pixels differ" % differ)
@@ -1404,7 +1420,11 @@ class Smoke:
 
     # -- File Explorer -----------------------------------------------------------
     def window_focus(self):
-        """A hidden Explorer cannot close itself or keep the Terminal unfocused."""
+        """A hidden Explorer cannot close itself or keep the Terminal
+        unfocused. Opening and closing windows, the dock, minimizing and
+        focus changes draw no full frame, and the screen after them is what
+        a full frame draws."""
+        full0, partial0, _ = self.frame_counts()
         explorer = self.open_explorer()
         pid, terminal = self.open_hosted_app(*APPS[0][:3])
         width, height = (v // UI_SCALE for v in SCREEN_SIZE)
@@ -1455,7 +1475,21 @@ class Smoke:
                                            explorer, "focus-restored")
         self.check(restored and "[WM] Close Window" not in self.log_text()[since:],
                    "focus: a click on the wallpaper leaves the hidden Explorer intact")
+        full1, partial1, _ = self.frame_counts()
+        self.check(full1 == full0 and partial1 > partial0,
+                   "frames: opening, focusing, minimizing, restoring and "
+                   "closing windows draw only partial frames",
+                   "%d full, %d partial frames" % (full1 - full0,
+                                                   partial1 - partial0))
         if restored:
+            self.pointer.move_to(outside)
+            partial = self.screendump("clicks-partial")
+            differ = self.same_as_full_frame(
+                partial, self.full_frame_reference("clicks-full"))
+            self.check(differ == 0, "frames: after the clicks the screen is "
+                       "what a full frame draws",
+                       "clicks-partial.png, clicks-full.png, %d pixels differ"
+                       % differ)
             click(explorer.close_button())
 
     def wait_explorer_path(self, path):

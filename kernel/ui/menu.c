@@ -2,6 +2,7 @@
 #include "../../drivers/serial.h"
 #include "../gfx/font/font.h"
 #include "../gfx/primitives.h"
+#include "../gui/topbar/topbar.h"
 #include "../gui/wm/wm.h"
 #include "../include/gui_loop.h"
 #include "theme.h"
@@ -76,8 +77,15 @@ void menu_add_item(menu_t *menu, const char *label, menu_action_t action) {
   menu->height = menu->item_count * MENU_ITEM_HEIGHT + 2; /* +2 for border */
 }
 
+/* The menu's rectangle; a topbar menu also underlines its title there */
 static void menu_damage(const menu_t *menu) {
   kernel_damage(menu->x, menu->y, menu->width, menu->height);
+}
+
+static void menu_damage_title(const menu_t *menu) {
+  if (menu != &context_menu) {
+    topbar_damage();
+  }
 }
 
 void menu_show(menu_t *menu, int x, int y) {
@@ -91,11 +99,13 @@ void menu_show(menu_t *menu, int x, int y) {
   active_menu->hover_index = -1;
 
   menu_damage(menu);
+  menu_damage_title(menu);
 }
 
 void menu_hide(void) {
   if (active_menu) {
     menu_damage(active_menu);
+    menu_damage_title(active_menu);
     active_menu->visible = false;
     active_menu = NULL;
     context_owner = NULL;

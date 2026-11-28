@@ -91,6 +91,16 @@ static bool wm_visible(const window_t *win) {
   return win->visible && !win->minimized;
 }
 
+/* What the window covers is drawn again in the next frame. Every change of
+ * the window stack goes through here (and dock_damage, topbar_damage), so
+ * clicks, opening and closing need no full frame. */
+static void wm_damage_frame(const window_t *win) {
+  if (win && wm_visible(win)) {
+    kernel_damage(win->frame_rect.x, win->frame_rect.y, win->frame_rect.w,
+                  win->frame_rect.h);
+  }
+}
+
 static window_t *wm_top_visible(void) {
   window_t *win = windows_tail;
   while (win && !wm_visible(win)) {
@@ -107,11 +117,14 @@ static void wm_set_focus(window_t *win) {
     menu_close_for_window(focused_window);
     focused_window->focused = false;
     wm_is_dragging = false;
+    wm_damage_frame(focused_window);
   }
   focused_window = win;
   if (win) {
     win->focused = true;
+    wm_damage_frame(win);
   }
+  dock_damage();
   wm_emit_focus_event(win);
 }
 
@@ -247,6 +260,7 @@ void wm_add_window(window_t *win) {
   win->maximized = false;
 
   wm_append(win);
+  wm_damage_frame(win);
 
   if (!(win->flags & WINDOW_FLAG_NO_DOCK)) {
     dock_register_window(win);
@@ -263,6 +277,7 @@ void wm_remove_window(window_t *win) {
   if (wm_press_window == win) {
     wm_press_window = NULL;
   }
+  wm_damage_frame(win);
   wm_unlink(win);
   if (focused_window == win) {
     wm_set_focus(wm_top_visible());
@@ -284,7 +299,10 @@ void wm_focus_window(window_t *win) {
   if (focused_window == win && windows_tail == win)
     return;
 
-  wm_append(win);
+  if (windows_tail != win) {
+    wm_append(win);
+    wm_damage_frame(win);
+  }
   wm_set_focus(win);
 }
 
@@ -294,6 +312,8 @@ void wm_restore_window(window_t *win) {
   }
   win->minimized = false;
   win->visible = true;
+  wm_damage_frame(win);
+  dock_damage();
   wm_focus_window(win);
 }
 
@@ -405,6 +425,7 @@ static window_t *wm_window_at(int x, int y) {
 
 static void wm_toggle_maximize(window_t *win) {
   rect_t frame = win->restore_rect;
+  wm_damage_frame(win);
   if (!win->maximized) {
     win->restore_rect = win->frame_rect;
     frame = wm_work_area();
@@ -415,6 +436,7 @@ static void wm_toggle_maximize(window_t *win) {
   win->height = frame.h;
   win->maximized = !win->maximized;
   window_update_rects(win);
+  wm_damage_frame(win);
   if (win->app && win->app->handle_event) {
     event_t event = {.type = EVENT_WINDOW_RESIZE};
     win->app->handle_event(win, &event);
@@ -451,6 +473,8 @@ static void wm_handle_click(event_t *event) {
     }
     if (rect_contains(&min, x, y)) {
       serial_print("[WM] Minimize (Hide)\n");
+      wm_damage_frame(win);
+      dock_damage();
       win->minimized = true;
       win->visible = false;
       wm_set_focus(wm_top_visible());
@@ -482,7 +506,6 @@ static void wm_handle_context_click(event_t *event) {
       rect_contains(&win->client_rect, x, y)) {
     if (focused_window != win) {
       wm_focus_window(win);
-      kernel_request_redraw();
     }
     win->app->handle_event(win, event);
   }
