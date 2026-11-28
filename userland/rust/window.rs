@@ -57,6 +57,8 @@ pub enum Event {
     LeftRelease,
     Resize { width: i32, height: i32 },
     Menu(u32),
+    /// GemFS changed since this window last heard of it.
+    FsChanged,
 }
 
 #[derive(Clone, Copy)]
@@ -237,6 +239,8 @@ impl Window {
         syscall_result(unsafe { gemos_rust_window_menu(self.0, &menu) }).map(|_| ())
     }
 
+    /// Wait for one event. A timeout, and an event kind this SDK does not
+    /// know yet (a newer kernel), both return `None`.
     pub fn wait_event(&self, timeout_ms: u32) -> Result<Option<Event>> {
         let mut raw = RawEvent::default();
         let ready = syscall_result(unsafe {
@@ -263,7 +267,8 @@ impl Window {
             6 => Event::LeftRelease,
             7 => Event::Resize { width: pointer.x, height: pointer.y },
             8 => Event::Menu(raw.key_code),
-            _ => return Err(INVALID),
+            9 => Event::FsChanged,
+            _ => return Ok(None),
         }))
     }
 }

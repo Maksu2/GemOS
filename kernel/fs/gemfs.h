@@ -92,6 +92,10 @@ void gemfs_shutdown(void);
 
 /* Changes with every modification, so a view knows when to reread. */
 uint32_t gemfs_generation(void);
+/* Called (in the task that made the change, with the lock still held)
+ * after a GemFS call that changed the tree. It must not call GemFS. */
+typedef void (*gemfs_change_hook_t)(void);
+void gemfs_set_change_hook(gemfs_change_hook_t hook);
 
 int gemfs_stat(const char *path, gemfs_stat_t *stat);
 

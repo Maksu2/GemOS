@@ -603,10 +603,16 @@ fn run() -> Result<()> {
     explorer.navigate(Path::home(), &window);
     loop {
         if explorer.dirty {
-            view::render(explorer, &window)?;
+            // A refused frame keeps the last one on screen; the next change
+            // draws again.
+            if view::render(explorer, &window).is_err() {
+                debug_write("[EXPLORER] The kernel refused a frame\n");
+            }
             explorer.dirty = false;
         }
-        let event = window.wait_event(180)?;
+        // The kernel sends FsChanged after any change to GemFS, so the
+        // Explorer sleeps until something happens.
+        let event = window.wait_event(gemos::WAIT_FOREVER)?;
         if matches!(event, Some(Event::CloseRequested)) {
             return Ok(());
         }

@@ -6,6 +6,7 @@
 #include "gfx/icons.h"
 #include "gfx/primitives.h"
 #include "gui/window/window.h"
+#include "fs/gemfs.h"
 #include "gui/user_draw.h"
 #include "gui/wm/wm.h"
 #include "include/gui_loop.h"
@@ -238,11 +239,12 @@ static int console_push_event(console_session_t *session,
     return 0;
   }
 
-  if (event.type == GEMOS_WINDOW_POINTER_MOVE &&
+  if ((event.type == GEMOS_WINDOW_POINTER_MOVE ||
+       event.type == GEMOS_WINDOW_FS_CHANGED) &&
       session->input_head != session->input_tail) {
     uint32_t last = (session->input_head + CONSOLE_INPUT_QUEUE_SIZE - 1U) %
                     CONSOLE_INPUT_QUEUE_SIZE;
-    if (session->input_queue[last].type == GEMOS_WINDOW_POINTER_MOVE) {
+    if (session->input_queue[last].type == event.type) {
       session->input_queue[last] = event;
       return 1;
     }
@@ -497,6 +499,16 @@ static void console_window_close(window_t *win) {
   kfree(win);
 }
 
+/* GemFS hook: every graphical window learns that the tree changed. */
+static void console_fs_changed(void) {
+  for (int i = 0; i < CONSOLE_MAX_SESSIONS; ++i) {
+    console_session_t *session = &console_sessions[i];
+    if (session->in_use && session->commands) {
+      console_push_event(session, (gemos_console_event_t){GEMOS_WINDOW_FS_CHANGED, 0, 0, 0});
+    }
+  }
+}
+
 void console_init(void) {
   memset(console_sessions, 0, sizeof(console_sessions));
   next_console_handle = 1;
@@ -508,6 +520,7 @@ void console_init(void) {
   console_window_app.handle_event = console_handle_event;
   console_window_app.request_close = console_request_close;
   console_window_app.close = console_window_close;
+  gemfs_set_change_hook(console_fs_changed);
 }
 
 static int console_create_window(uint32_t owner_pid, const char *title,

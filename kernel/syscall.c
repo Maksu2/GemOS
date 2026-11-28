@@ -1,6 +1,7 @@
 #include "syscall.h"
 
 #include "console.h"
+#include "fpu.h"
 #include "gdt.h"
 #include "idt.h"
 #include "include/irq.h"
@@ -411,6 +412,19 @@ static uint32_t syscall_file_write(uintptr_t user_path,
   return (uint32_t)result;
 }
 
+static bool path_ends_in(const char *path, const char *extension) {
+  size_t length = strlen(path);
+  size_t tail = strlen(extension);
+  if (length < tail) return false;
+  path += length - tail;
+  while (*extension) {
+    char ch = *path++;
+    if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+    if (ch != *extension++) return false;
+  }
+  return true;
+}
+
 static int syscall_window_open(const char *title_ptr, uint32_t width,
                                uint32_t height, uint32_t icon) {
   char title[GEMOS_CONSOLE_MAX_TITLE + 1];
@@ -446,7 +460,16 @@ static int syscall_text_width(const char *text_ptr, uint32_t size) {
   if (!copy_user_string(text, text_ptr, sizeof(text))) {
     return GEMOS_ERR_FAULT;
   }
-  return font_text_width(text, (int)size);
+  /* The font engine computes with floats. In a syscall the FPU holds the
+   * process's state: keep it aside and measure from a clean state. */
+  static fpu_state_t process_fpu;
+  static fpu_state_t clean_fpu;
+  fpu_save(&process_fpu);
+  fpu_init_state(&clean_fpu);
+  fpu_restore(&clean_fpu);
+  int width = font_text_width(text, (int)size);
+  fpu_restore(&process_fpu);
+  return width;
 }
 
 static int directory_error(int error) {
@@ -504,6 +527,10 @@ static int syscall_entry_rename(uintptr_t path_ptr, uintptr_t name_ptr) {
   if (result != GEMOS_OK) return result;
   result = (int)copy_user_path(name, name_ptr);
   if (result != GEMOS_OK) return result;
+  /* As with SYS_file_write, processes neither change programs nor make them. */
+  if (path_ends_in(path, ".elf") || path_ends_in(name, ".elf")) {
+    return GEMOS_ERR_DENIED;
+  }
   if (strcmp(path[0] == '/' ? path + 1 : path, GEMOS_HOME_PATH + 1) == 0) {
     gemfs_stat_t stat;
     if (gemfs_stat(path, &stat) == GEMFS_OK && stat.type == GEMFS_TYPE_DIR) {
@@ -514,18 +541,6 @@ static int syscall_entry_rename(uintptr_t path_ptr, uintptr_t name_ptr) {
   return result == GEMFS_OK ? GEMOS_OK : directory_error(result);
 }
 
-static bool path_ends_in(const char *path, const char *extension) {
-  size_t length = strlen(path);
-  size_t tail = strlen(extension);
-  if (length < tail) return false;
-  path += length - tail;
-  while (*extension) {
-    char ch = *path++;
-    if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
-    if (ch != *extension++) return false;
-  }
-  return true;
-}
 
 static int syscall_open_path(uintptr_t path_ptr) {
   char path[GEMFS_PATH_MAX];

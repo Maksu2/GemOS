@@ -77,7 +77,8 @@ impl Console {
         Ok(())
     }
 
-    /// Wait for input or a close request. A timeout returns `None`.
+    /// Wait for input or a close request. A timeout, and an event kind this
+    /// SDK does not know yet, return `None`.
     pub fn wait_event(&self, timeout_ms: u32) -> Result<Option<Event>> {
         let mut event = RawEvent::default();
         // The kernel writes at most one event to this live, writable object.
@@ -92,6 +93,7 @@ impl Console {
                 modifiers: event.modifiers,
             })),
             (1, EVENT_CLOSE_REQUEST) => Ok(Some(Event::CloseRequested)),
+            (1, _) => Ok(None),
             _ => Err(INVALID),
         }
     }

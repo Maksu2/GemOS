@@ -18,6 +18,7 @@ enum {
   GEMOS_WINDOW_LEFT_RELEASE = 6,
   GEMOS_WINDOW_RESIZE = 7,      /* client width, client height, 0 */
   GEMOS_WINDOW_MENU_ACTION = 8, /* action ID, 0, 0 */
+  GEMOS_WINDOW_FS_CHANGED = 9,  /* 0, 0, 0: GemFS changed; read it again */
 };
 
 enum {

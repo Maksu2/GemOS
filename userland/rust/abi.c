@@ -64,7 +64,8 @@ _Static_assert(GEMOS_KEYMOD_CTRL == 1 && GEMOS_KEYMOD_ALT == 4,
                "Update the Rust key modifiers");
 _Static_assert(GEMOS_WINDOW_LEFT_PRESS == 3 && GEMOS_WINDOW_RIGHT_PRESS == 4 &&
                    GEMOS_WINDOW_POINTER_MOVE == 5 && GEMOS_WINDOW_LEFT_RELEASE == 6 &&
-                   GEMOS_WINDOW_RESIZE == 7 && GEMOS_WINDOW_MENU_ACTION == 8,
+                   GEMOS_WINDOW_RESIZE == 7 && GEMOS_WINDOW_MENU_ACTION == 8 &&
+                   GEMOS_WINDOW_FS_CHANGED == 9,
                "Update the Rust window events");
 _Static_assert(GEMOS_DRAW_LIMIT == 192 && sizeof(gemos_draw_command_t) == 156 &&
                    GEMOS_DRAW_FILL == 1 && GEMOS_DRAW_FRAME == 2 &&
