@@ -75,7 +75,7 @@ def test_profile(args, profile):
         run.start_qemu()
         if not run.boot():
             raise smoke.SmokeError("GemOS did not boot")
-        explorer = run.open_explorer()
+        explorer = run.open_explorer(root=True)
         # The seeded Rust ELF is the first entry on this GemFS disk.
         point = smoke.explorer_entry(explorer, 0)
 

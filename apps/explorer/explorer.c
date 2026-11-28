@@ -1,4 +1,5 @@
 #include "explorer.h"
+#include "../../drivers/serial.h"
 #include "../../kernel/app/app_manager.h"
 #include "../../kernel/fs/gemfs.h"
 #include "../../kernel/gfx/font/font.h"
@@ -10,8 +11,10 @@
 #include "../../kernel/memory/kstack.h"
 #include "../../kernel/process.h"
 #include "../../kernel/scheduler.h"
+#include "../../kernel/ui/menu.h"
 #include "../../kernel/ui/theme.h"
 #include <gemos/console_abi.h>
+#include <gemos/paths.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -22,6 +25,8 @@
 #define TYPE_WIDTH 108
 #define SCROLL_WIDTH 14
 #define ITEM_FONT 13
+#define DOUBLE_CLICK_MS 500U
+#define DOUBLE_CLICK_DISTANCE 5
 
 /* Overlapping chunks cover the viewport at any supported VBE height. The
  * reader still counts every entry, so scrolling can reach the last one. */
@@ -30,6 +35,7 @@
 
 static app_t explorer_app;
 static unsigned open_windows;
+static bool home_ready;
 static char current_path[GEMFS_PATH_MAX] = "/";
 static char status[GEMFS_NAME_MAX + 26];
 static bool status_error;
@@ -37,6 +43,11 @@ static int first_row;
 static int selected = -1;
 static window_t *scroll_drag_window;
 static int scroll_drag_offset;
+static struct {
+  window_t *window;
+  uint32_t time_ms;
+  int x, y;
+} last_click;
 
 static gemfs_entry_t entries[CACHE_SIZE];
 static int cached_first;
@@ -196,12 +207,17 @@ static void explorer_dismiss_name(void) {
 }
 
 static void explorer_invalidate_listing(void) {
+  window_t *focused = wm_get_focused_window();
+  if (focused && focused->app == &explorer_app) {
+    menu_close_for_window(focused);
+  }
   explorer_dismiss_name();
   listed = false;
   cached_count = 0;
   total_count = 0;
   first_row = 0;
   selected = -1;
+  last_click.window = NULL;
   status[0] = '\0';
   wm_damage_app_clients(&explorer_app);
 }
@@ -227,6 +243,7 @@ static void explorer_publish_listing(void) {
                  memcmp(entries, listing.entries, bytes) != 0;
   if (listed && listed_generation != listing.generation && changed) {
     selected = -1;
+    last_click.window = NULL;
   }
   if (changed) {
     memcpy(entries, listing.entries, bytes);
@@ -240,6 +257,11 @@ static void explorer_publish_listing(void) {
   if (changed || !listed || listing_failed != failed) {
     wm_damage_app_clients(&explorer_app);
   }
+  if (!listed && !failed) {
+    serial_print("[EXPLORER] Opened ");
+    serial_print(current_path);
+    serial_print("\n");
+  }
   listed = true;
   listed_generation = listing.generation;
   listing_failed = failed;
@@ -250,6 +272,7 @@ static void explorer_publish_name(void) {
     if (name_prompt.result == GEMFS_OK && listed_generation != gemfs_generation()) {
       cached_count = 0;
       selected = -1;
+      last_click.window = NULL;
     }
     if (name_prompt.window) {
       explorer_status(name_prompt.rename ? "Renamed to " : "Created ",
@@ -392,7 +415,16 @@ static void explorer_toolbar(window_t *win) {
   explorer_button(ctx, up, "Up", current_path[1] ? UI_INK : UI_MUTED);
   explorer_button(ctx, create, "New Folder",
                   gemfs_available() && worker_task >= 0 ? UI_INK : UI_MUTED);
-  font_draw_text_fit(ctx, path_x, client.y + 8, current_path, ITEM_FONT, UI_INK,
+  char home_path[GEMFS_PATH_MAX];
+  const char *path = current_path;
+  size_t home_len = sizeof(GEMOS_HOME_PATH) - 1;
+  if (home_ready && strncmp(path, GEMOS_HOME_PATH, home_len) == 0 &&
+      (path[home_len] == '\0' || path[home_len] == '/')) {
+    home_path[0] = '~';
+    strcpy(home_path + 1, path + home_len);
+    path = home_path;
+  }
+  font_draw_text_fit(ctx, path_x, client.y + 8, path, ITEM_FONT, UI_INK,
                      create.x - 8 - path_x);
 }
 
@@ -515,6 +547,7 @@ static void explorer_scroll_to(explorer_view_t view, int top) {
   int clamped = top < 0 ? 0 : top > view.last_top ? view.last_top : top;
   if (first_row != clamped) {
     first_row = clamped;
+    last_click.window = NULL;
     wm_damage_app_clients(&explorer_app);
   }
 }
@@ -531,12 +564,22 @@ static void explorer_parent(void) {
   explorer_invalidate_listing();
 }
 
+static bool explorer_is_home(const gemfs_entry_t *entry) {
+  return home_ready && current_path[1] == '\0' && entry->type == GEMFS_TYPE_DIR &&
+         strcmp(entry->name, GEMOS_HOME_PATH + 1) == 0;
+}
+
 static void explorer_begin_name(window_t *win, bool rename) {
   if (worker_task < 0 || !gemfs_available() || name_prompt.state == NAME_PENDING ||
       name_prompt.state == NAME_READY) {
     return;
   }
   const gemfs_entry_t *entry = rename ? explorer_entry(selected) : NULL;
+  if (entry && explorer_is_home(entry)) {
+    explorer_status("", "Home keeps its name", true);
+    wm_damage_app_clients(&explorer_app);
+    return;
+  }
   if (rename && (!entry || !explorer_join(name_prompt.path, entry->name))) {
     wm_damage_app_clients(&explorer_app);
     return;
@@ -664,6 +707,7 @@ static void explorer_open_entry(int index) {
   }
 
   selected = -1;
+  last_click.window = NULL;
   if (is_text_file(entry->name)) {
     app_open_with_file("Text Editor", path);
   } else if (strends(entry->name, ".elf")) {
@@ -676,7 +720,64 @@ static void explorer_open_entry(int index) {
   wm_damage_app_clients(&explorer_app);
 }
 
-static void explorer_click(window_t *win, explorer_view_t view, int x, int y) {
+static void explorer_menu_open(window_t *win) {
+  (void)win;
+  explorer_open_entry(selected);
+}
+
+static void explorer_menu_rename(window_t *win) { explorer_begin_name(win, true); }
+
+static void explorer_menu_new_folder(window_t *win) {
+  explorer_begin_name(win, false);
+}
+
+static void explorer_context_click(window_t *win, explorer_view_t view,
+                                   int x, int y) {
+  last_click.window = NULL;
+  rect_t content = view.list;
+  content.h = win->client_rect.y + win->client_rect.h - FOOTER_HEIGHT - content.y;
+  if (view.last_top == 0) {
+    content.w += SCROLL_WIDTH;
+  }
+  if (!listed || listing_failed || name_prompt.state != NAME_IDLE ||
+      !rect_contains(&content, x, y)) {
+    return;
+  }
+  int row = (y - view.list.y) / ROW_HEIGHT;
+  int index = first_row + row;
+  const gemfs_entry_t *entry = row < view.rows ? explorer_entry(index) : NULL;
+  menu_context_item_t items[2];
+  int count = 0;
+  if (entry) {
+    selected = index;
+    if (entry->type == GEMFS_TYPE_DIR || is_text_file(entry->name) ||
+        strends(entry->name, ".elf")) {
+      items[count++] = (menu_context_item_t){"Open", explorer_menu_open};
+    }
+    if (!explorer_is_home(entry)) {
+      items[count++] = (menu_context_item_t){"Rename", explorer_menu_rename};
+    }
+  } else if (row >= view.rows || index >= total_count) {
+    selected = -1;
+    items[count++] = (menu_context_item_t){"New Folder", explorer_menu_new_folder};
+  }
+  status[0] = '\0';
+  wm_damage_app_clients(&explorer_app);
+  menu_show_context(win, x, y, items, count);
+}
+
+static void explorer_click(window_t *win, explorer_view_t view,
+                           const event_t *event) {
+  int x = event->data.mouse.x;
+  int y = event->data.mouse.y;
+  uint32_t time_ms = event->data.mouse.time_ms;
+  int dx = x - last_click.x;
+  int dy = y - last_click.y;
+  bool double_click = last_click.window == win &&
+                      time_ms - last_click.time_ms <= DOUBLE_CLICK_MS &&
+                      dx >= -DOUBLE_CLICK_DISTANCE && dx <= DOUBLE_CLICK_DISTANCE &&
+                      dy >= -DOUBLE_CLICK_DISTANCE && dy <= DOUBLE_CLICK_DISTANCE;
+  last_click.window = NULL;
   rect_t up = explorer_up_button(win);
   rect_t create = explorer_new_button(win);
   status[0] = '\0';
@@ -697,11 +798,17 @@ static void explorer_click(window_t *win, explorer_view_t view, int x, int y) {
   } else if (rect_contains(&view.list, x, y)) {
     int index = first_row + (y - view.list.y) / ROW_HEIGHT;
     if (explorer_entry(index)) {
-      if (selected == index) {
+      if (double_click && selected == index) {
         explorer_open_entry(index);
       } else {
         selected = index;
+        last_click.window = win;
+        last_click.time_ms = time_ms;
+        last_click.x = x;
+        last_click.y = y;
       }
+    } else if (index >= total_count) {
+      selected = -1;
     }
   }
   wm_damage_app_clients(&explorer_app);
@@ -749,7 +856,8 @@ static void explorer_handle_event(window_t *win, event_t *event) {
       if (event->type == EVENT_KEY_PRESS) {
         explorer_name_key((uint8_t)event->data.key.character,
                           event->data.key.modifiers);
-      } else if (event->type == EVENT_MOUSE_CLICK) {
+      } else if (event->type == EVENT_MOUSE_CLICK &&
+                 event->data.mouse.button == MOUSE_BUTTON_LEFT) {
         explorer_name_click(win, event->data.mouse.x, event->data.mouse.y);
       }
     }
@@ -757,7 +865,11 @@ static void explorer_handle_event(window_t *win, event_t *event) {
   }
   explorer_view_t view = explorer_view(win);
   if (event->type == EVENT_MOUSE_CLICK) {
-    explorer_click(win, view, event->data.mouse.x, event->data.mouse.y);
+    if (event->data.mouse.button == MOUSE_BUTTON_RIGHT) {
+      explorer_context_click(win, view, event->data.mouse.x, event->data.mouse.y);
+    } else if (event->data.mouse.button == MOUSE_BUTTON_LEFT) {
+      explorer_click(win, view, event);
+    }
   } else if (event->type == EVENT_MOUSE_MOVE && scroll_drag_window == win &&
              view.last_top > 0 && view.rows > 0) {
     int span = view.track.h - explorer_thumb(view).h;
@@ -767,6 +879,7 @@ static void explorer_handle_event(window_t *win, event_t *event) {
       explorer_scroll_to(view, (clamped * view.last_top + span / 2) / span);
     }
   } else if (event->type == EVENT_KEY_PRESS) {
+    last_click.window = NULL;
     explorer_key(win, view, (uint8_t)event->data.key.character);
   }
 }
@@ -777,6 +890,13 @@ static void explorer_open(void) {
     return;
   }
 
+  if (!open_windows) {
+    strcpy(current_path, home_ready ? GEMOS_HOME_PATH : "/");
+    explorer_invalidate_listing();
+    if (!home_ready && gemfs_available()) {
+      explorer_status("", "Home unavailable, showing /", true);
+    }
+  }
   window_init(win, 100, 100, 520, 400);
   win->app = &explorer_app;
   window_set_title(win, "File Explorer");
@@ -785,6 +905,9 @@ static void explorer_open(void) {
 }
 
 static void explorer_close(window_t *win) {
+  if (last_click.window == win) {
+    last_click.window = NULL;
+  }
   if (name_prompt.window == win) {
     explorer_cancel_name();
   }
@@ -796,6 +919,15 @@ static void explorer_close(window_t *win) {
 }
 
 void explorer_init(void) {
+  if (gemfs_available()) {
+    gemfs_stat_t home;
+    int result = gemfs_stat(GEMOS_HOME_PATH, &home);
+    if (result == GEMFS_OK) {
+      home_ready = home.type == GEMFS_TYPE_DIR;
+    } else if (result == GEMFS_ERR_NOENT) {
+      home_ready = gemfs_mkdir(GEMOS_HOME_PATH) == GEMFS_OK;
+    }
+  }
   int stack_slot = kstack_alloc();
   if (stack_slot >= 0) {
     worker_task = task_create_kernel(explorer_worker, kstack_top(stack_slot));

@@ -12,6 +12,13 @@
 
 typedef void (*menu_action_t)(void);
 
+struct window;
+
+typedef struct {
+  const char *label;
+  void (*action)(struct window *owner);
+} menu_context_item_t;
+
 typedef struct {
   char label[32];
   menu_action_t action;
@@ -35,6 +42,12 @@ void menu_add_item(menu_t *menu, const char *label, menu_action_t action);
 void menu_show(menu_t *menu, int x, int y);
 void menu_hide(void);
 bool menu_is_active(void);
+
+/* A system menu owned by a window. Item labels and actions are copied. */
+void menu_show_context(struct window *owner, int x, int y,
+                       const menu_context_item_t *items, int count);
+bool menu_is_context_active(void);
+void menu_close_for_window(const struct window *owner);
 
 /* Returns true if event was consumed by the menu system */
 bool menu_handle_event(event_t *event);

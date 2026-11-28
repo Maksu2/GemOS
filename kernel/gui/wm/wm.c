@@ -6,6 +6,7 @@
 #include "../../gfx/primitives.h"
 #include "../../ui/dock/dock.h"
 #include "../../ui/focus.h"
+#include "../../ui/menu.h"
 #include "../../ui/theme.h"
 #include "../../ui/ui_scale.h"
 #include "../../include/gui_loop.h"
@@ -103,6 +104,7 @@ static void wm_set_focus(window_t *win) {
     return;
   }
   if (focused_window) {
+    menu_close_for_window(focused_window);
     focused_window->focused = false;
     wm_is_dragging = false;
   }
@@ -257,6 +259,7 @@ void wm_remove_window(window_t *win) {
   if (!win)
     return;
 
+  menu_close_for_window(win);
   if (wm_press_window == win) {
     wm_press_window = NULL;
   }
@@ -463,12 +466,34 @@ static void wm_handle_click(event_t *event) {
   }
 }
 
+static void wm_handle_context_click(event_t *event) {
+  int x = event->data.mouse.x;
+  int y = event->data.mouse.y;
+  rect_t area = wm_work_area();
+  if (!rect_contains(&area, x, y)) {
+    return;
+  }
+  window_t *win = wm_window_at(x, y);
+  if (win && win->app && win->app->handle_event &&
+      rect_contains(&win->client_rect, x, y)) {
+    if (focused_window != win) {
+      wm_focus_window(win);
+      kernel_request_redraw();
+    }
+    win->app->handle_event(win, event);
+  }
+}
+
 void wm_handle_event(event_t *event) {
   if (!event)
     return;
 
   if (event->type == EVENT_MOUSE_CLICK) {
-    wm_handle_click(event);
+    if (event->data.mouse.button == MOUSE_BUTTON_LEFT) {
+      wm_handle_click(event);
+    } else if (event->data.mouse.button == MOUSE_BUTTON_RIGHT) {
+      wm_handle_context_click(event);
+    }
   } else if (event->type == EVENT_MOUSE_MOVE) {
     if (wm_is_dragging && focused_window) {
       int mx = event->data.mouse.x;

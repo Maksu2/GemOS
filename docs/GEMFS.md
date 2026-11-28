@@ -76,6 +76,11 @@ inode except the root has exactly one directory entry.
 Names separated by `/`, relative to the root; a leading `/` is optional.
 At most 127 bytes. Names are case sensitive.
 
+GemOS creates `/Home` on a mounted data disk if the name is free. The
+Explorer displays this directory as `~` and opens there. UTEXTEDIT expands
+`~/` and relative names in its file prompts to `/Home/`. Applications and
+host tools can use the absolute pathname `/Home`.
+
 ## Update order
 
 Writes are ordered so that a crash leaves at worst blocks or inodes that are

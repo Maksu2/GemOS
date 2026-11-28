@@ -459,6 +459,19 @@ void kernel_main(const boot_info_t *loader_info) {
         cursor_moved = true;
       } else if (ev.type == EVENT_MOUSE_CLICK ||
                  ev.type == EVENT_MOUSE_RELEASE) {
+        if (ev.data.mouse.button != MOUSE_BUTTON_LEFT) {
+          if (ev.type == EVENT_MOUSE_CLICK &&
+              ev.data.mouse.button == MOUSE_BUTTON_RIGHT &&
+              !(ev.data.mouse.buttons & MOUSE_BUTTON_LEFT)) {
+            menu_hide();
+            wm_handle_event(&ev);
+          }
+          continue;
+        }
+        if (menu_is_context_active()) {
+          menu_handle_event(&ev);
+          continue;
+        }
         /* A release ends a window drag wherever it happens, also over
          * the topbar or the dock, which take the event below. */
         if (ev.type == EVENT_MOUSE_RELEASE) {

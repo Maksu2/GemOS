@@ -24,7 +24,7 @@ Pick your platform and extract its ZIP. Each package contains one launcher with 
 
 The Mac launcher installs QEMU through Homebrew when needed. The Windows launcher uses WinGet when available. Linux uses the distribution's QEMU with desktop display support. On Debian or Ubuntu install `qemu-system-x86` and `qemu-system-gui`.
 
-Open **Apps → File Explorer**, make a folder and press **F2** to rename it. Use **GemOS → Shutdown** at the end of a session. The next launcher reuses your data disk from the same location.
+Open **Apps → File Explorer** to start in `~`, your documents folder. Right-click empty space for **New Folder**, or a file or folder for **Rename**. Double-click a `.txt` file to open it in UTEXTEDIT. Click **Up** from `~` to reach older root files and the bundled `.ELF` programs. Use **GemOS → Shutdown** at the end of a session. The next launcher reuses your data disk from the same location.
 
 | Host | Persistent data disk |
 | --- | --- |
@@ -72,7 +72,7 @@ Open **Apps → File Explorer**, make a folder and press **F2** to rename it. Us
 - window manager: new windows open between the topbar and the dock and cascade, dragging keeps the title bar reachable, text is clipped to its window
 - graphite desktop with light windows, a rust-colored focus marker and a dock with window titles and icons
 - Shutdown waits for the file system to finish writing. It turns the machine off with ACPI on QEMU and Bochs, or halts and says it is safe to turn it off
-- File Explorer lists names and types, opens text files in the editor and starts programs from disk. Scroll with the scrollbar, arrow keys, Page Up, Page Down, Home or End. Use New Folder to enter a folder name and F2 to rename the selected file or folder
+- File Explorer starts in `~` (`/Home`). Its system context menu offers **Open** and **Rename** where applicable, or **New Folder** on empty space. Enter opens the selected item and F2 renames it. Scroll with the scrollbar, arrow keys, Page Up, Page Down, Home or End
 - ATA PIO with IDENTIFY, timeouts and error checks; without a data disk the system runs without a file system
 - GemFS v3 on a whole disk: a superblock with a checksum, a block bitmap, inodes and directories, files up to about 4 MB. The kernel mounts only a disk with a valid superblock, never formats one and never writes to a disk it has not mounted; `tools/mkgemfs` makes and inspects disks on the host
 - writes are ordered so that a crash keeps every file whole: at worst it leaves blocks and inodes that nothing uses, and the next mount frees them
@@ -117,7 +117,7 @@ userland apps: UTERM.ELF, ABOUT.ELF, UTEXTEDIT.ELF
 | --- | --- | --- |
 | `UTERM.ELF` | Usable | Real Ring 3 terminal with input, output and hosted-window lifecycle |
 | `ABOUT.ELF` | Stable | Small polished userland app with timed updates and clean close flow |
-| `UTEXTEDIT.ELF` | Usable | Hosted editor that opens and saves text files (up to 8 KB) on GemFS, asks before unsaved changes are lost, and opens the file the File Explorer hands it |
+| `UTEXTEDIT.ELF` | Usable | Hosted editor that opens and saves text files (up to 8 KB) on GemFS, starts its file prompts at `~/`, and asks before unsaved changes are lost |
 
 ### Rust applications
 
@@ -130,7 +130,7 @@ rustup toolchain install 1.100.1 --profile minimal --target i586-unknown-linux-g
 make run-rust RUSTC='rustc +1.100.1'
 ```
 
-Open **Apps → File Explorer → RUSTDEMO.ELF**. The demo reads a GemFS text file, displays it, and saves a copy on the demo disk. Press **Esc** or click **X** to close it. Press **P** to try a panic, then reopen the app. QEMU writes to a temporary overlay for this session.
+Open **Apps → File Explorer**, go **Up**, and double-click `RUSTDEMO.ELF`. The demo reads a GemFS text file, displays it, and saves a copy on the demo disk. Press **Esc** or click **X** to close it. Press **P** to try a panic, then reopen the app. QEMU writes to a temporary overlay for this session.
 
 `make test-rust RUSTC='rustc +1.100.1'` runs the same ELF on Pentium II, QEMU32, Intel Nehalem and AMD Opteron profiles. It checks console input, recovery after a panic and the saved file. GitHub Actions includes these results in **PR checks**.
 
@@ -162,7 +162,7 @@ make all          # build/gemos.img (floppy) and build/gemos-hdd.img
 tools/smoke.sh    # build, boot headless in QEMU, start UTERM/ABOUT/UTEXTEDIT, shut down
 tools/smoke.sh --editor   # UTEXTEDIT with files: save as, reopen from the File Explorer,
                           # the unsaved-changes question, a refused save over a program
-tools/smoke.sh --explorer # create and rename entries, then reboot and check the same disk
+tools/smoke.sh --explorer # context menus, Home, rename and double-click after reboot
 tools/smoke.sh --stress   # 25 cycles of opening, typing into and closing them
 tools/smoke.sh --matrix   # smoke test on 32/64/256 MB, no data disk, 4 MB VRAM, hard disk boot,
                           # disks without GemFS that must stay unchanged, a second boot,

@@ -38,6 +38,7 @@
 #include "../apps/explorer/explorer.h"
 #include "app/app_manager.h"
 #include "fs/gemfs.h"
+#include <gemos/paths.h>
 #include "gfx/context.h"
 #include "gfx/font/font.h"
 #include "gui/wm/wm.h"
@@ -957,6 +958,7 @@ static void selftest_fs_fallback(void) {
  * 128 KB write then takes over half a second. */
 #define LONGIO_DELAY_MS 2U
 #define LONGIO_DISK_MS (GEMOS_LONGIO_SIZE / 512U * LONGIO_DELAY_MS)
+#define EXPLORER_PROBE_FILE "Explorer selftest.txt"
 
 static volatile uint32_t gui_iterations;
 /* A GemFS call the GUI task makes when asked (selftest_gui_iteration) */
@@ -999,7 +1001,7 @@ static void selftest_explorer_iteration(void) {
       explorer_probe_iterations++;
     }
     if (explorer_probe_window && gemfs_generation() != explorer_probe_generation &&
-        explorer_has_current_entry("UTERM.ELF")) {
+        explorer_has_current_entry(EXPLORER_PROBE_FILE)) {
       explorer_probe_listed = true;
     }
     break;
@@ -1287,6 +1289,12 @@ static void selftest_longio_gui(void) {
 }
 
 static void selftest_longio_explorer(void) {
+  const char *path = GEMOS_HOME_PATH "/" EXPLORER_PROBE_FILE;
+  const char marker = 'x';
+  if (!selftest_check(gemfs_write(path, &marker, 1, 0, 0) == 1,
+                      "explorer: a test file is available in Home")) {
+    return;
+  }
   selftest_exit_t exit;
   int task;
   int pid = selftest_spawn_longio(GEMOS_LONGIO_TIMED, &task);
@@ -1316,6 +1324,8 @@ static void selftest_longio_explorer(void) {
   if (pid >= 0 && !finished) {
     process_kill_pid((uint32_t)pid, -1);
   }
+  selftest_check(gemfs_delete(path) == GEMFS_OK,
+                 "explorer: the Home test file was removed");
 }
 
 static void selftest_longio(void) {
