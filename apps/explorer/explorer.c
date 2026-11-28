@@ -107,11 +107,6 @@ static rect_t explorer_up_button(const window_t *win) {
   return (rect_t){win->client_rect.x + 8, win->client_rect.y + 4, 38, 24};
 }
 
-static rect_t explorer_new_button(const window_t *win) {
-  rect_t client = win->client_rect;
-  return (rect_t){client.x + client.w - 106, client.y + 4, 98, 24};
-}
-
 static bool strends(const char *str, const char *suffix) {
   size_t length = strlen(str);
   size_t tail = strlen(suffix);
@@ -403,7 +398,6 @@ static void explorer_toolbar(window_t *win) {
   gfx_context_t *ctx = &win->ctx;
   rect_t client = win->client_rect;
   rect_t up = explorer_up_button(win);
-  rect_t create = explorer_new_button(win);
   int path_x = up.x + up.w + 12;
 
   gfx_fill_rect(ctx, client.x, client.y + TOOLBAR_HEIGHT - 1, client.w, 1,
@@ -413,8 +407,6 @@ static void explorer_toolbar(window_t *win) {
     return;
   }
   explorer_button(ctx, up, "Up", current_path[1] ? UI_INK : UI_MUTED);
-  explorer_button(ctx, create, "New Folder",
-                  gemfs_available() && worker_task >= 0 ? UI_INK : UI_MUTED);
   char home_path[GEMFS_PATH_MAX];
   const char *path = current_path;
   size_t home_len = sizeof(GEMOS_HOME_PATH) - 1;
@@ -425,7 +417,7 @@ static void explorer_toolbar(window_t *win) {
     path = home_path;
   }
   font_draw_text_fit(ctx, path_x, client.y + 8, path, ITEM_FONT, UI_INK,
-                     create.x - 8 - path_x);
+                     client.x + client.w - 8 - path_x);
 }
 
 static rect_t explorer_thumb(explorer_view_t view) {
@@ -779,12 +771,9 @@ static void explorer_click(window_t *win, explorer_view_t view,
                       dy >= -DOUBLE_CLICK_DISTANCE && dy <= DOUBLE_CLICK_DISTANCE;
   last_click.window = NULL;
   rect_t up = explorer_up_button(win);
-  rect_t create = explorer_new_button(win);
   status[0] = '\0';
   if (rect_contains(&up, x, y)) {
     explorer_parent();
-  } else if (rect_contains(&create, x, y)) {
-    explorer_begin_name(win, false);
   } else if (view.last_top > 0 && view.rows > 0 &&
              rect_contains(&view.track, x, y)) {
     rect_t thumb = explorer_thumb(view);

@@ -1468,6 +1468,10 @@ class Smoke:
         if not self.wait_for(listed, self.args.app_timeout):
             raise SmokeError("Explorer did not list " + path)
 
+    def explorer_up(self, window):
+        self.pointer.move_to((window.x + 27, window.y + 42))
+        self.pointer.click()
+
     def open_explorer(self, root=False):
         """Open File Explorer in Home. Use Up to reach programs at the root."""
         placed_re = re.compile(r"\[WM\] Placed " + Window.GEOMETRY)
@@ -1487,8 +1491,7 @@ class Smoke:
         if not self.check_window_drawn("File Explorer in Home", window, "explorer-ready"):
             raise SmokeError("File Explorer did not draw its home window")
         if root:
-            self.pointer.move_to((window.x + 27, window.y + 42))
-            self.pointer.click()
+            self.explorer_up(window)
             self.wait_explorer_path("/")
         return window
 
@@ -1956,8 +1959,7 @@ class Smoke:
         self.explorer_screen(shot, what, probe)
 
     def explorer_new_folder(self, window):
-        self.pointer.move_to((window.x + window.w - 53, window.y + 42))
-        self.pointer.click()
+        self.explorer_context_action(explorer_entry(window, 3), 1, 0, "context-new-folder")
 
     def explorer_select_row(self, window, row):
         self.pointer.move_to(explorer_entry(window, row))
@@ -1996,14 +1998,19 @@ class Smoke:
 
     def explorer_names(self):
         window = self.open_explorer()
+        path_end = (window.x + window.w - 53, window.y + 31)
+        self.explorer_screen("home-toolbar", "the path has room across the toolbar",
+                             lambda image: image.logical_rgb(path_end) == PAPER_RGB)
         blank = explorer_entry(window, 3)
         menu = self.explorer_context(blank, 1, "context-empty")
-        self.explorer_new_folder(window)  # Click the toolbar while the popup owns input.
+        since = len(self.log_text())
+        self.explorer_up(window)
         self.explorer_screen("context-dismissed", "an outside click only dismisses the menu",
                              lambda image: image.logical_rgb((menu.x + 24, menu.y)) == PAPER_RGB)
-        self.explorer_name_screen(window, "context-no-input", "the toolbar did not receive the click",
-                                  editing=False)
-        self.explorer_context_action(blank, 1, 0, "context-new-folder")
+        opened_root = re.compile(r"\[EXPLORER\] Opened /\r?\n")
+        navigated = self.wait_for(lambda text: opened_root.search(text, since), 0.75)
+        self.check(not navigated, "explorer: the dismissed menu leaves Home open")
+        self.explorer_new_folder(window)
         self.explorer_name_screen(window, "new-folder", "right-click New Folder shows the input")
         self.type_text("cancelled")
         self.monitor.cmd("sendkey esc")
