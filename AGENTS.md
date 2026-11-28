@@ -1,17 +1,6 @@
 # GemOS — instrukcje dla agentów
 
-Opis stanu na podstawie kodu. Audyt z września 2026 opisuje wcześniejsze etapy. [Audyt GemOS](docs/AUDIT-2026-09.md)
-
-## Postęp migracji Explorera do Ring 3 (2026-11-28)
-
-- Launcher uruchamia `EXPLORER.ELF` w Ring 3. SDK Rust ma polecenia rysowania, zdarzenia okna, menu systemowe i stronicowany odczyt katalogów GemFS. Explorer zaczyna w Home i używa wspólnego menu do tworzenia i zmiany nazw.
-- Widok katalogu pokazuje ścieżkę nad listą, wyciszone nagłówki i liczbę wpisów w stopce. Jądro przycina polecenia rysowania do obszaru klienta.
-- Loader przywraca katalog stron procesu wywołującego po skopiowaniu segmentów ELF i argumentów. Explorer może otworzyć edytor i inne programy oraz dalej obsługiwać własne okno.
-- QEMU potwierdził standardowy smoke, 25 cykli stress, edytor, oba tryby Explorera i demo Rust na czterech profilach x86. Dwa uruchomienia autotestu potwierdziły działanie pulpitu podczas długiego zapisu i ponowne otwarcie Explorera po panice.
-- Przeszedł test ISO El Torito i dwukrotny start z linuksowego launchera z zachowaniem folderu na dysku danych.
-- W próbie QEMU pulpit z Explorerem otwierał plik w UTEXTEDIT i kończył się przez Shutdown przy 13 MiB RAM w 1280×800 i przy 17 MiB w 1920×1080. Odpowiednio 12 i 16 MiB nie wystarczyło dla tych trybów. Backbuffer zajmował 4 096 000 B lub 8 294 400 B. Profil z 32 MiB RAM, 4 MiB VRAM i Pentium II bez FXSR przeszedł cały test Explorera.
-
-Macierz rozruchowa na moment zapisu ma potwierdzone wyniki dla 9 z 13 konfiguracji. Do odczytania zostały wyniki wariantów drugiego startu, wolnego dysku, braku ACPI i startu po awarii.
+Opis stanu na podstawie kodu (listopad 2026). Audyt z września 2026 opisuje wcześniejsze etapy i ich plan: [docs/AUDIT-2026-09.md](docs/AUDIT-2026-09.md).
 
 ## Stan systemu
 
@@ -31,13 +20,13 @@ Macierz rozruchowa na moment zapisu ma potwierdzone wyniki dla 9 z 13 konfigurac
     - sterta first-fit zaraz za `__kernel_end` (co najmniej backbuffer + 4 MB, najwyżej 24 MB; `kernel/heap.c`: nagłówki z magic, kanarek za blokiem, łączenie wolnych bloków w obie strony; double free, nadpisany nagłówek i zapis za koniec bloku to panika); silnik fontów bierze bloki do 4 KB z osobnej puli 1 MB (`kernel/memory/pool.c`, `kernel/font/font_mem.c`), większe ze sterty,
     - pula ramek dostaje resztę użytecznego RAM-u poniżej 32 MB,
     - RAM powyżej 32 MB nie jest używany: jądro widzi pamięć fizyczną tylko przez identity map 0–32 MB, a od 32 MB zaczyna się userland,
-    - start ze zbyt małą ilością RAM kończy się komunikatem. Na obraz w RAM składają się między innymi backbuffer (7,91 MiB przy 1920×1080), 4 MiB zapasu sterty, 2 MiB ramek oraz jądro z BSS i stosami.
+    - start ze zbyt małą ilością RAM kończy się komunikatem. Na obraz w RAM składają się między innymi backbuffer (7,91 MiB przy 1920×1080), 4 MiB zapasu sterty, 2 MiB ramek oraz jądro z BSS i stosami. Pulpit z Explorerem i edytorem działa od 13 MiB przy 1280×800 i od 17 MiB przy 1920×1080 (12 i 16 MiB nie wystarczają).
   - Paging 4 KB: identity map 0–32 MB + 16 MB framebuffera, osobny katalog stron na proces.
   - Stosy jądra (`kernel/memory/kstack.c`) leżą w BSS, każdy z niezmapowaną stroną ochronną pod spodem: task 0 ma 64 KB (przełącza się na niego `entry.S`), idle i handler #DF po 8 KB, każdy proces 16 KB. #DF to bramka zadania z własnym TSS i stosem, więc przepełnienie stosu jądra kończy się paniką z rejestrami, a nie resetem.
 - **Procesy:**
-  - Round-robin, kwant 10 ms. Poza idle jest miejsce na pętlę GUI i 16 pozostałych zadań. Każde zadanie ma własny stan FPU (`kernel/fpu.c`). Przełączenie używa FXSAVE/FXRSTOR albo FNSAVE/FRSTOR, zależnie od CPU. Z `float` w jądrze korzysta silnik fontów. Wywłaszczany jest kod w Ring 3. Zadanie 0 to pętla GUI w `kernel_main`. Po każdej iteracji oddaje CPU i śpi (`TASK_BLOCKED`), dopóki nie ma zdarzeń. `hlt` wykonuje idle.
+  - Round-robin, kwant 10 ms. Poza idle jest miejsce na pętlę GUI i 16 pozostałych zadań. Każde zadanie ma własny stan FPU (`kernel/fpu.c`). Przełączenie używa FXSAVE/FXRSTOR albo FNSAVE/FRSTOR, zależnie od CPU. Z `float` w jądrze korzysta tylko silnik fontów: w task 0 i w `SYS_text_width`, który na ten czas odkłada stan FPU procesu i liczy na czystym. Wywłaszczany jest kod w Ring 3. Zadanie 0 to pętla GUI w `kernel_main`. Po każdej iteracji oddaje CPU i śpi (`TASK_BLOCKED`), dopóki nie ma zdarzeń. `hlt` wykonuje idle.
   - Programy użytkownika to statyczne ELF32 `ET_EXEC` linkowane pod `0x02000000` (`userland/user_linker.ld`: segment kodu R+X i segment danych R+W od osobnej strony), ze stosem 8 KB pod `0x07FFF000`. Rozmiar programu ogranicza tylko GemFS (plik do ok. 4 MB) i wolna sterta: loader czyta plik z GemFS do bloku sterty o jego rozmiarze, a program z obrazu jądra ładuje prosto z obrazu.
-  - Program startuje z `argc`, wskaźnikami `argv` i NULL na stosie; `userland/crt0.S` woła `main(argc, argv)` (`include/gemos/user_api.h`). `argv[0]` to nazwa, z którą go uruchomiono, a `argv[1]` plik do otwarcia, jeśli jądro go podało (`process_spawn_user_with_arg()`, np. File Explorer przez launcher edytora).
+  - Program startuje z `argc`, wskaźnikami `argv` i NULL na stosie; `userland/crt0.S` woła `main(argc, argv)` (`include/gemos/user_api.h`). `argv[0]` to nazwa, z którą go uruchomiono, a `argv[1]` plik do otwarcia, jeśli jądro go podało (`process_spawn_user_with_arg()`, np. File Explorer przez launcher edytora). Proces może uruchomić program (`SYS_open_path`); loader wraca potem do katalogu stron wywołującego.
   - Strony kodu są tylko do odczytu także dla jądra (`CR0.WP=1`). Bez PAE nie ma bitu NX, więc dane pozostają wykonywalne.
   - Każdy wyjątek wywołany w Ring 3 (wektory 0–31 poza NMI, #DF i #MC) kończy tylko ten proces (`[USERFAULT]`, potem `Faulted PID=…`). Wyjątek w jądrze to panika z pełnym zrzutem rejestrów (także CR0–CR4) i zatrzymanie.
 - **Syscalle** korzystają z `int 0x80`. Rejestr 22 wywołań jest w `include/gemos/syscall_abi.h`.
@@ -48,8 +37,8 @@ Macierz rozruchowa na moment zapisu ma potwierdzone wyniki dla 9 z 13 konfigurac
   - Proces zabity w środku syscalla (`process_kill_pid()`) kończy syscall najszybciej, jak może (zapis się wycofuje), i zamiast wrócić do Ring 3 staje się zombie.
 - **Userland:**
   - `UTERM.ELF`, `ABOUT.ELF` i `UTEXTEDIT.ELF` (plus `USRSMOKE.ELF` do debugowania) są wbudowane w obraz jądra. Przy starcie jądro zapisuje do GemFS, jako pliki systemowe, tylko te, których brakuje, które mają inną wersję (CRC-32 obrazu) albo nie zgadzają się z obrazem; kolejny start z tym samym jądrem nic nie zapisuje (`[PROC] Programs on GemFS: N seeded, M up to date`). Loader woli kopię z GemFS, a gdy jej nie przyjmie, bierze wbudowaną (także dla nazwy ze ścieżką, np. `/ABOUT.ELF` z File Explorera).
-  - `SYS_file_write` zwraca `GEMOS_ERR_DENIED` dla nazw `*.ELF` (dowolna wielkość liter) i plików z flagą systemową. `gemfs_write_user()` sprawdza nazwę i inode, który zapis by zastąpił. Seeding zapisuje programy jako pliki systemowe.
-  - Okno hostowane przyjmuje siatkę tekstową (maks. 96×32) albo listę do 192 poleceń rysowania w obszarze klienta. Jądro obsługuje do ośmiu takich okien i rysuje ich treść. Aplikacje śpią w `SYS_console_wait_event` (ABOUT z timeoutem do pełnej sekundy).
+  - `SYS_file_write` zwraca `GEMOS_ERR_DENIED` dla nazw `*.ELF` (dowolna wielkość liter) i plików z flagą systemową. `gemfs_write_user()` sprawdza nazwę i inode, który zapis by zastąpił. Seeding zapisuje programy jako pliki systemowe. `SYS_entry_rename` odmawia (`GEMOS_ERR_DENIED`) zmiany nazwy plików systemowych, `/Home` oraz każdej zmiany nazwy z `*.ELF` albo na `*.ELF`, więc proces nie zrobi programu z pliku.
+  - Okno hostowane przyjmuje siatkę tekstową (maks. 96×32) albo listę do 192 poleceń rysowania w obszarze klienta. Jądro obsługuje do ośmiu takich okien i rysuje ich treść. Aplikacje śpią w `SYS_console_wait_event` (ABOUT z timeoutem do pełnej sekundy). Okno graficzne dostaje `GEMOS_WINDOW_FS_CHANGED` po każdym wywołaniu GemFS, które zmieniło drzewo (hak `gemfs_set_change_hook()` w `fs_unlock`, kolejne takie zdarzenia w kolejce się łączą). SDK Rust pomija zdarzenia, których nie zna, więc nowy typ nie kończy starych aplikacji.
   - File Explorer startuje z wbudowanego `EXPLORER.ELF`. Stan widoku i operacje na katalogach są w `userland/explorer/`. Pliki `.txt` i `.gemtext` otwierają się w UTEXTEDIT z pełną ścieżką. Programy `.ELF` uruchamiają się z GemFS. Rozszerzenia działają w dowolnej wielkości liter.
   - `UTEXTEDIT` otwiera i zapisuje pliki tekstowe do 8 KB przez `SYS_file_read`/`SYS_file_write` (Ctrl+O, Ctrl+S, Ctrl+Shift+S; nazwa bez rozszerzenia dostaje `.txt`) i otwiera plik z `argv[1]`. Zanim straci niezapisane zmiany (Esc, Ctrl+Q, przycisk X, Ctrl+N, Ctrl+O), pyta: Y zapisz, N porzuć, Esc anuluj. Pytania rysuje w ramce nad tekstem.
   - `FAULTS.ELF`, `FPUCHECK.ELF`, `FILETEST.ELF` i `LONGIO.ELF` (`userland/selftest/`) są tylko w obrazie autotestu (`make selftest`).
@@ -96,7 +85,7 @@ Macierz rozruchowa na moment zapisu ma potwierdzone wyniki dla 9 z 13 konfigurac
 - **File Explorer**
   - File Explorer zaczyna w `~` (`/Home`), tworzonym raz na zamontowanym GemFS. Up prowadzi do katalogu głównego z dotychczasowymi plikami i programami. UTEXTEDIT rozwija `~/` i ścieżki względne w swoich polach plików do `/Home/`.
   - File Explorer pokazuje nazwę, typ, ścieżkę oraz przycisk Up. Listę przewija się paskiem albo klawiszami strzałek, Page Up, Page Down, Home i End. Kliknięcie zaznacza wpis, a dwuklik lub Enter go otwiera. Prawy przycisk wywołuje systemowe menu (`kernel/ui/menu.c`) z Open i Rename na wpisie albo New Folder na pustej liście. Rename, F2 i New Folder używają tego samego pola nazwy.
-  - Proces Explorera odczytuje potrzebną stronę katalogu, tworzy foldery i zmienia nazwy przez syscalle GemFS. Jego wywołanie może czekać na blokadę, a pętla GUI dalej obsługuje okna. Pasek pod listą pokazuje liczbę wpisów i wynik operacji.
+  - Proces Explorera odczytuje potrzebną stronę katalogu, tworzy foldery i zmienia nazwy przez syscalle GemFS. Jego wywołanie może czekać na blokadę, a pętla GUI dalej obsługuje okna. Explorer śpi bez timeoutu i czyta katalog ponownie po `GEMOS_WINDOW_FS_CHANGED`; ramka odrzucona przez jądro zostawia na ekranie poprzednią. Pasek pod listą pokazuje liczbę wpisów i wynik operacji.
 - **Aplikacje jądra (`apps/`)**
   - Log Viewer oraz launchery programów userlandu.
   - Test App jest zarejestrowana, ale niedostępna z menu.
@@ -144,7 +133,7 @@ docs/       strona GitHub Pages, audyt kodu, GEMFS.md (format dysku)
   - stan x87/SSE dwóch kopii `FPUCHECK.ELF` i zadania jądra przez przełączenia;
   - GemFS przez API jądra: katalogi, plik 100 KB z blokiem pośrednim, zastępowanie, zapis przerwany w połowie, błędy, 70 wpisów w jednym katalogu z usuwaniem, rekurencyjne usuwanie bez wycieku bloków i inode'ów;
   - odmowę zapisu ATA na drugi dysk bez GemFS (harness sprawdza potem, że się nie zmienił);
-  - `FILETEST.ELF` (83 KB, uruchamiany z GemFS): plik 80 KB i plik w podkatalogu przez syscalle, odczyt `UTERM.ELF`, odmowa nadpisania programów;
+  - `FILETEST.ELF` (83 KB, uruchamiany z GemFS): plik 80 KB i plik w podkatalogu przez syscalle, odczyt `UTERM.ELF`, odmowa nadpisania programów i zmiany nazwy z `*.ELF` albo na `*.ELF`;
   - `/USRSMOKE.ELF` zepsuty na GemFS uruchamia się z obrazu jądra, a potem wraca na dysk bez zmian;
   - długie syscalle plikowe (`LONGIO.ELF`; autotest spowalnia wtedy każdy zapisany sektor o 2 ms, więc zapis 128 KB trwa ponad pół sekundy):
     - w trakcie zapisu zegar idzie dalej, a inne zadania i pętla GUI dostają CPU,
