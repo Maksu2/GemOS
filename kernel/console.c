@@ -1,5 +1,6 @@
 #include "console.h"
 
+#include "../drivers/keyboard.h"
 #include "../drivers/serial.h"
 #include "app/app.h"
 #include "gfx/font/font.h"
@@ -36,6 +37,7 @@
 #define CONSOLE_DIM_COLOR UI_BAR_MUTED
 #define CONSOLE_STATUS_COLOR UI_PAPER
 #define CONSOLE_ERROR_COLOR 0xFF9D8A
+#define CONSOLE_SELECTED_BG 0x7A3E2B /* the rust accent, dark enough for light text */
 #define CONSOLE_SURFACE_CELLS GEMOS_CONSOLE_MAX_CELLS
 
 typedef enum {
@@ -386,6 +388,11 @@ static void console_render_surface(window_t *win,
       const gemos_console_cell_t *cell =
           &session->surface_cells[console_surface_slot(session, row, col)];
 
+      if (cell->style == GEMOS_CONSOLE_STYLE_SELECTED) {
+        gfx_fill_rect(&win->ctx, x + (int)(col * CONSOLE_CHAR_WIDTH), y,
+                      CONSOLE_CHAR_WIDTH, CONSOLE_LINE_HEIGHT,
+                      CONSOLE_SELECTED_BG);
+      }
       console_draw_cell(win, x, y, col, (char)cell->ch,
                         console_style_color(cell->style));
     }
@@ -424,6 +431,48 @@ static void console_window_resized(console_session_t *session) {
       GEMOS_WINDOW_RESIZE, (uint32_t)client.w, (uint32_t)client.h, 0});
 }
 
+/* Floor division: a pointer left of or above the grid gives -1, not 0. */
+static int32_t console_cell_index(int offset, int size) {
+  return offset >= 0 ? offset / size : -((-offset + size - 1) / size);
+}
+
+/* The left button in a text console that asked for it, in grid cells. */
+static void console_text_pointer(console_session_t *session, window_t *win,
+                                 const event_t *event) {
+  uint32_t type;
+
+  if (!(session->flags & GEMOS_CONSOLE_FLAG_POINTER)) {
+    return;
+  }
+  switch (event->type) {
+  case EVENT_MOUSE_CLICK:
+    if (event->data.mouse.button != MOUSE_BUTTON_LEFT) {
+      return;
+    }
+    type = GEMOS_CONSOLE_EVENT_POINTER_PRESS;
+    break;
+  case EVENT_MOUSE_MOVE:
+    if (!(event->data.mouse.buttons & MOUSE_BUTTON_LEFT)) {
+      return;
+    }
+    type = GEMOS_CONSOLE_EVENT_POINTER_MOVE;
+    break;
+  case EVENT_MOUSE_RELEASE:
+    type = GEMOS_CONSOLE_EVENT_POINTER_RELEASE;
+    break;
+  default:
+    return;
+  }
+  int32_t col = console_cell_index(
+      event->data.mouse.x - win->client_rect.x - CONSOLE_PADDING,
+      CONSOLE_CHAR_WIDTH);
+  int32_t row = console_cell_index(
+      event->data.mouse.y - win->client_rect.y - CONSOLE_PADDING,
+      CONSOLE_LINE_HEIGHT);
+  console_push_event(session, (gemos_console_event_t){
+      type, (uint32_t)col, (uint32_t)row, keyboard_held_modifiers()});
+}
+
 static void console_handle_event(window_t *win, event_t *event) {
   console_session_t *session = (console_session_t *)win->user_data;
   if (session == NULL || event == NULL) {
@@ -436,6 +485,7 @@ static void console_handle_event(window_t *win, event_t *event) {
     return;
   }
   if (!session->commands) {
+    console_text_pointer(session, win, event);
     return;
   }
   if (event->type == EVENT_WINDOW_RESIZE) {

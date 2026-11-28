@@ -13,6 +13,20 @@ enum {
   GEMOS_CONSOLE_EVENT_NONE = 0,
   GEMOS_CONSOLE_EVENT_KEY = 1,
   GEMOS_CONSOLE_EVENT_CLOSE_REQUEST = 2,
+  /* Only for a console opened with GEMOS_CONSOLE_FLAG_POINTER: the left
+   * button in the grid. key_code is the column and character the row of
+   * the cell under the pointer (as int32_t: outside the grid while the
+   * button is held they go below 0 or past the last cell), modifiers the
+   * GEMOS_KEYMOD_* held. Moves arrive only while the button is down. The
+   * values are those of the matching GEMOS_WINDOW_* events. */
+  GEMOS_CONSOLE_EVENT_POINTER_PRESS = 3,
+  GEMOS_CONSOLE_EVENT_POINTER_MOVE = 5,
+  GEMOS_CONSOLE_EVENT_POINTER_RELEASE = 6,
+};
+
+/* flags for SYS_console_open */
+enum {
+  GEMOS_CONSOLE_FLAG_POINTER = 1U << 0, /* send GEMOS_CONSOLE_EVENT_POINTER_* */
 };
 
 enum {
@@ -44,6 +58,7 @@ typedef enum {
   GEMOS_CONSOLE_STYLE_ACCENT = 2,
   GEMOS_CONSOLE_STYLE_STATUS = 3,
   GEMOS_CONSOLE_STYLE_ERROR = 4,
+  GEMOS_CONSOLE_STYLE_SELECTED = 5, /* selected text: a filled cell */
 } gemos_console_cell_style_t;
 
 typedef struct {

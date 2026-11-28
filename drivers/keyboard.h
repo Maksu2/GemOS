@@ -13,4 +13,8 @@ void init_keyboard(void);
  * receives through the console ABI. */
 void keyboard_callback(registers_t *regs);
 
+/* GEMOS_KEYMOD_* held now (for mouse events, which the mouse driver sends
+ * without them). Called from tasks; it only reads. */
+uint32_t keyboard_held_modifiers(void);
+
 #endif

@@ -70,6 +70,8 @@ static uint32_t keyboard_modifiers(void) {
   return modifiers;
 }
 
+uint32_t keyboard_held_modifiers(void) { return keyboard_modifiers(); }
+
 void keyboard_callback(registers_t *regs) {
   (void)regs;
 

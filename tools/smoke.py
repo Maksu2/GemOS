@@ -318,6 +318,15 @@ RENAME_FILES = {"draft.txt": b"The original draft.\n",
                 "taken.txt": b"Keep this other file.\n"}
 EDITOR_FILE = EXPLORER_HOME + "/notes.txt"
 EDITOR_SAVED = b"first line +more\nsecond"
+# editing with the keyboard and the mouse (editor_features)
+EDITOR_FEATURES_FILE = EXPLORER_HOME + "/features.txt"
+EDITOR_FEATURES_SAVED = (b"alpha BETA gamma\n2nd line\nalpha  gamma\n"
+                         b"second line")
+# a file over the old 8 KB limit, opened, extended and saved again
+EDITOR_BIG_FILE = "/big.txt"
+EDITOR_BIG_TEXT = b"".join(b"line %05d of a file that the editor once could not open\n" % i
+                           for i in range(1, 1601))
+EDITOR_SELECTED_RGB = (0x7A, 0x3E, 0x2B)  # GEMOS_CONSOLE_STYLE_SELECTED
 # QEMU sendkey names of the characters the test types
 SENDKEY = {" ": "spc", "\n": "ret", ".": "dot", "/": "slash",
            "+": "shift-equal", "-": "minus"}
@@ -734,6 +743,10 @@ class Smoke:
 
         require("mkdir", disk, EXPLORER_HOME)
         require("mkdir", disk, EXPLORER_DIR)
+        big = os.path.join(self.out, "big.txt")
+        with open(big, "wb") as stream:
+            stream.write(EDITOR_BIG_TEXT)
+        require("put", disk, big, EDITOR_BIG_FILE)
         for index in range(1, EXPLORER_ITEMS + 1):
             name = "NOTE-%03d.TXT" % index
             if index == 1:
@@ -1876,7 +1889,72 @@ class Smoke:
         time.sleep(0.5)
         self.monitor.cmd("sendkey n")
         self.editor_ended(pid, "then Esc and N close it", since)
+        self.editor_features()
         self.check(True, "editor: done", "%.0f s" % (time.monotonic() - start))
+
+    def editor_features(self):
+        """Selection, clipboard, undo, find and the mouse, then a file of
+        about 100 KB; check_editor_files reads both files on the host."""
+        pid, window = self.editor_from_menu()
+        if pid is None:
+            return
+
+        def cell(row, col):
+            return (window.x + 13 + 8 * col, window.y + 42 + 15 * row)
+
+        keys = ["ctrl-a", "ctrl-c", "ctrl-end", "ret", "ctrl-v",  # copy all
+                None, "ctrl-z", "ctrl-y", "ctrl-z",                # undo XYZ
+                "ctrl-f", None, "ret", None,                       # find beta
+                "ctrl-g", "delete"]                                # the next one
+        texts = iter(["XYZ", "beta", "BETA"])
+        self.type_text("alpha beta gamma\nsecond line")
+        for key in keys:
+            if key is None:
+                self.type_text(next(texts))
+            else:
+                self.monitor.cmd("sendkey %s" % key)
+            time.sleep(0.1)
+
+        # the mouse: a drag over "second" on the second row selects it
+        body = window.console_rows(2, 6)
+        self.pointer.home()
+        self.pointer.move_to(cell(3, 2))
+        self.pointer.press()
+        self.pointer.move_to(cell(3, 8))
+        self.pointer.release()
+
+        def selected(image):
+            area = image.logical_area(body)
+            count = sum(1 for i in range(0, len(area), 3)
+                        if tuple(area[i:i + 3]) == EDITOR_SELECTED_RGB)
+            return None if count > 50 else "no selected cells (%d)" % count
+
+        issue, seconds = self.watch_screen("editor-drag", selected, WINDOW_TIMEOUT)
+        self.check(issue is None, "editor: a mouse drag selects text",
+                   "editor-drag.png, %s" % (issue or "%.1f s" % seconds))
+        self.type_text("2nd")
+        self.monitor.cmd("sendkey ctrl-s")
+        time.sleep(0.5)
+        self.type_text("features")
+        self.monitor.cmd("sendkey ret")
+        time.sleep(1.0)
+
+        # a file over the old 8 KB limit
+        self.monitor.cmd("sendkey ctrl-o")  # offers the document's own path
+        time.sleep(0.5)
+        for _ in EDITOR_FEATURES_FILE:
+            self.monitor.cmd("sendkey backspace")
+            time.sleep(0.02)
+        self.type_text(EDITOR_BIG_FILE + "\n")
+        time.sleep(1.5)
+        self.monitor.cmd("sendkey ctrl-end")
+        self.type_text("END")
+        self.monitor.cmd("sendkey ctrl-s")
+        time.sleep(1.5)
+        since = len(self.log_text())
+        self.monitor.cmd("sendkey esc")
+        self.editor_ended(pid, "the features document and the large file "
+                          "are saved: Esc closes without asking", since)
 
     def check_editor_files(self):
         """What the editor test left on the disk, read on the host."""
@@ -1893,9 +1971,16 @@ class Smoke:
                    "disk: UTERM.ELF is still the program from the kernel")
         result = mkgemfs("ls", self.disks["data"], EXPLORER_HOME)
         names = {line.split(maxsplit=3)[3] for line in result.stdout.decode().splitlines()}
-        self.check(result.returncode == 0 and names == {"notes.txt", "Projects/"},
-                   "disk: Home contains the folder and the document",
+        self.check(result.returncode == 0 and
+                   names == {"notes.txt", "features.txt", "Projects/"},
+                   "disk: Home contains the folder and the documents",
                    ", ".join(sorted(names)))
+        for path, saved in [(EDITOR_FEATURES_FILE, EDITOR_FEATURES_SAVED),
+                            (EDITOR_BIG_FILE, EDITOR_BIG_TEXT + b"END")]:
+            result = mkgemfs("cat", self.disks["data"], path)
+            self.check(result.returncode == 0 and result.stdout == saved,
+                       "disk: %s holds what the editor made of it" % path,
+                       "%d bytes, ends %r" % (len(result.stdout), result.stdout[-30:]))
 
     def explorer_scroll(self):
         """Browse a full directory with the keyboard and the scrollbar."""
