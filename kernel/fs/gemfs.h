@@ -131,6 +131,14 @@ int gemfs_rename(const char *path, const char *new_name);
 
 /* Delete a file, or a directory with everything in it. */
 int gemfs_delete(const char *path);
+/* For a process: the same, but GEMFS_ERR_DENIED when a system file or a
+ * *.ELF is anywhere in the tree. */
+int gemfs_delete_user(const char *path);
+/* For a process: copy a file, or a directory with everything in it, to
+ * dst, which must not exist. All or nothing: on an error the partial copy
+ * is deleted. GEMFS_ERR_DENIED as for gemfs_delete_user, or for a *.ELF
+ * dst; GEMFS_ERR_NAME for a directory into itself. */
+int gemfs_copy_user(const char *src, const char *dst);
 
 /* Call fn for every entry of a directory; returns the number of entries.
  * If requested, capture the generation while still holding the lock. */

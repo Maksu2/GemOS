@@ -9,6 +9,7 @@
 
 #define UTEXTEDIT_STATUS_MAX 64U
 #define UTEXTEDIT_PATH_MAX 128U /* the kernel's limit, NUL included */
+#define UTEXTEDIT_DOUBLE_CLICK_MS 400U
 
 /* A question shown over the text; keys go to it until it is answered. */
 typedef enum {
@@ -16,6 +17,7 @@ typedef enum {
   UTEXTEDIT_PROMPT_SAVE_AS, /* the path to save to */
   UTEXTEDIT_PROMPT_OPEN,    /* the path to open */
   UTEXTEDIT_PROMPT_UNSAVED, /* save the changes first? Y / N / Esc */
+  UTEXTEDIT_PROMPT_FIND,    /* the text to find */
 } utextedit_prompt_t;
 
 /* What happens once the changes are saved or discarded */
@@ -30,14 +32,20 @@ typedef struct {
   utextedit_document_t document;
   char path[UTEXTEDIT_PATH_MAX]; /* empty until the document has a file */
   char status[UTEXTEDIT_STATUS_MAX];
-  char input[UTEXTEDIT_PATH_MAX]; /* the path typed into a prompt */
+  char input[UTEXTEDIT_PATH_MAX]; /* typed into a prompt */
   uint32_t input_length;
+  char find[UTEXTEDIT_PATH_MAX]; /* the last text searched for */
   uint32_t viewport_top_row;
   utextedit_prompt_t prompt;
   utextedit_next_t next;
   uint8_t status_error;
   uint8_t dirty; /* the frame has to be drawn again */
   uint8_t should_exit;
+  /* the mouse: a drag selects, a second click on the same cell a word */
+  uint8_t dragging;
+  int32_t last_click_col;
+  int32_t last_click_row;
+  uint32_t last_click_ms;
 } utextedit_state_t;
 
 void utextedit_state_init(utextedit_state_t *state);

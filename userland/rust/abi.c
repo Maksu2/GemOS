@@ -116,6 +116,14 @@ int32_t gemos_rust_entry_rename(const char *path, const char *name) {
   return gemos_syscall2(SYS_entry_rename, (uintptr_t)path, (uintptr_t)name);
 }
 
+int32_t gemos_rust_entry_delete(const char *path) {
+  return gemos_syscall1(SYS_entry_delete, (uintptr_t)path);
+}
+
+int32_t gemos_rust_entry_copy(const char *source, const char *target) {
+  return gemos_syscall2(SYS_entry_copy, (uintptr_t)source, (uintptr_t)target);
+}
+
 int32_t gemos_rust_open_path(const char *path) {
   return gemos_syscall1(SYS_open_path, (uintptr_t)path);
 }

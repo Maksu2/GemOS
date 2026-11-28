@@ -12,8 +12,9 @@ static gemos_console_cell_t
 int main(int argc, char **argv) {
   int32_t poll_result;
 
+  /* the mouse places the cursor and selects */
   if (gemos_hosted_app_open(&textedit_app, UTEXTEDIT_TITLE, UTEXTEDIT_COLS,
-                            UTEXTEDIT_ROWS, 0U) < 0) {
+                            UTEXTEDIT_ROWS, GEMOS_CONSOLE_FLAG_POINTER) < 0) {
     static const char open_failed[] = "UTEXTEDIT failed to open console\n";
     gemos_debug_write(open_failed, sizeof(open_failed) - 1U);
     return 1;

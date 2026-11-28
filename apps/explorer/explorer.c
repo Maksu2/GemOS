@@ -20,7 +20,7 @@ static void explorer_open(void) { (void)explorer_launch(); }
 
 void explorer_init(void) {
   static app_t explorer = {
-      .name = "File Explorer",
+      .name = "Files",
       .icon = &icon_folder,
       .open = explorer_open,
   };

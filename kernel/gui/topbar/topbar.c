@@ -30,7 +30,7 @@ void action_open_about(void) { app_open("About GemOS"); }
 void action_open_terminal(void) { app_open("User Terminal"); }
 void action_open_log_viewer(void) { app_open("Log Viewer"); }
 void action_open_textedit(void) { app_open("Text Editor"); }
-void action_open_explorer(void) { app_open("File Explorer"); }
+void action_open_explorer(void) { app_open("Files"); }
 
 void topbar_init(void) {
   serial_print("[TOPBAR] Initialized\n");
@@ -47,7 +47,7 @@ void topbar_init(void) {
   /* Apps Menu */
   menu_apps = menu_create();
   if (menu_apps) {
-    menu_add_item(menu_apps, "File Explorer", action_open_explorer);
+    menu_add_item(menu_apps, "Files", action_open_explorer);
     menu_add_item(menu_apps, "Terminal", action_open_terminal);
     menu_add_item(menu_apps, "Log Viewer", action_open_log_viewer);
     menu_add_item(menu_apps, "Text Editor", action_open_textedit);

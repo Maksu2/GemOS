@@ -102,6 +102,25 @@ int main(int argc, char **argv) {
     return GEMOS_FILETEST_RENAME_PROGRAM;
   }
 
+  /* copy and delete: a copy of the note, then no copy and no delete of a program */
+  static const char copy[] = GEMOS_FILETEST_SUBDIR "/note copy.txt";
+  if (gemos_syscall2(SYS_entry_copy, (uintptr_t)GEMOS_FILETEST_NOTE,
+                     (uintptr_t)copy) != GEMOS_OK ||
+      gemos_file_read(copy, readback, sizeof(readback)) != (int32_t)note_length ||
+      !same(readback, note, note_length) ||
+      gemos_syscall2(SYS_entry_copy, (uintptr_t)GEMOS_FILETEST_NOTE,
+                     (uintptr_t)copy) != GEMOS_ERR_EXIST ||
+      gemos_syscall1(SYS_entry_delete, (uintptr_t)copy) != GEMOS_OK ||
+      gemos_file_read(copy, readback, sizeof(readback)) != GEMOS_ERR_NOENT ||
+      gemos_syscall2(SYS_entry_copy, (uintptr_t)GEMOS_FILETEST_NOTE,
+                     (uintptr_t)"/fstest/note.ELF") != GEMOS_ERR_DENIED ||
+      gemos_syscall1(SYS_entry_delete, (uintptr_t)"/UTERM.ELF") != GEMOS_ERR_DENIED ||
+      gemos_syscall1(SYS_entry_delete, (uintptr_t)GEMOS_FILETEST_PATH) !=
+          GEMOS_ERR_DENIED ||
+      gemos_syscall1(SYS_entry_delete, (uintptr_t)"/fstest") != GEMOS_ERR_DENIED) {
+    return GEMOS_FILETEST_COPY_DELETE;
+  }
+
   if (gemos_file_write("/no-such-directory/file.txt", note, note_length) !=
       GEMOS_ERR_NOENT) {
     return GEMOS_FILETEST_NO_DIR;

@@ -95,6 +95,11 @@ reference to a free block or inode:
 - A rename within a directory updates the name in the sector containing its
   directory entry. The inode and its allocated blocks stay in place. The
   kernel checks for name collisions and path length before writing.
+- A copy (`gemfs_copy_user`) is a series of ordinary writes: the
+  directories with `mkdir`, every file as a new file (copy-on-write, as
+  above). It holds the lock from start to end. On an error the partial
+  copy is deleted; a crash in the middle leaves a consistent tree with
+  part of the copy, which the user can delete.
 - Deleting removes the directory entry first, then frees the blocks and the
   inode. A directory is deleted with everything in it.
 

@@ -28,6 +28,13 @@ enum {
   SYS_entry_rename = 19,
   SYS_open_path = 20,
   SYS_fs_generation = 21,
+  /* A file, or a directory with everything in it. GEMOS_ERR_DENIED for
+   * /Home, a system file or a *.ELF anywhere in the tree. */
+  SYS_entry_delete = 22,
+  /* (source path, destination path): a file, or a directory with
+   * everything in it. The destination must not exist (GEMOS_ERR_EXIST);
+   * a failed copy leaves nothing behind. */
+  SYS_entry_copy = 23,
 };
 
 /* timeout_ms for SYS_console_wait_event: no timeout */

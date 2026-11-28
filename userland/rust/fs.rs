@@ -51,6 +51,8 @@ unsafe extern "C" {
     fn gemos_rust_directory_create(path: *const c_char) -> i32;
     fn gemos_rust_entry_rename(path: *const c_char, name: *const c_char) -> i32;
     fn gemos_rust_open_path(path: *const c_char) -> i32;
+    fn gemos_rust_entry_delete(path: *const c_char) -> i32;
+    fn gemos_rust_entry_copy(source: *const c_char, target: *const c_char) -> i32;
     fn gemos_rust_fs_generation() -> u32;
     fn gemos_rust_home() -> *const c_char;
 }
@@ -70,6 +72,18 @@ pub fn create_directory(path: &CStr) -> Result<()> {
 
 pub fn rename(path: &CStr, name: &CStr) -> Result<()> {
     syscall_result(unsafe { gemos_rust_entry_rename(path.as_ptr(), name.as_ptr()) }).map(|_| ())
+}
+
+/// Delete a file, or a directory with everything in it.
+pub fn delete(path: &CStr) -> Result<()> {
+    syscall_result(unsafe { gemos_rust_entry_delete(path.as_ptr()) }).map(|_| ())
+}
+
+/// Copy a file, or a directory with everything in it, to `target`, which
+/// must not exist (`NAME_IN_USE`). A failed copy leaves nothing behind.
+pub fn copy(source: &CStr, target: &CStr) -> Result<()> {
+    syscall_result(unsafe { gemos_rust_entry_copy(source.as_ptr(), target.as_ptr()) })
+        .map(|_| ())
 }
 
 pub fn open(path: &CStr) -> Result<()> {

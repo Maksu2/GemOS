@@ -1665,6 +1665,312 @@ int gemfs_delete(const char *path) {
   return result;
 }
 
+/* -- delete and copy for processes ------------------------------------------- */
+
+/* Entry `index` of a directory, read again for every step: the operations
+ * done between two steps use dir_buf. Returns 1 past the last slot. */
+static int dir_entry_at(uint32_t dir_number, uint32_t index,
+                        gemfs_dirent_t *entry) {
+  gemfs_inode_t dir;
+  uint32_t block;
+  int result = inode_read(dir_number, &dir);
+
+  if (result != GEMFS_OK) {
+    return result;
+  }
+  if (dir.type != GEMFS_TYPE_DIR || dir.size > DIRECT * GEMFS_BLOCK_SIZE) {
+    return GEMFS_ERR_CORRUPT;
+  }
+  if (index >= inode_block_count(&dir) * ENTRIES_PER_BLOCK) {
+    return 1;
+  }
+  result = inode_map(&dir, index / ENTRIES_PER_BLOCK, &block);
+  if (result == GEMFS_OK) {
+    result = block_read(block, dir_buf);
+  }
+  if (result != GEMFS_OK) {
+    return result;
+  }
+  memcpy(entry, dir_buf + index % ENTRIES_PER_BLOCK * ENTRY_SIZE,
+         sizeof(*entry));
+  if (entry->inode != 0) {
+    size_t length = 0;
+    while (length < sizeof(entry->name) && entry->name[length]) {
+      length++;
+    }
+    if (length == sizeof(entry->name) || !gemfs_name_valid(entry->name)) {
+      return GEMFS_ERR_CORRUPT;
+    }
+  }
+  return GEMFS_OK;
+}
+
+/* Processes neither change nor make programs: a delete or a copy for a
+ * process refuses a tree with a system file or a *.ELF anywhere in it. */
+static int user_tree_check(uint32_t number, const char *name) {
+  struct {
+    uint32_t inode;
+    uint32_t next;
+  } stack[MAX_DEPTH];
+  uint32_t depth = 0;
+  gemfs_inode_t inode;
+  int result = inode_read(number, &inode);
+
+  if (result != GEMFS_OK) {
+    return result;
+  }
+  if ((inode.flags & GEMFS_FLAG_SYSTEM) || name_is_program(name)) {
+    return GEMFS_ERR_DENIED;
+  }
+  if (inode.type == GEMFS_TYPE_DIR) {
+    stack[depth].inode = number;
+    stack[depth++].next = 0;
+  }
+  while (depth != 0) {
+    gemfs_dirent_t entry;
+    uint32_t level = depth - 1;
+
+    result = dir_entry_at(stack[level].inode, stack[level].next++, &entry);
+    if (result == 1) {
+      depth--;
+      continue;
+    }
+    if (result != GEMFS_OK) {
+      return result;
+    }
+    if (entry.inode == 0) {
+      continue;
+    }
+    fs_pause();
+    result = inode_read(entry.inode, &inode);
+    if (result != GEMFS_OK) {
+      return result;
+    }
+    if ((inode.flags & GEMFS_FLAG_SYSTEM) || name_is_program(entry.name)) {
+      return GEMFS_ERR_DENIED;
+    }
+    if (inode.type == GEMFS_TYPE_DIR) {
+      if (depth == MAX_DEPTH) {
+        return GEMFS_ERR_CORRUPT;
+      }
+      stack[depth].inode = entry.inode;
+      stack[depth++].next = 0;
+    }
+  }
+  return GEMFS_OK;
+}
+
+static int delete_user_path(const char *path) {
+  char name[GEMFS_NAME_MAX + 1];
+  uint32_t parent;
+  uint32_t number;
+  int result;
+
+  if (fs_device < 0) {
+    return GEMFS_ERR_NOFS;
+  }
+  map_block = 0;
+  result = path_walk(path, 1, &parent, name);
+  if (result == GEMFS_OK) {
+    result = path_walk(path, 0, &number, NULL);
+  }
+  if (result == GEMFS_OK) {
+    result = user_tree_check(number, name);
+  }
+  return result == GEMFS_OK ? delete_path(path) : result;
+}
+
+int gemfs_delete_user(const char *path) {
+  int result = fs_lock();
+
+  if (result == GEMFS_OK) {
+    result = delete_user_path(path);
+    fs_unlock();
+  }
+  return result;
+}
+
+/* The file being copied: its inode and its indirect block, apart from
+ * map_buf and data_buf, which the write of the copy uses. */
+static gemfs_inode_t copy_inode;
+static uint32_t copy_map[POINTERS];
+
+static int copy_source(void *ctx, uint32_t offset, void *dst, uint32_t len) {
+  uint32_t index = offset / GEMFS_BLOCK_SIZE;
+  uint32_t block =
+      index < DIRECT ? copy_inode.direct[index] : copy_map[index - DIRECT];
+
+  (void)ctx;
+  if (scheduler_kill_pending() || !data_block_ok(block) ||
+      block_read(block, dst) != GEMFS_OK) {
+    return -1;
+  }
+  memset((uint8_t *)dst + len, 0, GEMFS_BLOCK_SIZE - len);
+  return 0;
+}
+
+static int copy_file(uint32_t number, const char *dst) {
+  int result = inode_read(number, &copy_inode);
+
+  if (result != GEMFS_OK) {
+    return result;
+  }
+  if (copy_inode.type != GEMFS_TYPE_FILE ||
+      copy_inode.size > GEMFS_MAX_FILE_SIZE) {
+    return GEMFS_ERR_CORRUPT;
+  }
+  if (inode_block_count(&copy_inode) > DIRECT) {
+    if (!data_block_ok(copy_inode.indirect)) {
+      return GEMFS_ERR_CORRUPT;
+    }
+    result = block_read(copy_inode.indirect, copy_map);
+    if (result != GEMFS_OK) {
+      return result;
+    }
+  }
+  result = gemfs_write_file(dst, copy_inode.size, copy_source, NULL, 0, 0, 1);
+  return result < 0 ? result : GEMFS_OK;
+}
+
+/* Every directory under src, and every file, again under dst. */
+static int copy_tree(uint32_t number, const char *dst) {
+  struct {
+    uint32_t inode;
+    uint32_t next;
+    uint32_t length;
+  } stack[MAX_DEPTH];
+  char path[GEMFS_PATH_MAX];
+  uint32_t depth = 1;
+  int result = mkdir_path(dst);
+
+  if (result != GEMFS_OK) {
+    return result;
+  }
+  strcpy(path, dst);
+  stack[0].inode = number;
+  stack[0].next = 0;
+  stack[0].length = (uint32_t)strlen(path);
+  while (depth != 0) {
+    gemfs_dirent_t entry;
+    gemfs_inode_t inode;
+    uint32_t level = depth - 1;
+    uint32_t length = stack[level].length;
+    size_t name_length;
+
+    result = dir_entry_at(stack[level].inode, stack[level].next++, &entry);
+    if (result == 1) {
+      depth--;
+      continue;
+    }
+    if (result != GEMFS_OK) {
+      return result;
+    }
+    if (entry.inode == 0) {
+      continue;
+    }
+    name_length = strlen(entry.name);
+    if (length + 1U + name_length >= GEMFS_PATH_MAX) {
+      return GEMFS_ERR_NAME;
+    }
+    path[length] = '/';
+    memcpy(path + length + 1, entry.name, name_length + 1U);
+    result = inode_read(entry.inode, &inode);
+    if (result != GEMFS_OK) {
+      return result;
+    }
+    if (inode.type == GEMFS_TYPE_DIR) {
+      if (depth == MAX_DEPTH) {
+        return GEMFS_ERR_CORRUPT;
+      }
+      result = mkdir_path(path);
+      stack[depth].inode = entry.inode;
+      stack[depth].next = 0;
+      stack[depth++].length = length + 1U + (uint32_t)name_length;
+    } else {
+      result = copy_file(entry.inode, path);
+    }
+    if (result != GEMFS_OK) {
+      return result;
+    }
+  }
+  return GEMFS_OK;
+}
+
+static int copy_user_path(const char *src, const char *dst) {
+  char name[GEMFS_NAME_MAX + 1];
+  gemfs_inode_t inode;
+  uint32_t parent;
+  uint32_t number;
+  uint32_t existing;
+  int result;
+
+  if (fs_device < 0) {
+    return GEMFS_ERR_NOFS;
+  }
+  map_block = 0;
+  result = path_walk(src, 1, &parent, name);
+  if (result == GEMFS_OK) {
+    result = path_walk(src, 0, &number, NULL);
+  }
+  if (result == GEMFS_OK) {
+    result = user_tree_check(number, name);
+  }
+  if (result != GEMFS_OK) {
+    return result;
+  }
+  result = path_walk(dst, 0, &existing, NULL);
+  if (result == GEMFS_OK) {
+    return GEMFS_ERR_EXIST;
+  }
+  if (result != GEMFS_ERR_NOENT) {
+    return result;
+  }
+  result = path_walk(dst, 1, &parent, name);
+  if (result != GEMFS_OK) {
+    return result;
+  }
+  if (name_is_program(name)) {
+    return GEMFS_ERR_DENIED;
+  }
+  /* a directory is never copied into itself */
+  for (uint32_t up = parent; up != ROOT; up = inode.parent) {
+    if (up == number) {
+      return GEMFS_ERR_NAME;
+    }
+    result = inode_read(up, &inode);
+    if (result != GEMFS_OK) {
+      return result;
+    }
+  }
+  if (number == ROOT) {
+    return GEMFS_ERR_NAME;
+  }
+  result = inode_read(number, &inode);
+  if (result != GEMFS_OK) {
+    return result;
+  }
+  result = inode.type == GEMFS_TYPE_DIR ? copy_tree(number, dst)
+                                        : copy_file(number, dst);
+  if (result != GEMFS_OK) {
+    /* a copy is all or nothing: what was made goes */
+    map_block = 0;
+    if (path_walk(dst, 0, &existing, NULL) == GEMFS_OK) {
+      (void)delete_path(dst);
+    }
+  }
+  return result;
+}
+
+int gemfs_copy_user(const char *src, const char *dst) {
+  int result = fs_lock();
+
+  if (result == GEMFS_OK) {
+    result = copy_user_path(src, dst);
+    fs_unlock();
+  }
+  return result;
+}
+
 static int list_path(const char *path, gemfs_list_fn_t fn, void *ctx) {
   gemfs_inode_t dir;
   uint32_t number;

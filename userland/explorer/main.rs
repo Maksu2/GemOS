@@ -14,6 +14,11 @@ const PAGE_STEP: u32 = 16;
 const OPEN: u32 = 1;
 const RENAME: u32 = 2;
 const NEW_FOLDER: u32 = 3;
+const COPY: u32 = 4;
+const PASTE: u32 = 5;
+const DELETE: u32 = 6;
+const NEW_TEXT: u32 = 7;
+const COPY_TRIES: u32 = 10;
 
 #[derive(Clone, Copy)]
 struct Path {
@@ -63,8 +68,25 @@ impl Path {
         self
     }
 
+    /// The last part of the path.
+    fn name(&self) -> &[u8] {
+        let bytes = &self.bytes[..self.len];
+        let start = bytes.iter().rposition(|&byte| byte == b'/').map_or(0, |slash| slash + 1);
+        &bytes[start..]
+    }
+
+    /// This path or one inside it.
+    fn within(&self, other: &Path) -> bool {
+        let (mine, theirs) = (&self.bytes[..self.len], &other.bytes[..other.len]);
+        mine.starts_with(theirs) && (mine.len() == theirs.len() || mine[theirs.len()] == b'/')
+    }
+
     fn log_opened(&self) {
-        let prefix = b"[EXPLORER] Opened ";
+        self.log(b"[EXPLORER] Opened ");
+    }
+
+    /// "[EXPLORER] <what><path>": tools/smoke.py waits for these lines.
+    fn log(&self, prefix: &[u8]) {
         let mut line = [0; PATH_BYTES + 24];
         line[..prefix.len()].copy_from_slice(prefix);
         let end = prefix.len() + self.len;
@@ -79,7 +101,22 @@ impl Path {
 #[derive(Clone, Copy)]
 enum NameAction {
     Create,
+    CreateText,
     Rename(Path),
+}
+
+/// A delete waiting for Enter or the Delete button.
+#[derive(Clone, Copy)]
+struct Confirm {
+    path: Path,
+    directory: bool,
+}
+
+/// What Copy took, for Paste.
+#[derive(Clone, Copy)]
+struct Clipboard {
+    path: Path,
+    directory: bool,
 }
 
 struct NamePrompt {
@@ -190,6 +227,8 @@ struct Explorer {
     width: i32,
     height: i32,
     prompt: Option<NamePrompt>,
+    confirm: Option<Confirm>,
+    clipboard: Option<Clipboard>,
     status: [u8; 96],
     status_len: usize,
     error: bool,
@@ -212,6 +251,8 @@ impl Explorer {
             width: FIRST_WIDTH,
             height: FIRST_HEIGHT,
             prompt: None,
+            confirm: None,
+            clipboard: None,
             status: [0; 96],
             status_len: 0,
             error: false,
@@ -288,6 +329,7 @@ impl Explorer {
         self.last_click = None;
         self.drag = None;
         self.prompt = None;
+        self.confirm = None;
         self.status_len = 0;
         self.loaded = false;
         let _ = window.menu(0, 0, &[]);
@@ -332,12 +374,133 @@ impl Explorer {
         self.path.len == 1 && entry.is_directory() && entry.name() == &fs::home().to_bytes()[1..]
     }
 
-    fn begin_new(&mut self) {
+    fn begin_new(&mut self, action: NameAction) {
         if self.loaded {
-            self.prompt = Some(NamePrompt::new(NameAction::Create, b""));
+            let initial: &[u8] = match action {
+                NameAction::CreateText => b"New Text.txt",
+                _ => b"",
+            };
+            self.prompt = Some(NamePrompt::new(action, initial));
+            self.confirm = None;
             self.status_len = 0;
             self.dirty = true;
         }
+    }
+
+    fn selected_entry(&self) -> Option<(DirectoryEntry, Path)> {
+        let entry = self.selected.and_then(|index| self.entry(index)).copied()?;
+        let path = self.path.child(entry.name())?;
+        Some((entry, path))
+    }
+
+    fn begin_delete(&mut self) {
+        let Some((entry, path)) = self.selected_entry() else { return; };
+        if self.home_entry(&entry) {
+            self.set_status(b"", b"Home stays", true);
+        } else if matches!(Kind::of(&entry), Kind::Program) {
+            self.set_status(b"Programs cannot be deleted: ", entry.name(), true);
+        } else {
+            self.prompt = None;
+            self.confirm = Some(Confirm { path, directory: entry.is_directory() });
+            self.status_len = 0;
+            self.dirty = true;
+        }
+    }
+
+    fn submit_delete(&mut self, window: &Window) {
+        let Some(confirm) = self.confirm.take() else { return; };
+        match fs::delete(confirm.path.cstr()) {
+            Ok(()) => {
+                self.selected = None;
+                confirm.path.log(b"[EXPLORER] Deleted ");
+                self.set_status(b"Deleted ", confirm.path.name(), false);
+                self.refresh(window);
+            }
+            Err(err) => self.set_status(b"", error_text(err), true),
+        }
+        self.dirty = true;
+    }
+
+    fn cancel_confirm(&mut self) {
+        self.confirm = None;
+        self.status_len = 0;
+        self.dirty = true;
+    }
+
+    fn copy_selected(&mut self) {
+        let Some((entry, path)) = self.selected_entry() else { return; };
+        if matches!(Kind::of(&entry), Kind::Program) {
+            self.set_status(b"Programs cannot be copied: ", entry.name(), true);
+            return;
+        }
+        self.clipboard = Some(Clipboard { path, directory: entry.is_directory() });
+        self.set_status(b"Copied ", entry.name(), false);
+    }
+
+    /// The name of attempt `n`: the name itself, then "a copy.txt",
+    /// "a copy 2.txt" and so on, shortened to fit.
+    fn copy_name(name: &[u8], directory: bool, n: u32, out: &mut [u8; NAME_BYTES]) -> usize {
+        if n == 0 {
+            out[..name.len()].copy_from_slice(name);
+            return name.len();
+        }
+        let dot = if directory { None } else { name.iter().rposition(|&byte| byte == b'.') };
+        let (stem, extension) = match dot {
+            Some(dot) if dot > 0 => name.split_at(dot),
+            _ => (name, &b""[..]),
+        };
+        let mut tail = [0u8; 12];
+        tail[..5].copy_from_slice(b" copy");
+        let mut tail_len = 5;
+        if n > 1 {
+            tail[5] = b' ';
+            tail[6] = b'0' + (n % 10) as u8;
+            tail_len = 7;
+        }
+        let room = NAME_BYTES - 1 - tail_len - extension.len();
+        let stem = &stem[..stem.len().min(room)];
+        let mut len = 0;
+        for part in [stem, &tail[..tail_len], extension] {
+            out[len..len + part.len()].copy_from_slice(part);
+            len += part.len();
+        }
+        len
+    }
+
+    fn paste(&mut self, window: &Window) {
+        let Some(clip) = self.clipboard else {
+            self.set_status(b"", b"Nothing to paste: copy an entry first", true);
+            return;
+        };
+        if !self.loaded {
+            return;
+        }
+        if clip.directory && self.path.within(&clip.path) {
+            self.set_status(b"", b"A folder cannot go into itself", true);
+            return;
+        }
+        let mut name = [0u8; NAME_BYTES];
+        for n in 0..COPY_TRIES {
+            let len = Self::copy_name(clip.path.name(), clip.directory, n, &mut name);
+            let Some(target) = self.path.child(&name[..len]) else {
+                self.set_status(b"", b"Path too long", true);
+                return;
+            };
+            match fs::copy(clip.path.cstr(), target.cstr()) {
+                Ok(()) => {
+                    target.log(b"[EXPLORER] Pasted ");
+                    self.set_status(b"Pasted ", &name[..len], false);
+                    self.refresh(window);
+                    return;
+                }
+                Err(err) if err.0 == fs::NAME_IN_USE => continue,
+                Err(err) => {
+                    self.set_status(b"", error_text(err), true);
+                    return;
+                }
+            }
+        }
+        self.set_status(b"", b"Too many copies with that name", true);
     }
 
     fn begin_rename(&mut self) {
@@ -348,6 +511,7 @@ impl Explorer {
             self.set_status(b"", b"Home keeps its name", true);
         } else if let Some(path) = self.path.child(entry.name()) {
             self.prompt = Some(NamePrompt::new(NameAction::Rename(path), entry.name()));
+            self.confirm = None;
             self.status_len = 0;
             self.dirty = true;
         } else {
@@ -366,6 +530,7 @@ impl Explorer {
             self.set_status(b"", message, true);
             return;
         }
+        let mut text_name = [0u8; NAME_BYTES + 4];
         let result = match prompt.action {
             NameAction::Create => match self.path.child(prompt.bytes()) {
                 Some(path) => fs::create_directory(path.cstr()),
@@ -374,6 +539,33 @@ impl Explorer {
                     return;
                 }
             },
+            NameAction::CreateText => {
+                // A name without an extension gets .txt, as in the editor.
+                let bytes = prompt.bytes();
+                let mut len = bytes.len();
+                text_name[..len].copy_from_slice(bytes);
+                if !bytes.contains(&b'.') {
+                    text_name[len..len + 4].copy_from_slice(b".txt");
+                    len += 4;
+                }
+                if len >= NAME_BYTES {
+                    self.set_status(b"", b"Name is longer than 55 characters", true);
+                    return;
+                }
+                let Some(path) = self.path.child(&text_name[..len]) else {
+                    self.set_status(b"", b"Path too long", true);
+                    return;
+                };
+                let mut probe = [0u8; 1];
+                if gemos::read_file(path.cstr(), &mut probe).is_ok() {
+                    Err(Error(fs::NAME_IN_USE))
+                } else {
+                    gemos::write_file(path.cstr(), b"").and_then(|_| {
+                        path.log(b"[EXPLORER] Created ");
+                        fs::open(path.cstr())
+                    })
+                }
+            }
             NameAction::Rename(path) => {
                 let name = CStr::from_bytes_with_nul(&prompt.name[..=prompt.len])
                     .expect("terminated GemFS name");
@@ -384,11 +576,16 @@ impl Explorer {
             Ok(()) => {
                 let prompt = self.prompt.take().expect("active name prompt");
                 let prefix: &[u8] = match prompt.action {
-                    NameAction::Create => b"Created ",
+                    NameAction::Create | NameAction::CreateText => b"Created ",
                     NameAction::Rename(_) => b"Renamed to ",
                 };
                 self.selected = None;
-                self.set_status(prefix, prompt.bytes(), false);
+                if matches!(prompt.action, NameAction::CreateText) {
+                    let len = text_name.iter().position(|&byte| byte == 0).unwrap_or(0);
+                    self.set_status(prefix, &text_name[..len], false);
+                } else {
+                    self.set_status(prefix, prompt.bytes(), false);
+                }
                 self.refresh(window);
             }
             Err(err) => self.set_status(b"", error_text(err), true),
@@ -426,7 +623,9 @@ impl Explorer {
     fn right_press(&mut self, point: Pointer, window: &Window) {
         self.last_click = None;
         let layout = self.layout();
-        if !self.loaded || self.prompt.is_some() || !layout.content.contains(point.x, point.y) {
+        if !self.loaded || self.prompt.is_some() || self.confirm.is_some() ||
+            !layout.content.contains(point.x, point.y)
+        {
             return;
         }
         let row = layout.row_at(point.y);
@@ -437,22 +636,41 @@ impl Explorer {
             self.selected = Some(index);
             let open = MenuItem::new(OPEN, b"Open");
             let rename = MenuItem::new(RENAME, b"Rename");
+            let copy = MenuItem::new(COPY, b"Copy");
+            let delete = MenuItem::new(DELETE, b"Delete");
             if self.home_entry(&entry) {
-                let _ = window.menu(point.x, point.y, &[open]);
-            } else if matches!(Kind::of(&entry), Kind::File) {
-                let _ = window.menu(point.x, point.y, &[rename]);
+                let _ = window.menu(point.x, point.y, &[open, copy]);
             } else {
-                let _ = window.menu(point.x, point.y, &[open, rename]);
+                match Kind::of(&entry) {
+                    // programs stay as they are (the kernel refuses changes)
+                    Kind::Program => { let _ = window.menu(point.x, point.y, &[open]); }
+                    Kind::File => { let _ = window.menu(point.x, point.y, &[rename, copy, delete]); }
+                    _ => { let _ = window.menu(point.x, point.y, &[open, rename, copy, delete]); }
+                }
             }
         } else if index >= self.total() || row >= layout.rows {
             self.selected = None;
-            let _ = window.menu(point.x, point.y, &[MenuItem::new(NEW_FOLDER, b"New Folder")]);
+            let folder = MenuItem::new(NEW_FOLDER, b"New Folder");
+            let text = MenuItem::new(NEW_TEXT, b"New Text File");
+            if self.clipboard.is_some() {
+                let _ = window.menu(point.x, point.y, &[folder, text, MenuItem::new(PASTE, b"Paste")]);
+            } else {
+                let _ = window.menu(point.x, point.y, &[folder, text]);
+            }
         }
     }
 
     fn left_press(&mut self, point: Pointer, window: &Window) {
         let layout = self.layout();
         let last = self.last_click.take();
+        if self.confirm.is_some() {
+            if layout.delete.contains(point.x, point.y) {
+                self.submit_delete(window);
+            } else if layout.cancel.contains(point.x, point.y) {
+                self.cancel_confirm();
+            }
+            return;
+        }
         if let Some(prompt) = &mut self.prompt {
             if layout.accept.contains(point.x, point.y) {
                 self.submit_name(window);
@@ -524,6 +742,14 @@ impl Explorer {
 
     fn key(&mut self, key: Key, control: bool, alt: bool, window: &Window) {
         self.last_click = None;
+        if self.confirm.is_some() {
+            match key {
+                Key::Escape => self.cancel_confirm(),
+                Key::Enter => self.submit_delete(window),
+                _ => {}
+            }
+            return;
+        }
         if let Some(prompt) = &mut self.prompt {
             match key {
                 Key::Escape => self.cancel_name(),
@@ -553,6 +779,9 @@ impl Explorer {
             Key::End => self.scroll(layout.last_top as i32, window),
             Key::Enter => self.open_selected(window),
             Key::F2 => self.begin_rename(),
+            Key::Delete => self.begin_delete(),
+            Key::Byte(b'c' | b'C') if control => self.copy_selected(),
+            Key::Byte(b'v' | b'V') if control => self.paste(window),
             Key::Backspace if self.path.len > 1 => self.navigate(self.path.parent(), window),
             _ => {}
         }
@@ -574,7 +803,11 @@ impl Explorer {
             }
             Event::Menu(OPEN) => self.open_selected(window),
             Event::Menu(RENAME) => self.begin_rename(),
-            Event::Menu(NEW_FOLDER) => self.begin_new(),
+            Event::Menu(NEW_FOLDER) => self.begin_new(NameAction::Create),
+            Event::Menu(NEW_TEXT) => self.begin_new(NameAction::CreateText),
+            Event::Menu(COPY) => self.copy_selected(),
+            Event::Menu(PASTE) => self.paste(window),
+            Event::Menu(DELETE) => self.begin_delete(),
             #[cfg(gemos_selftest)]
             Event::Menu(u32::MAX) => panic!("Explorer self-test panic"),
             _ => {}
@@ -597,7 +830,7 @@ fn error_text(error: Error) -> &'static [u8] {
 static mut EXPLORER: Explorer = Explorer::new();
 
 fn run() -> Result<()> {
-    let window = Window::open(c"File Explorer", FIRST_WIDTH as u32, FIRST_HEIGHT as u32, Icon::Folder)?;
+    let window = Window::open(c"Files", FIRST_WIDTH as u32, FIRST_HEIGHT as u32, Icon::Folder)?;
     // GemOS starts one thread in the process. Only this event loop uses the state.
     let explorer = unsafe { &mut *(&raw mut EXPLORER) };
     explorer.navigate(Path::home(), &window);

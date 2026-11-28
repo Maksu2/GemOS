@@ -810,6 +810,70 @@ static void selftest_fs_api(void) {
   selftest_check(ok, "fs: process writes to *.ELF names and system files "
                      "are refused, others go through");
 
+  /* copy and delete for processes */
+  gemfs_usage_t before_copy, after_copy;
+  /* big.bin holds 5000 bytes by now: a fresh 100 KB file to copy */
+  ok = gemfs_write("/selftest/a/b/source.bin", big, FS_BIG_SIZE, 0, 0) ==
+       (int)FS_BIG_SIZE;
+  (void)gemfs_usage(&before_copy);
+  ok = ok &&
+       gemfs_copy_user("/selftest/a/b/source.bin", "/selftest/a/b/big copy.bin") ==
+           GEMFS_OK &&
+       selftest_file_is("/selftest/a/b/big copy.bin", big, FS_BIG_SIZE) &&
+       gemfs_copy_user("/selftest/a/b/source.bin", "/selftest/a/b/big copy.bin") ==
+           GEMFS_ERR_EXIST &&
+       gemfs_copy_user("/selftest/a", "/selftest/a copy") == GEMFS_OK &&
+       selftest_file_is("/selftest/a copy/b/source.bin", big, FS_BIG_SIZE) &&
+       selftest_file_is("/selftest/a copy/b/big.bin", big + 1, 5000) &&
+       selftest_file_is("/selftest/a copy/b/big copy.bin", big, FS_BIG_SIZE) &&
+       gemfs_copy_user("/selftest/a", "/selftest/a/b/inside") == GEMFS_ERR_NAME &&
+       gemfs_copy_user("/selftest/a", "/selftest/a") == GEMFS_ERR_EXIST &&
+       gemfs_copy_user("/selftest/user.txt", "/selftest/user.ELF") ==
+           GEMFS_ERR_DENIED &&
+       gemfs_copy_user("/selftest/system.txt", "/selftest/copy.txt") ==
+           GEMFS_ERR_DENIED &&
+       gemfs_copy_user("/selftest", "/selftest copy") == GEMFS_ERR_DENIED &&
+       gemfs_stat("/selftest copy", &stat) == GEMFS_ERR_NOENT &&
+       gemfs_stat("/selftest/user.ELF", &stat) == GEMFS_ERR_NOENT &&
+       gemfs_stat("/selftest/copy.txt", &stat) == GEMFS_ERR_NOENT;
+  selftest_check(ok, "fs: copies of a file with an indirect block and of a "
+                     "tree match; programs, system files, an existing target "
+                     "and a folder into itself are refused");
+
+  /* a copy that fails half way leaves nothing: the deepest path no longer
+   * fits under the longer name */
+  char deep_copy[GEMFS_PATH_MAX] = "/selftest/d/";
+  size_t at = strlen(deep_copy);
+  memset(deep_copy + at, 'x', GEMFS_NAME_MAX);
+  deep_copy[at + GEMFS_NAME_MAX] = '/';
+  memset(deep_copy + at + GEMFS_NAME_MAX + 1, 'y', 40);
+  deep_copy[at + GEMFS_NAME_MAX + 41] = '\0';
+  gemfs_usage_t before_failed, after_failed;
+  ok = selftest_mkdirs(deep_copy) &&
+       gemfs_usage(&before_failed) == GEMFS_OK &&
+       gemfs_copy_user("/selftest/d", "/selftest/d with a much longer name") ==
+           GEMFS_ERR_NAME &&
+       gemfs_stat("/selftest/d with a much longer name", &stat) == GEMFS_ERR_NOENT &&
+       gemfs_usage(&after_failed) == GEMFS_OK &&
+       after_failed.free_blocks == before_failed.free_blocks &&
+       after_failed.free_inodes == before_failed.free_inodes &&
+       gemfs_delete_user("/selftest/d") == GEMFS_OK;
+  selftest_check(ok, "fs: a copy that fails half way is taken back whole");
+
+  ok = gemfs_delete_user("/selftest") == GEMFS_ERR_DENIED &&
+       gemfs_delete_user("/selftest/system.txt") == GEMFS_ERR_DENIED &&
+       gemfs_delete_user("/") == GEMFS_ERR_NAME &&
+       gemfs_stat("/selftest/system.txt", &stat) == GEMFS_OK &&
+       gemfs_delete_user("/selftest/a copy") == GEMFS_OK &&
+       gemfs_delete_user("/selftest/a/b/big copy.bin") == GEMFS_OK &&
+       gemfs_stat("/selftest/a copy", &stat) == GEMFS_ERR_NOENT &&
+       selftest_file_is("/selftest/a/b/source.bin", big, FS_BIG_SIZE);
+  (void)gemfs_usage(&after_copy);
+  selftest_check(ok && after_copy.free_blocks == before_copy.free_blocks &&
+                     after_copy.free_inodes == before_copy.free_inodes,
+                 "fs: process deletes refuse trees with system files and free "
+                 "every block and inode of the copies");
+
   ok = gemfs_delete("/selftest") == GEMFS_OK &&
        gemfs_stat("/selftest", &stat) == GEMFS_ERR_NOENT &&
        gemfs_stat("/selftest/a/b/big.bin", &stat) == GEMFS_ERR_NOENT;

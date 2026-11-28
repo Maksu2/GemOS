@@ -39,7 +39,7 @@ static void utextedit_render_header(const utextedit_state_t *state,
   utextedit_render_tail(title_right, sizeof(title_right),
                         state->path[0] != '\0' ? state->path : "Untitled",
                         UTEXTEDIT_HEADER_NAME_MAX);
-  if (state->document.modified) {
+  if (utextedit_document_modified(&state->document)) {
     length = gemos_strlen(title_right);
     if (length + 2U < sizeof(title_right)) {
       title_right[length++] = ' ';
@@ -65,6 +65,9 @@ static void utextedit_render_body(const utextedit_state_t *state,
   uint32_t visual_row = 0U;
   uint32_t visual_col = 0U;
   uint32_t offset;
+  uint32_t selection_start;
+  uint32_t selection_end;
+  int selected;
 
   if (state->document.length == 0U) {
     gemos_text_surface_write_text(
@@ -74,14 +77,25 @@ static void utextedit_render_body(const utextedit_state_t *state,
     return;
   }
 
+  selected = utextedit_document_selection(&state->document, &selection_start,
+                                          &selection_end);
   for (offset = 0U; offset < state->document.length; ++offset) {
     char ch = state->document.text[offset];
+    uint8_t style = selected && offset >= selection_start &&
+                            offset < selection_end
+                        ? UTEXTEDIT_SELECTED_STYLE
+                        : UTEXTEDIT_TEXT_STYLE;
 
-    if (ch != '\n' && visual_row >= state->viewport_top_row &&
+    if (visual_row > state->viewport_top_row + UTEXTEDIT_BODY_ROWS) {
+      break; /* below the view */
+    }
+    /* a selected line end shows as one selected cell */
+    if ((ch != '\n' || style == UTEXTEDIT_SELECTED_STYLE) &&
+        visual_row >= state->viewport_top_row &&
         visual_row < state->viewport_top_row + UTEXTEDIT_BODY_ROWS) {
       utextedit_render_put(
           cells, UTEXTEDIT_BODY_TOP_ROW + (visual_row - state->viewport_top_row),
-          UTEXTEDIT_CONTENT_COL + visual_col, UTEXTEDIT_TEXT_STYLE, ch);
+          UTEXTEDIT_CONTENT_COL + visual_col, style, ch == '\n' ? ' ' : ch);
     }
 
     if (ch == '\n') {
@@ -99,7 +113,10 @@ static void utextedit_render_body(const utextedit_state_t *state,
 
 static void utextedit_render_status(const utextedit_state_t *state,
                                     gemos_console_cell_t *cells) {
-  char left[48];
+  char left[64];
+  char selected_text[16];
+  uint32_t selection_start;
+  uint32_t selection_end;
   char right[UTEXTEDIT_STATUS_MAX];
   char row_text[16];
   char col_text[16];
@@ -125,6 +142,15 @@ static void utextedit_render_status(const utextedit_state_t *state,
   gemos_copy(left + offset, sizeof(left) - offset, "  Bytes ");
   offset = gemos_strlen(left);
   gemos_copy(left + offset, sizeof(left) - offset, bytes_text);
+  if (utextedit_document_selection(&state->document, &selection_start,
+                                   &selection_end)) {
+    gemos_u32_to_text(selection_end - selection_start, selected_text,
+                      sizeof(selected_text));
+    offset = gemos_strlen(left);
+    gemos_copy(left + offset, sizeof(left) - offset, "  Selected ");
+    offset = gemos_strlen(left);
+    gemos_copy(left + offset, sizeof(left) - offset, selected_text);
+  }
 
   gemos_copy(right, sizeof(right), state->status);
 
@@ -181,6 +207,11 @@ static void utextedit_render_dialog(const utextedit_state_t *state,
     gemos_copy(line + length, sizeof(line) - length, "?");
     title = line;
     keys = "Y  save      N  discard      Esc  cancel";
+  } else if (state->prompt == UTEXTEDIT_PROMPT_FIND) {
+    title = "Find (any case):";
+    keys = "Enter  find next      Esc  cancel      Ctrl+G  find again";
+    utextedit_render_tail(name, sizeof(name), state->input,
+                          UTEXTEDIT_DIALOG_TEXT_MAX);
   } else {
     title = state->prompt == UTEXTEDIT_PROMPT_OPEN ? "Open file:" : "Save as:";
     keys = state->prompt == UTEXTEDIT_PROMPT_OPEN
@@ -209,7 +240,7 @@ static void utextedit_render_footer(gemos_console_cell_t *cells) {
   gemos_text_surface_write_text(
       cells, UTEXTEDIT_COLS, UTEXTEDIT_ROWS, UTEXTEDIT_FOOTER_ROW,
       UTEXTEDIT_CONTENT_COL, UTEXTEDIT_DIM_STYLE,
-      "Ctrl+N New  Ctrl+O Open  Ctrl+S Save  Ctrl+Shift+S Save as");
+      "Ctrl+S Save  Ctrl+O Open  Ctrl+F Find  Ctrl+Z Undo  Ctrl+Y Redo");
   gemos_text_surface_write_right(cells, UTEXTEDIT_COLS, UTEXTEDIT_ROWS,
                                  UTEXTEDIT_FOOTER_ROW, UTEXTEDIT_CONTENT_COL,
                                  UTEXTEDIT_DIM_STYLE, "Esc close");
