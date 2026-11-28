@@ -830,7 +830,7 @@ fn error_text(error: Error) -> &'static [u8] {
 static mut EXPLORER: Explorer = Explorer::new();
 
 fn run() -> Result<()> {
-    let window = Window::open(c"File Explorer", FIRST_WIDTH as u32, FIRST_HEIGHT as u32, Icon::Folder)?;
+    let window = Window::open(c"Files", FIRST_WIDTH as u32, FIRST_HEIGHT as u32, Icon::Folder)?;
     // GemOS starts one thread in the process. Only this event loop uses the state.
     let explorer = unsafe { &mut *(&raw mut EXPLORER) };
     explorer.navigate(Path::home(), &window);
