@@ -989,11 +989,13 @@ class Smoke:
                           "wallpaper and dock",
                           issue or "desktop.png, %.1f s" % seconds)
 
-    def frame_counts(self):
+    def frame_counts(self, wait=True):
         """Full, partial and cursor frames so far, from the last "[GFX]
         Frames" line once the GUI loop has had the time to log every frame
-        drawn."""
-        time.sleep(FRAMES_LOG_DELAY)
+        drawn. Without wait, the last line as it is: enough for the full
+        count when no full frame was drawn in the last two seconds."""
+        if wait:
+            time.sleep(FRAMES_LOG_DELAY)
         found = FRAMES_RE.findall(self.log_text())
         return tuple(int(v) for v in found[-1]) if found else (0, 0, 0)
 
@@ -1142,7 +1144,7 @@ class Smoke:
         input that still draws one (kernel/kernel.c). The pointer goes back
         where it was, so both pictures have the cursor at the same place."""
         back = (self.pointer.x, self.pointer.y)
-        full0, _, _ = self.frame_counts()
+        full0, _, _ = self.frame_counts(wait=False)
         self.pointer.move_to(MENU_GEMOS)
         self.pointer.click()
         time.sleep(0.4)
@@ -1424,7 +1426,7 @@ class Smoke:
         unfocused. Opening and closing windows, the dock, minimizing and
         focus changes draw no full frame, and the screen after them is what
         a full frame draws."""
-        full0, partial0, _ = self.frame_counts()
+        full0, partial0, _ = self.frame_counts(wait=False)
         explorer = self.open_explorer()
         pid, terminal = self.open_hosted_app(*APPS[0][:3])
         width, height = (v // UI_SCALE for v in SCREEN_SIZE)
@@ -2531,12 +2533,16 @@ def run_matrix(args):
               "hdd": os.path.join(os.path.dirname(args.image),
                                   "gemos-hdd.img")}
     failed = []
-    for name, extra, logs in MATRIX:
+    deadline = time.monotonic() + args.timeout
+    for index, (name, extra, logs) in enumerate(MATRIX):
         boot = extra[extra.index("--boot") + 1] if "--boot" in extra \
             else "floppy"
+        # what is left, shared by the variants still to run: the quick
+        # ones leave time for the slow disk
+        budget = (deadline - time.monotonic()) / (len(MATRIX) - index)
         cmd = [sys.executable, here, "--image", images[boot],
                "--out", os.path.join(args.out, name),
-               "--timeout", str(args.timeout / len(MATRIX))] + extra
+               "--timeout", "%.0f" % max(budget, 1.0)] + extra
         for pattern in logs:
             cmd += ["--expect-log", pattern]
         print("== matrix: %s" % name, flush=True)
