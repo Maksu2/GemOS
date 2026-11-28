@@ -37,7 +37,9 @@
 
 #include "../apps/explorer/explorer.h"
 #include "app/app_manager.h"
+#include "console.h"
 #include "fs/gemfs.h"
+#include <gemos/paths.h>
 #include "gfx/context.h"
 #include "gfx/font/font.h"
 #include "gui/wm/wm.h"
@@ -957,6 +959,7 @@ static void selftest_fs_fallback(void) {
  * 128 KB write then takes over half a second. */
 #define LONGIO_DELAY_MS 2U
 #define LONGIO_DISK_MS (GEMOS_LONGIO_SIZE / 512U * LONGIO_DELAY_MS)
+#define EXPLORER_PROBE_FILE "Explorer selftest.txt"
 
 static volatile uint32_t gui_iterations;
 /* A GemFS call the GUI task makes when asked (selftest_gui_iteration) */
@@ -972,45 +975,31 @@ static volatile enum {
   EXPLORER_PROBE_IDLE,
   EXPLORER_PROBE_OPEN,
   EXPLORER_PROBE_WAIT,
-  EXPLORER_PROBE_CLOSE
 } explorer_probe;
-static window_t *explorer_probe_window;
+static volatile int explorer_probe_pid;
 static uint32_t explorer_probe_generation;
 static uint32_t explorer_probe_iterations;
 static volatile bool explorer_probe_listed;
 
 static void selftest_explorer_iteration(void) {
   switch (explorer_probe) {
-  case EXPLORER_PROBE_OPEN: {
-    window_t *before = wm_get_focused_window();
-
-    app_open("File Explorer");
-    explorer_probe_window = wm_get_focused_window();
-    if (explorer_probe_window == before) {
-      explorer_probe_window = NULL;
-    }
-    kernel_request_redraw();
+  case EXPLORER_PROBE_OPEN:
+    explorer_probe_pid = explorer_launch();
     explorer_probe = EXPLORER_PROBE_WAIT;
     break;
-  }
-  case EXPLORER_PROBE_WAIT:
-    if (gemfs_generation() == explorer_probe_generation &&
-        explorer_listing_pending()) {
+  case EXPLORER_PROBE_WAIT: {
+    int pid = explorer_probe_pid;
+    int task = pid > 0 ? process_task_id((uint32_t)pid) : -1;
+    if (gemfs_generation() == explorer_probe_generation && task >= 0 &&
+        scheduler_task_in_kernel((uint32_t)task)) {
       explorer_probe_iterations++;
     }
-    if (explorer_probe_window && gemfs_generation() != explorer_probe_generation &&
-        explorer_has_current_entry("UTERM.ELF")) {
+    if (pid > 0 && gemfs_generation() != explorer_probe_generation &&
+        console_test_contains((uint32_t)pid, EXPLORER_PROBE_FILE)) {
       explorer_probe_listed = true;
     }
     break;
-  case EXPLORER_PROBE_CLOSE:
-    if (explorer_probe_window) {
-      wm_remove_window(explorer_probe_window);
-      explorer_probe_window = NULL;
-      kernel_request_redraw();
-    }
-    explorer_probe = EXPLORER_PROBE_IDLE;
-    break;
+  }
   case EXPLORER_PROBE_IDLE:
     break;
   }
@@ -1286,7 +1275,44 @@ static void selftest_longio_gui(void) {
   }
 }
 
+static void selftest_explorer_panic(void) {
+  int pid = explorer_probe_pid;
+  selftest_exit_t exit;
+  gemos_console_event_t panic_event = {GEMOS_WINDOW_MENU_ACTION, 0xffffffffU, 0, 0};
+  bool panicked = pid > 0 && console_test_event((uint32_t)pid, panic_event) &&
+                  selftest_wait_exit(pid, &exit) && !exit.faulted && exit.exit_code == 101;
+  if (!selftest_check(panicked, "explorer: a Rust panic ends only its process")) {
+    if (pid > 0) process_kill_pid((uint32_t)pid, -1);
+    return;
+  }
+
+  explorer_probe_pid = 0;
+  explorer_probe = EXPLORER_PROBE_OPEN;
+  scheduler_wake(TASK_GUI);
+  uint64_t deadline = timer_get_ticks() + SELFTEST_WAIT_MS;
+  while (timer_get_ticks() < deadline) {
+    pid = explorer_probe_pid;
+    if (pid < 0 || (pid > 0 && console_test_contains((uint32_t)pid, EXPLORER_PROBE_FILE))) {
+      break;
+    }
+    selftest_sleep(2);
+  }
+  explorer_probe = EXPLORER_PROBE_IDLE;
+  bool reopened = pid > 0 && console_test_contains((uint32_t)pid, EXPLORER_PROBE_FILE);
+  gemos_console_event_t close = {GEMOS_CONSOLE_EVENT_CLOSE_REQUEST, 0, 0, 0};
+  bool closed = reopened && console_test_event((uint32_t)pid, close) &&
+                selftest_wait_exit(pid, &exit) && !exit.faulted && exit.exit_code == 0;
+  selftest_check(closed, "explorer: the desktop reopens and closes Explorer after a panic");
+  if (!closed && pid > 0) process_kill_pid((uint32_t)pid, -1);
+}
+
 static void selftest_longio_explorer(void) {
+  const char *path = GEMOS_HOME_PATH "/" EXPLORER_PROBE_FILE;
+  const char marker = 'x';
+  if (!selftest_check(gemfs_write(path, &marker, 1, 0, 0) == 1,
+                      "explorer: a test file is available in Home")) {
+    return;
+  }
   selftest_exit_t exit;
   int task;
   int pid = selftest_spawn_longio(GEMOS_LONGIO_TIMED, &task);
@@ -1294,6 +1320,7 @@ static void selftest_longio_explorer(void) {
 
   explorer_probe_iterations = 0;
   explorer_probe_listed = false;
+  explorer_probe_pid = 0;
   if (writing) {
     uint64_t deadline = timer_get_ticks() + SELFTEST_WAIT_MS;
 
@@ -1303,8 +1330,7 @@ static void selftest_longio_explorer(void) {
     while (!explorer_probe_listed && timer_get_ticks() < deadline) {
       selftest_sleep(2);
     }
-    explorer_probe = EXPLORER_PROBE_CLOSE;
-    scheduler_wake(TASK_GUI);
+    explorer_probe = EXPLORER_PROBE_IDLE;
   }
 
   selftest_check(writing && explorer_probe_iterations >= 2,
@@ -1316,6 +1342,9 @@ static void selftest_longio_explorer(void) {
   if (pid >= 0 && !finished) {
     process_kill_pid((uint32_t)pid, -1);
   }
+  selftest_explorer_panic();
+  selftest_check(gemfs_delete(path) == GEMFS_OK,
+                 "explorer: the Home test file was removed");
 }
 
 static void selftest_longio(void) {

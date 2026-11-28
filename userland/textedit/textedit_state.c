@@ -1,4 +1,5 @@
 #include "textedit_state.h"
+#include <gemos/paths.h>
 
 #include "../common/format.h"
 #include "textedit_theme.h"
@@ -224,7 +225,7 @@ static void utextedit_state_continue(utextedit_state_t *state) {
     break;
   case UTEXTEDIT_NEXT_OPEN:
     utextedit_state_prompt(state, UTEXTEDIT_PROMPT_OPEN,
-                           state->path[0] != '\0' ? state->path : "/");
+                           state->path[0] != '\0' ? state->path : "~/");
     break;
   default:
     break;
@@ -252,7 +253,7 @@ static void utextedit_state_request(utextedit_state_t *state,
 /* Save to the document's file, or ask for one; then go on with next. */
 static void utextedit_state_save(utextedit_state_t *state) {
   if (state->path[0] == '\0') {
-    utextedit_state_prompt(state, UTEXTEDIT_PROMPT_SAVE_AS, "/");
+    utextedit_state_prompt(state, UTEXTEDIT_PROMPT_SAVE_AS, "~/");
     return;
   }
   if (utextedit_state_save_to(state, state->path)) {
@@ -263,19 +264,27 @@ static void utextedit_state_save(utextedit_state_t *state) {
   }
 }
 
-/* Enter in a path prompt. A saved file gets a leading '/' and ".txt" when
- * its name has no extension. */
+/* Enter in a path prompt. Relative paths and ~/ start at the user's home.
+ * A saved file gets .txt when its name has no extension. */
 static void utextedit_state_prompt_enter(utextedit_state_t *state) {
   char path[UTEXTEDIT_PATH_MAX];
+  const char *input = state->input;
+  const char *prefix = input[0] == '/' ? "" : GEMOS_HOME_PATH "/";
+  size_t prefix_length = gemos_strlen(prefix);
   const char *name;
   size_t length;
 
-  if (state->input[0] == '/') {
-    gemos_copy(path, sizeof(path), state->input);
-  } else {
-    path[0] = '/';
-    gemos_copy(path + 1, sizeof(path) - 1U, state->input);
+  if (input[0] == '~' && input[1] == '/') {
+    input += 2;
   }
+  length = prefix_length + gemos_strlen(input);
+  if (length >= sizeof(path)) {
+    utextedit_state_set_error(state, "Path too long", "");
+    return;
+  }
+  gemos_copy(path, sizeof(path), prefix);
+  gemos_copy(path + prefix_length, sizeof(path) - prefix_length, input);
+
   name = utextedit_path_name(path);
   if (name[0] == '\0') {
     utextedit_state_set_error(state, "Type a file name", "");
@@ -288,11 +297,14 @@ static void utextedit_state_prompt_enter(utextedit_state_t *state) {
     return;
   }
 
-  length = gemos_strlen(path);
   while (*name != '\0' && *name != '.') {
     name++;
   }
-  if (*name == '\0' && length + 4U < sizeof(path)) {
+  if (*name == '\0') {
+    if (length + 4U >= sizeof(path)) {
+      utextedit_state_set_error(state, "Path too long", "");
+      return;
+    }
     gemos_copy(path + length, sizeof(path) - length, ".txt");
   }
   state->prompt = UTEXTEDIT_PROMPT_NONE;
@@ -420,7 +432,7 @@ void utextedit_state_handle_event(utextedit_state_t *state,
     case 'S':
       if ((event->modifiers & GEMOS_KEYMOD_SHIFT) != 0U) {
         utextedit_state_prompt(state, UTEXTEDIT_PROMPT_SAVE_AS,
-                               state->path[0] != '\0' ? state->path : "/");
+                               state->path[0] != '\0' ? state->path : "~/");
       } else {
         utextedit_state_save(state);
       }

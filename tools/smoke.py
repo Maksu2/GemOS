@@ -303,17 +303,19 @@ def explorer_entry(window, row):
     return (window.x + 65, explorer_list_y(window) + row * EXPLORER_ROW_HEIGHT + 12)
 
 
-EXPLORER_USRSMOKE = 0
-EXPLORER_ABOUT = 2
-EDITOR_NOTE_ROW = 5  # /Projects, four built-in programs, then the saved file
-EXPLORER_DIR = "/Projects"
+EXPLORER_HOME = "/Home"
+EXPLORER_USRSMOKE = 1  # /Home was created before the built-in programs.
+EXPLORER_ABOUT = 3
+EDITOR_NOTE_ROW = 1  # The home folder contains Projects and the saved file.
+EXPLORER_DIR = EXPLORER_HOME + "/Projects"
 EXPLORER_ITEMS = 110
-EXPLORER_LAST_FILE = "/Projects/NOTE-110.TXT"
-RENAME_DIR = "/My Work"
+EXPLORER_LAST_FILE = EXPLORER_DIR + "/NOTE-110.TXT"
+RENAME_FOLDER = "My Work"
+RENAME_DIR = EXPLORER_HOME + "/" + RENAME_FOLDER
 RENAME_FILE = RENAME_DIR + "/final notes.txt"
 RENAME_FILES = {"draft.txt": b"The original draft.\n",
                 "taken.txt": b"Keep this other file.\n"}
-EDITOR_FILE = "/notes.txt"
+EDITOR_FILE = EXPLORER_HOME + "/notes.txt"
 EDITOR_SAVED = b"first line +more\nsecond"
 # QEMU sendkey names of the characters the test types
 SENDKEY = {" ": "spc", "\n": "ret", ".": "dot", "/": "slash",
@@ -657,12 +659,16 @@ class Pointer:
             dy -= sy
         self.x, self.y = point
 
-    def click(self):
-        self.press()
+    def click(self, button=1):
+        self.press(button)
         self.release()
 
-    def press(self):
-        self.monitor.cmd("mouse_button 1")
+    def double_click(self):
+        self.click()
+        self.click()
+
+    def press(self, button=1):
+        self.monitor.cmd("mouse_button %d" % button)
         time.sleep(0.15)
 
     def release(self):
@@ -725,6 +731,7 @@ class Smoke:
             if result.returncode:
                 raise SmokeError(result.stderr.decode(errors="replace").strip())
 
+        require("mkdir", disk, EXPLORER_HOME)
         require("mkdir", disk, EXPLORER_DIR)
         for index in range(1, EXPLORER_ITEMS + 1):
             name = "NOTE-%03d.TXT" % index
@@ -736,12 +743,13 @@ class Smoke:
         disk = self.disks.get("data")
         if not disk or self.args.data_disk != "gemfs":
             raise SmokeError("the Explorer test needs a GemFS disk")
-        mkgemfs("mkdir", disk, "/Work").check_returncode()
+        mkgemfs("mkdir", disk, EXPLORER_HOME).check_returncode()
+        mkgemfs("mkdir", disk, EXPLORER_HOME + "/Work").check_returncode()
         for name, data in RENAME_FILES.items():
             source = os.path.join(self.out, name)
             with open(source, "wb") as stream:
                 stream.write(data)
-            mkgemfs("put", disk, source, "/Work/" + name).check_returncode()
+            mkgemfs("put", disk, source, EXPLORER_HOME + "/Work/" + name).check_returncode()
 
     def snapshot_disks(self):
         self.hashes = {name: sha256(path) for name, path in self.disks.items()}
@@ -981,11 +989,13 @@ class Smoke:
                           "wallpaper and dock",
                           issue or "desktop.png, %.1f s" % seconds)
 
-    def frame_counts(self):
+    def frame_counts(self, wait=True):
         """Full, partial and cursor frames so far, from the last "[GFX]
         Frames" line once the GUI loop has had the time to log every frame
-        drawn."""
-        time.sleep(FRAMES_LOG_DELAY)
+        drawn. Without wait, the last line as it is: enough for the full
+        count when no full frame was drawn in the last two seconds."""
+        if wait:
+            time.sleep(FRAMES_LOG_DELAY)
         found = FRAMES_RE.findall(self.log_text())
         return tuple(int(v) for v in found[-1]) if found else (0, 0, 0)
 
@@ -1129,11 +1139,37 @@ class Smoke:
         self.pointer.move_to(window.close_button())
         self.pointer.click()
 
+    def full_frame_reference(self, name):
+        """A screendump of a full frame: Esc in an open menu is the one
+        input that still draws one (kernel/kernel.c). The pointer goes back
+        where it was, so both pictures have the cursor at the same place."""
+        back = (self.pointer.x, self.pointer.y)
+        full0, _, _ = self.frame_counts(wait=False)
+        self.pointer.move_to(MENU_GEMOS)
+        self.pointer.click()
+        time.sleep(0.4)
+        self.monitor.cmd("sendkey esc")
+        time.sleep(0.4)
+        self.pointer.move_to(back)
+        full1, _, _ = self.frame_counts()
+        if full1 <= full0:
+            raise SmokeError("frames: Esc in the GemOS menu drew no full frame")
+        return self.screendump(name)
+
+    def same_as_full_frame(self, partial, full):
+        """Pixels that differ between two screendumps, without the clock
+        (it may have shown a new minute meanwhile)."""
+        width = SCREEN_SIZE[0] // UI_SCALE
+        height = SCREEN_SIZE[1] // UI_SCALE
+        return (pixels_changed(partial.logical_area((0, 0, width - 90, 28)),
+                               full.logical_area((0, 0, width - 90, 28))) +
+                pixels_changed(partial.logical_area((0, 28, width, height)),
+                               full.logical_area((0, 28, width, height))))
+
     def partial_frames(self):
         """Typing into UTERM.ELF draws only the window that changed: no
         full frame, and the screen is then exactly what a full frame draws
-        (one is forced with a click on the focused window's title bar,
-        which changes nothing on the screen)."""
+        (full_frame_reference)."""
         name, menu, item, _ = APPS[0]
         opened_re = re.compile(r"\[CONSOLE\] Opened PID=(\d+) handle=\d+ " +
                                Window.GEOMETRY)
@@ -1161,18 +1197,8 @@ class Smoke:
                    "%d full, %d partial frames"
                    % (full1 - full0, partial1 - partial0))
         partial = self.screendump("partial-frames")
-        self.pointer.click()  # on the title bar: a full frame
-        time.sleep(1.0)
-        full = self.screendump("full-frame")
-        # the clock may have shown a new minute meanwhile
-        width = SCREEN_SIZE[0] // UI_SCALE
-        differ = (pixels_changed(partial.logical_area((0, 0, width - 90, 28)),
-                                 full.logical_area((0, 0, width - 90, 28))) +
-                  pixels_changed(
-                      partial.logical_area((0, 28, width,
-                                            SCREEN_SIZE[1] // UI_SCALE)),
-                      full.logical_area((0, 28, width,
-                                         SCREEN_SIZE[1] // UI_SCALE))))
+        full = self.full_frame_reference("full-frame")
+        differ = self.same_as_full_frame(partial, full)
         self.check(differ == 0, "frames: the partial frames drew what a full "
                    "frame draws", "partial-frames.png, full-frame.png, %d "
                    "pixels differ" % differ)
@@ -1396,7 +1422,11 @@ class Smoke:
 
     # -- File Explorer -----------------------------------------------------------
     def window_focus(self):
-        """A hidden Explorer cannot close itself or keep the Terminal unfocused."""
+        """A hidden Explorer cannot close itself or keep the Terminal
+        unfocused. Opening and closing windows, the dock, minimizing and
+        focus changes draw no full frame, and the screen after them is what
+        a full frame draws."""
+        full0, partial0, _ = self.frame_counts(wait=False)
         explorer = self.open_explorer()
         pid, terminal = self.open_hosted_app(*APPS[0][:3])
         width, height = (v // UI_SCALE for v in SCREEN_SIZE)
@@ -1447,11 +1477,39 @@ class Smoke:
                                            explorer, "focus-restored")
         self.check(restored and "[WM] Close Window" not in self.log_text()[since:],
                    "focus: a click on the wallpaper leaves the hidden Explorer intact")
+        full1, partial1, _ = self.frame_counts()
+        self.check(full1 == full0 and partial1 > partial0,
+                   "frames: opening, focusing, minimizing, restoring and "
+                   "closing windows draw only partial frames",
+                   "%d full, %d partial frames" % (full1 - full0,
+                                                   partial1 - partial0))
         if restored:
+            self.pointer.move_to(outside)
+            partial = self.screendump("clicks-partial")
+            differ = self.same_as_full_frame(
+                partial, self.full_frame_reference("clicks-full"))
+            self.check(differ == 0, "frames: after the clicks the screen is "
+                       "what a full frame draws",
+                       "clicks-partial.png, clicks-full.png, %d pixels differ"
+                       % differ)
             click(explorer.close_button())
 
-    def open_explorer(self):
-        """Open the File Explorer and wait for its root entries to appear."""
+    def wait_explorer_path(self, path):
+        opened = re.compile(r"\[EXPLORER\] Opened (.*)\r?\n")
+
+        def listed(text):
+            paths = opened.findall(text)
+            return paths and paths[-1].rstrip("\r") == path
+
+        if not self.wait_for(listed, self.args.app_timeout):
+            raise SmokeError("Explorer did not list " + path)
+
+    def explorer_up(self, window):
+        self.pointer.move_to((window.x + 27, window.y + 42))
+        self.pointer.click()
+
+    def open_explorer(self, root=False):
+        """Open File Explorer in Home. Use Up to reach programs at the root."""
         placed_re = re.compile(r"\[WM\] Placed " + Window.GEOMETRY)
         before = len(placed_re.findall(self.log_text()))
         self.pointer.home()
@@ -1465,23 +1523,12 @@ class Smoke:
         if not placed:
             raise SmokeError("the File Explorer opened no window")
         window = Window.parse(placed[0])
-        row_y = explorer_list_y(window)
-        icon = (window.x + 11, row_y + 4, window.x + 29, row_y + 20)
-
-        def listing_problem(image):
-            issue = title_bar_problem(image, window)
-            if issue:
-                return issue
-            if bytes(INK_RGB) not in image.logical_area(icon):
-                return "the first file icon has not appeared"
-            return None
-
-        issue, seconds = self.watch_screen("explorer-ready", listing_problem,
-                                           self.args.app_timeout)
-        if issue:
-            raise SmokeError("File Explorer: " + issue)
-        self.check(True, "explorer: the root listing appeared",
-                   "explorer-ready.png, %.1f s" % seconds)
+        self.wait_explorer_path(EXPLORER_HOME)
+        if not self.check_window_drawn("File Explorer in Home", window, "explorer-ready"):
+            raise SmokeError("File Explorer did not draw its home window")
+        if root:
+            self.explorer_up(window)
+            self.wait_explorer_path("/")
         return window
 
     def file_explorer(self):
@@ -1491,7 +1538,7 @@ class Smoke:
                   flush=True)
             return
         self.window_focus()
-        explorer = self.open_explorer()
+        explorer = self.open_explorer(root=True)
         about = explorer_entry(explorer, EXPLORER_ABOUT)
         self.pointer.home()
         self.pointer.move_to(about)
@@ -1510,7 +1557,8 @@ class Smoke:
 
         def open_about():
             self.pointer.move_to(about)
-            self.pointer.press()               # the second click opens it
+            self.pointer.click()
+            self.pointer.press()
         self.run_program("/ABOUT.ELF", open_about, False,
                          shot="explorer-about")
 
@@ -1518,9 +1566,7 @@ class Smoke:
         spawn_re = re.compile(r"\[PROC\] Spawned PID=(\d+) /USRSMOKE\.ELF")
         before = len(spawn_re.findall(self.log_text()))
         self.pointer.move_to(explorer_entry(explorer, EXPLORER_USRSMOKE))
-        self.pointer.click()                   # select
-        time.sleep(0.5)
-        self.pointer.click()                   # start
+        self.pointer.double_click()
         pids = self.wait_for(lambda t: spawn_re.findall(t)[before:],
                              self.args.app_timeout)
         reaped = pids and self.wait_for(
@@ -1755,7 +1801,7 @@ class Smoke:
         since = len(self.log_text())
         self.monitor.cmd("sendkey y")
         time.sleep(0.5)
-        self.type_text("notes")        # after the "/" it offers
+        self.type_text("notes")        # after the "~/" it offers
         self.monitor.cmd("sendkey ret")
         if not self.editor_ended(pid, "Y, then Save as \"notes\": saved and "
                                  "closed", since):
@@ -1765,9 +1811,7 @@ class Smoke:
         def open_from_explorer():
             explorer = self.open_explorer()
             self.pointer.move_to(explorer_entry(explorer, EDITOR_NOTE_ROW))
-            self.pointer.click()           # select
-            time.sleep(0.5)
-            self.pointer.click()           # open
+            self.pointer.double_click()
         pid, window = self.start_editor(open_from_explorer,
                                         "the File Explorer")
         if pid is None:
@@ -1810,7 +1854,9 @@ class Smoke:
         self.type_text("x")
         self.monitor.cmd("sendkey ctrl-shift-s")
         time.sleep(0.5)
-        self.type_text("UTERM.ELF")
+        self.monitor.cmd("sendkey backspace")
+        self.monitor.cmd("sendkey backspace")
+        self.type_text("/UTERM.ELF")
         self.monitor.cmd("sendkey ret")
 
         def no_error(image):
@@ -1844,20 +1890,17 @@ class Smoke:
         result = mkgemfs("cat", self.disks["data"], "/UTERM.ELF")
         self.check(result.returncode == 0 and result.stdout == expected,
                    "disk: UTERM.ELF is still the program from the kernel")
-        result = mkgemfs("ls", self.disks["data"], "/")
-        names = sorted(line.split()[-1] for line in
-                       result.stdout.decode(errors="replace").splitlines())
-        wanted = sorted(["ABOUT.ELF", "USRSMOKE.ELF", "UTERM.ELF",
-                         "UTEXTEDIT.ELF", EDITOR_FILE.lstrip("/"), "Projects/"])
-        self.check(names == wanted, "disk: no other files were saved",
-                   ", ".join(names))
+        result = mkgemfs("ls", self.disks["data"], EXPLORER_HOME)
+        names = {line.split(maxsplit=3)[3] for line in result.stdout.decode().splitlines()}
+        self.check(result.returncode == 0 and names == {"notes.txt", "Projects/"},
+                   "disk: Home contains the folder and the document",
+                   ", ".join(sorted(names)))
 
     def explorer_scroll(self):
         """Browse a full directory with the keyboard and the scrollbar."""
         window = self.open_explorer()
         self.pointer.move_to(explorer_entry(window, 0))
-        self.pointer.click()
-        self.pointer.click()
+        self.pointer.double_click()
         self.pointer.move_to((SCREEN_SIZE[0] // UI_SCALE - 20, 45))
 
         y = explorer_list_y(window)
@@ -1920,8 +1963,7 @@ class Smoke:
 
         def open_last():
             self.pointer.move_to(explorer_entry(window, rows - 1))
-            self.pointer.click()
-            self.pointer.click()
+            self.pointer.double_click()
 
         pid, _ = self.start_editor(open_last, "the last row")
         if pid is not None:
@@ -1953,31 +1995,64 @@ class Smoke:
         self.explorer_screen(shot, what, probe)
 
     def explorer_new_folder(self, window):
-        self.pointer.move_to((window.x + window.w - 53, window.y + 42))
-        self.pointer.click()
+        self.explorer_context_action(explorer_entry(window, 3), 1, 0, "context-new-folder")
 
     def explorer_select_row(self, window, row):
         self.pointer.move_to(explorer_entry(window, row))
         self.pointer.click()
 
+    def explorer_context(self, point, items, shot):
+        context_re = re.compile(r"\[MENU\] Context " + Window.GEOMETRY)
+        since = len(self.log_text())
+        self.pointer.move_to(point)
+        self.pointer.click(2)
+        match = self.wait_for(lambda text: context_re.search(text, since),
+                              self.args.app_timeout)
+        if not match:
+            raise SmokeError("right click did not open the system menu")
+        menu = Window.parse(match)
+        width, height = (size // UI_SCALE for size in SCREEN_SIZE)
+        area = Window(0, 28, width, height - 28 - DOCK_HEIGHT)
+        if not self.check(menu.inside(area) and menu.h == 2 + 24 * items,
+                          "explorer: the system menu fits and offers the expected rows"):
+            raise SmokeError("context menu geometry is wrong")
+        self.explorer_screen(shot, "the context menu is drawn", lambda image:
+                             image.logical_rgb((menu.x + 24, menu.y)) == FRAME_RGB)
+        return menu
+
+    def explorer_context_action(self, point, items, row, shot):
+        menu = self.explorer_context(point, items, shot)
+        self.pointer.move_to((menu.x + 40, menu.y + 13 + 24 * row))
+        self.pointer.click()
+
     def explorer_enter_work(self, window):
-        # The root's first entry was seeded as /Work. A rename keeps its slot.
+        # Home's first entry was seeded as Work. A rename keeps its slot.
         self.explorer_select_row(window, 0)
         self.monitor.cmd("sendkey ret")
-        y = explorer_list_y(window) + EXPLORER_ROW_HEIGHT
-        area = (window.x + 11, y + 4, window.x + 29, y + 20)
-        # Two entries in the subdirectory. The empty third row distinguishes
-        # the contents from the root even if the previous frame is still visible.
-        empty_y = y + EXPLORER_ROW_HEIGHT
-        empty = (window.x + 11, empty_y + 4, window.x + 29, empty_y + 20)
-        self.explorer_screen("work-list", "the renamed folder opens", lambda image:
-                             bytes(INK_RGB) in image.logical_area(area)
-                             and bytes(INK_RGB) not in image.logical_area(empty))
+        self.wait_explorer_path(RENAME_DIR)
+        self.check(True, "explorer: the renamed folder opens")
 
     def explorer_names(self):
         window = self.open_explorer()
+        log = self.log_text()
+        explorer_pid = re.search(r"\[PROC\] Spawned PID=(\d+) EXPLORER\.ELF\b", log)
+        self.check(explorer_pid is not None
+                   and "[WINDOW] Opened PID=%s " % explorer_pid.group(1) in log,
+                   "explorer: EXPLORER.ELF owns its window in Ring 3")
+        path_end = (window.x + window.w - 53, window.y + 31)
+        self.explorer_screen("home-toolbar", "the path has room across the toolbar",
+                             lambda image: image.logical_rgb(path_end) == PAPER_RGB)
+        blank = explorer_entry(window, 3)
+        menu = self.explorer_context(blank, 1, "context-empty")
+        since = len(self.log_text())
+        self.explorer_up(window)
+        self.explorer_screen("context-dismissed", "an outside click only dismisses the menu",
+                             lambda image: image.logical_rgb((menu.x + 24, menu.y)) == PAPER_RGB)
+        opened_root = re.compile(r"\[EXPLORER\] Opened /\r?\n")
+        navigated = self.wait_for(lambda text: opened_root.search(text, since), 0.75)
+        self.check(not navigated, "explorer: the dismissed menu leaves Home open")
         self.explorer_new_folder(window)
-        self.explorer_name_screen(window, "new-folder", "New Folder shows the input")
+        self.explorer_name_screen(window, "new-folder", "right-click New Folder shows the input")
         self.type_text("cancelled")
         self.monitor.cmd("sendkey esc")
         self.explorer_name_screen(window, "cancel-create", "Escape cancels creation",
@@ -2007,16 +2082,15 @@ class Smoke:
         self.pointer.click()  # OK also submits the same prompt.
         self.explorer_name_screen(window, "created-folder", "a named folder is created",
                                   editing=False)
-        _, y = explorer_entry(window, 5)  # /Work and the four built-in programs came first.
+        _, y = explorer_entry(window, 1)  # Home initially contained only Work.
         icon = (window.x + 11, y - 8, window.x + 29, y + 8)
         self.explorer_screen("created-row", "the new folder appears without input",
                              lambda image: bytes(INK_RGB) in image.logical_area(icon))
 
-        self.explorer_select_row(window, 0)
-        self.monitor.cmd("sendkey f2")
-        self.explorer_name_screen(window, "rename-folder", "F2 prefills the folder name",
+        self.explorer_context_action(explorer_entry(window, 0), 2, 1, "context-folder")
+        self.explorer_name_screen(window, "rename-folder", "right-click Rename prefills the folder name",
                                   prefilled=True)
-        self.type_text(RENAME_DIR[1:])
+        self.type_text(RENAME_FOLDER)
         self.monitor.cmd("sendkey ret")
         self.explorer_name_screen(window, "renamed-folder", "Enter renames the folder",
                                   editing=False)
@@ -2025,9 +2099,8 @@ class Smoke:
         self.explorer_screen("renamed-row", "the renamed folder appears without input",
                              lambda image: bytes(INK_RGB) in image.logical_area(first_icon))
         self.explorer_enter_work(window)
-        self.explorer_select_row(window, 0)
-        self.monitor.cmd("sendkey f2")
-        self.explorer_name_screen(window, "rename-file", "F2 prefills the file name",
+        self.explorer_context_action(explorer_entry(window, 0), 2, 1, "context-file")
+        self.explorer_name_screen(window, "rename-file", "right-click Rename prefills the file name",
                                   prefilled=True)
         self.type_text("taken.txt\n")
         self.explorer_name_screen(window, "rename-collision", "a rename cannot replace another file",
@@ -2045,10 +2118,17 @@ class Smoke:
                    "explorer: reboot kept the built-in programs")
         window = self.open_explorer()
         self.explorer_enter_work(window)
+        start_re = re.compile(r"\[UTEXTEDIT\] Spawned PID=\d+ for " + re.escape(RENAME_FILE))
+        since = len(self.log_text())
+        self.explorer_select_row(window, 0)
+        time.sleep(1.0)
+        self.explorer_select_row(window, 0)
+        self.check(not self.wait_for(lambda text: start_re.search(text, since), 0.75),
+                   "explorer: two separate clicks only select the file")
 
         def open_file():
-            self.explorer_select_row(window, 0)
-            self.monitor.cmd("sendkey ret")
+            self.pointer.move_to(explorer_entry(window, 0))
+            self.pointer.double_click()
 
         pid, _ = self.start_editor(open_file, "renamed file after reboot")
         if pid is not None:
@@ -2060,10 +2140,10 @@ class Smoke:
 
     def check_explorer_names(self):
         disk = self.disks["data"]
-        for path, entries in [("/", {"My Work/", "New Notes/", "ABOUT.ELF", "UTERM.ELF",
-                                     "USRSMOKE.ELF", "UTEXTEDIT.ELF"}),
+        for path, entries in [("/", {"Home/", "ABOUT.ELF", "UTERM.ELF", "USRSMOKE.ELF", "UTEXTEDIT.ELF"}),
+                              (EXPLORER_HOME, {"My Work/", "New Notes/"}),
                               (RENAME_DIR, {"final notes.txt", "taken.txt"}),
-                              ("/New Notes", set())]:
+                              (EXPLORER_HOME + "/New Notes", set())]:
             result = mkgemfs("ls", disk, path)
             names = {line.split(maxsplit=3)[3]
                      for line in result.stdout.decode().splitlines() if line}
@@ -2112,9 +2192,11 @@ class Smoke:
         explorer_checks = {
             "explorer: GUI runs while a folder read waits for a write",
             "explorer: shows the current folder after the write",
+            "explorer: a Rust panic ends only its process",
+            "explorer: the desktop reopens and closes Explorer after a panic",
         }
         self.check(explorer_checks.issubset(passed),
-                   label + ": Explorer regression checks both ran and passed")
+                   label + ": Explorer concurrency and panic recovery checks passed")
         if boot == 1:
             self.check(any(line.startswith("fs: wrote " + PERSIST_NOTE)
                            for line in passed),
@@ -2451,12 +2533,16 @@ def run_matrix(args):
               "hdd": os.path.join(os.path.dirname(args.image),
                                   "gemos-hdd.img")}
     failed = []
-    for name, extra, logs in MATRIX:
+    deadline = time.monotonic() + args.timeout
+    for index, (name, extra, logs) in enumerate(MATRIX):
         boot = extra[extra.index("--boot") + 1] if "--boot" in extra \
             else "floppy"
+        # what is left, shared by the variants still to run: the quick
+        # ones leave time for the slow disk
+        budget = (deadline - time.monotonic()) / (len(MATRIX) - index)
         cmd = [sys.executable, here, "--image", images[boot],
                "--out", os.path.join(args.out, name),
-               "--timeout", str(args.timeout / len(MATRIX))] + extra
+               "--timeout", "%.0f" % max(budget, 1.0)] + extra
         for pattern in logs:
             cmd += ["--expect-log", pattern]
         print("== matrix: %s" % name, flush=True)

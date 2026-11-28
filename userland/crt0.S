@@ -11,6 +11,8 @@
 _start:
     mov (%esp), %eax        /* argc */
     lea 4(%esp), %edx       /* argv */
+    and $-16, %esp          /* i386 ABI: align the stack before call */
+    sub $8, %esp            /* leave space for the two arguments */
     push %edx
     push %eax
     call main

@@ -92,6 +92,16 @@ int main(int argc, char **argv) {
     return GEMOS_FILETEST_NEW_PROGRAM;
   }
 
+  /* a rename makes no program and renames none */
+  if (gemos_syscall2(SYS_entry_rename, (uintptr_t)GEMOS_FILETEST_NOTE,
+                     (uintptr_t)"note.ELF") != GEMOS_ERR_DENIED ||
+      gemos_syscall2(SYS_entry_rename, (uintptr_t)GEMOS_FILETEST_PATH,
+                     (uintptr_t)"renamed.bin") != GEMOS_ERR_DENIED ||
+      gemos_file_read(GEMOS_FILETEST_NOTE, readback, sizeof(readback)) !=
+          (int32_t)note_length) {
+    return GEMOS_FILETEST_RENAME_PROGRAM;
+  }
+
   if (gemos_file_write("/no-such-directory/file.txt", note, note_length) !=
       GEMOS_ERR_NOENT) {
     return GEMOS_FILETEST_NO_DIR;

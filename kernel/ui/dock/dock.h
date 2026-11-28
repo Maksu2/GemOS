@@ -19,5 +19,7 @@ void dock_unregister_window(window_t *win);
 /* Input & Rendering */
 bool dock_handle_event(event_t *event);
 void dock_render(gfx_context_t *ctx);
+/* Draw the dock again in the next frame (kernel_damage) */
+void dock_damage(void);
 
 #endif

@@ -10,9 +10,16 @@ typedef enum {
   EVENT_MOUSE_MOVE,
   EVENT_MOUSE_CLICK,
   EVENT_MOUSE_RELEASE,
+  EVENT_WINDOW_RESIZE,
   EVENT_TIMER_TICK,
   EVENT_REDRAW_REQUEST
 } event_type_t;
+
+enum {
+  MOUSE_BUTTON_LEFT = 1U,
+  MOUSE_BUTTON_RIGHT = 2U,
+  MOUSE_BUTTON_MIDDLE = 4U,
+};
 
 typedef struct {
   event_type_t type;
@@ -25,9 +32,11 @@ typedef struct {
     struct {
       int32_t x;
       int32_t y;
-      uint8_t buttons;
       int32_t dx;
       int32_t dy;
+      uint32_t time_ms;
+      uint8_t buttons; /* current pressed buttons */
+      uint8_t button;  /* the button that changed, or zero for a move */
     } mouse;
     struct {
       uint64_t tick_count;

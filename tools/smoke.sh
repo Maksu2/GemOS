@@ -20,8 +20,8 @@
 #              ask about unsaved text, save as, reopen from the File
 #              Explorer, save again, discard, and a refused save over a
 #              program; the saved file is checked on the host
-#   --explorer create and rename entries, check cancellation and conflicts,
-#              then reboot and reopen the file from the same disk
+#   --explorer start in Home, create and rename entries with the context
+#              menu, then reboot and double-click the renamed document
 #   --selftest build and boot the self-test image (make selftest):
 #              heap, pool, ELF loader, GemFS and the file syscalls, FPU
 #              state, every exception from Ring 3, and a kernel stack

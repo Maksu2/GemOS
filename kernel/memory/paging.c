@@ -389,6 +389,10 @@ void paging_switch_directory(page_directory_t *directory) {
   current_page_directory = directory;
 }
 
+page_directory_t *paging_current_directory(void) {
+  return current_page_directory;
+}
+
 int paging_is_user_range_mapped(page_directory_t *directory, uintptr_t address,
                                 size_t length, int writable) {
   uintptr_t end;

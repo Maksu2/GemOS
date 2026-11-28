@@ -6,6 +6,7 @@
 #include "../kernel/ui/cursor.h" /* Access global cursor state */
 #include "../kernel/ui/ui_scale.h"
 #include "pic.h"
+#include "pit.h"
 #include "serial.h"
 
 #define MOUSE_PORT_DATA 0x60
@@ -123,38 +124,31 @@ void mouse_callback(registers_t *regs) {
     if (cursor.y >= logical_h)
       cursor.y = logical_h - 1;
 
-    /* Push Mouse Event (for clicks/updates signal) */
-    event_t ev;
-    ev.type = EVENT_MOUSE_MOVE;
-
-    /* Check for clicks */
-    uint8_t btn = mouse_byte[0] & 0x7;
-    static uint8_t last_btn = 0;
-
-    /* Detect Left Button Changes (Bit 0) */
-    if ((btn & 0x01) != (last_btn & 0x01)) {
-      if (btn & 0x01) {
-        ev.type = EVENT_MOUSE_CLICK;
-      } else {
-        ev.type = EVENT_MOUSE_RELEASE;
-      }
+    uint8_t buttons = mouse_byte[0] & (MOUSE_BUTTON_LEFT | MOUSE_BUTTON_RIGHT |
+                                       MOUSE_BUTTON_MIDDLE);
+    static uint8_t last_buttons;
+    uint8_t changed = buttons ^ last_buttons;
+    last_buttons = buttons;
+    if (!changed && dx == 0 && dy == 0) {
+      break;
     }
 
-    last_btn = btn;
-
-    ev.data.mouse.x = cursor.x;
-    ev.data.mouse.y = cursor.y;
-    ev.data.mouse.dx = dx;
-    ev.data.mouse.dy = dy;
-    ev.data.mouse.buttons = btn;
-
-    /* Optimization: Only push if something actually happened */
-    if (ev.type != EVENT_MOUSE_MOVE || dx != 0 || dy != 0) {
-      if (!event_push(ev)) {
-        /* Queue full, drop event but cursor state IS updated */
+    event_t event = {
+        .type = EVENT_MOUSE_MOVE,
+        .data.mouse = {.x = cursor.x, .y = cursor.y, .dx = dx, .dy = dy,
+                       .time_ms = (uint32_t)timer_get_ticks(), .buttons = buttons},
+    };
+    if (dx != 0 || dy != 0) {
+      event_push(event);
+    }
+    for (uint8_t button = MOUSE_BUTTON_LEFT; button <= MOUSE_BUTTON_MIDDLE;
+         button <<= 1) {
+      if (changed & button) {
+        event.type = buttons & button ? EVENT_MOUSE_CLICK : EVENT_MOUSE_RELEASE;
+        event.data.mouse.button = button;
+        event_push(event);
       }
     }
-
     break;
   }
 }

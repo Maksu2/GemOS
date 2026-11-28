@@ -1,5 +1,6 @@
 #include "app_manager.h"
 #include "../../drivers/serial.h"
+#include "../gui/wm/wm.h"
 #include <string.h>
 
 #define MAX_APPS 16
@@ -26,14 +27,13 @@ void app_register(app_t *app) {
   serial_print("\n");
 }
 
-bool app_manager_changed(void) {
+void app_manager_damage_changed(void) {
   for (int i = 0; i < app_count; i++) {
     if (registered_apps[i] && registered_apps[i]->changed &&
         registered_apps[i]->changed()) {
-      return true;
+      wm_damage_app_clients(registered_apps[i]);
     }
   }
-  return false;
 }
 
 void app_open(const char *name) {

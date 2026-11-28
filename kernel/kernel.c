@@ -75,6 +75,7 @@ static uint32_t frames_partial;
 static uint32_t frames_cursor;
 static uint32_t full_ms_total;
 static uint32_t full_ms_max;
+static uint32_t partial_ms_total;
 static uint32_t frames_logged;
 static uint64_t frames_logged_at;
 
@@ -96,7 +97,9 @@ static void frame_stats_log(uint64_t now) {
   serial_print_dec(frames_full != 0 ? full_ms_total / frames_full : 0);
   serial_print(" ms on average, ");
   serial_print_dec(full_ms_max);
-  serial_print(" ms at most\n");
+  serial_print(" ms at most; a partial one ");
+  serial_print_dec(frames_partial != 0 ? partial_ms_total / frames_partial : 0);
+  serial_print(" ms on average\n");
 }
 
 void kernel_request_redraw(void) {
@@ -459,19 +462,32 @@ void kernel_main(const boot_info_t *loader_info) {
         cursor_moved = true;
       } else if (ev.type == EVENT_MOUSE_CLICK ||
                  ev.type == EVENT_MOUSE_RELEASE) {
+        if (ev.data.mouse.button != MOUSE_BUTTON_LEFT) {
+          if (ev.type == EVENT_MOUSE_CLICK &&
+              ev.data.mouse.button == MOUSE_BUTTON_RIGHT &&
+              !(ev.data.mouse.buttons & MOUSE_BUTTON_LEFT)) {
+            menu_hide();
+            wm_handle_event(&ev);
+          }
+          continue;
+        }
+        if (menu_is_context_active()) {
+          menu_handle_event(&ev);
+          continue;
+        }
         /* A release ends a window drag wherever it happens, also over
          * the topbar or the dock, which take the event below. */
         if (ev.type == EVENT_MOUSE_RELEASE) {
           wm_handle_event(&ev);
         }
 
-        /* Topbar clicks can switch an open menu in one action. */
+        /* Topbar clicks can switch an open menu in one action. What a
+         * click changes reports its own rectangles: the window stack
+         * (wm.c), the dock, the topbar, menus and the apps. */
         if (!topbar_handle_event(&ev) && !menu_handle_event(&ev) &&
             !dock_handle_event(&ev) && ev.type == EVENT_MOUSE_CLICK) {
           wm_handle_event(&ev);
         }
-
-        pending_redraw = true;
       } else if (ev.type == EVENT_KEY_PRESS) {
         /* Menu Key Handling (ESC). Other keys go to the focused window's
          * app, which reports what it changes itself. */
@@ -490,8 +506,6 @@ void kernel_main(const boot_info_t *loader_info) {
       kernel_shutdown(backbuffer, vbe_buffer, buffer_size, use_page_flip);
     }
 
-    explorer_update();
-
     /* The clock in the topbar and what some apps show (the Log Viewer's
      * log) change without an event: they are read only while a frame
      * draws them */
@@ -501,9 +515,7 @@ void kernel_main(const boot_info_t *loader_info) {
       if (topbar_clock_changed()) {
         kernel_damage(0, 0, (int)(screen_width / ui_scale), TOPBAR_HEIGHT);
       }
-      if (app_manager_changed()) {
-        pending_redraw = true;
-      }
+      app_manager_damage_changed();
     }
 
     /* At most one frame per TICKS_PER_FRAME ticks. The request is cleared
@@ -559,6 +571,7 @@ void kernel_main(const boot_info_t *loader_info) {
         }
         cursor_move_on(screen);
         frames_partial++;
+        partial_ms_total += (uint32_t)(timer_get_ticks() - now);
       } else {
         /* The backbuffer holds the frame on the screen: only the cursor
          * changes, on the visible page */

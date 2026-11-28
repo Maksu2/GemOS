@@ -19,6 +19,15 @@ enum {
   /* Like console_poll_event, but sleeps until an event arrives or
    * timeout_ms passes: returns 1 with an event, 0 on timeout. */
   SYS_console_wait_event = 12,
+  SYS_window_open = 13,
+  SYS_window_present = 14,
+  SYS_window_menu = 15,
+  SYS_text_width = 16,
+  SYS_directory_read = 17,
+  SYS_directory_create = 18,
+  SYS_entry_rename = 19,
+  SYS_open_path = 20,
+  SYS_fs_generation = 21,
 };
 
 /* timeout_ms for SYS_console_wait_event: no timeout */
@@ -34,6 +43,8 @@ enum {
   GEMOS_ERR_NOENT = -6,
   /* SYS_file_write: programs (*.ELF) and system files are read-only */
   GEMOS_ERR_DENIED = -7,
+  GEMOS_ERR_EXIST = -8,
+  GEMOS_ERR_NOFS = -9,
 };
 
 #endif /* GEMOS_SYSCALL_ABI_H */

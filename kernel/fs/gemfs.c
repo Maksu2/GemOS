@@ -113,6 +113,10 @@ _Static_assert(MAX_TASKS <= 32, "one bit per task in lock_waiters");
 static int lock_owner = -1;   /* task that holds the lock, -1 = none */
 static uint32_t lock_waiters; /* tasks asleep in fs_lock, one bit each */
 static uint8_t gui_waiting;   /* the GUI task waits for the lock */
+static uint32_t locked_generation;    /* generation when the lock was taken */
+static gemfs_change_hook_t change_hook; /* told after a call that changed GemFS */
+
+void gemfs_set_change_hook(gemfs_change_hook_t hook) { change_hook = hook; }
 
 static int fs_lock(void) {
   uint32_t me = scheduler_current_task();
@@ -133,12 +137,16 @@ static int fs_lock(void) {
   }
   lock_owner = (int)me;
   lock_waiters &= ~(1U << me);
+  locked_generation = generation;
   return GEMFS_OK;
 }
 
 static void fs_unlock(void) {
   uint32_t waiters = lock_waiters;
 
+  if (change_hook && generation != locked_generation) {
+    change_hook(); /* only queues events: no GemFS call, no yield */
+  }
   lock_owner = -1;
   lock_waiters = 0;
   for (uint32_t task = 0; waiters != 0; ++task, waiters >>= 1) {

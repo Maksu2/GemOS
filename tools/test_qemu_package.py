@@ -86,7 +86,7 @@ def boot_package(launcher, environment, output, disk, create_folder):
                 run.explorer_name_screen(explorer, "saved", "named folder saved", editing=False)
             run.shutdown()
             run.check_gemfs("after shutdown")
-            listing = smoke.mkgemfs("ls", str(disk), "/")
+            listing = smoke.mkgemfs("ls", str(disk), smoke.EXPLORER_HOME)
             run.check(listing.returncode == 0 and (FOLDER + "/").encode() in listing.stdout,
                       "the created folder is present on the data disk")
             if not all(result[0] for result in run.results):

@@ -1,3 +1,4 @@
+#include "utextedit_launcher.h"
 #include "../../drivers/serial.h"
 #include "../../kernel/app/app.h"
 #include "../../kernel/app/app_manager.h"
@@ -7,12 +8,12 @@
 static app_t utextedit_launcher_app;
 
 /* The editor gets the file to open as argv[1] (NULL: a new document). */
-static void utextedit_launcher_spawn(const char *path) {
+int utextedit_launcher_spawn(const char *path) {
   int pid = process_spawn_user_with_arg("UTEXTEDIT.ELF", path);
 
   if (pid < 0) {
     serial_print("[UTEXTEDIT] Failed to spawn UTEXTEDIT.ELF\n");
-    return;
+    return pid;
   }
 
   serial_print("[UTEXTEDIT] Spawned PID=");
@@ -22,6 +23,7 @@ static void utextedit_launcher_spawn(const char *path) {
     serial_print(path);
   }
   serial_print("\n");
+  return pid;
 }
 
 static void utextedit_launcher_open(void) { utextedit_launcher_spawn(NULL); }

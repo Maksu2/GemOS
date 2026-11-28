@@ -1,6 +1,6 @@
 # GemOS — instrukcje dla agentów
 
-Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: [docs/AUDIT-2026-09.md](docs/AUDIT-2026-09.md).
+Opis stanu na podstawie kodu (listopad 2026). Audyt z września 2026 opisuje wcześniejsze etapy i ich plan: [docs/AUDIT-2026-09.md](docs/AUDIT-2026-09.md).
 
 ## Stan systemu
 
@@ -20,16 +20,16 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
     - sterta first-fit zaraz za `__kernel_end` (co najmniej backbuffer + 4 MB, najwyżej 24 MB; `kernel/heap.c`: nagłówki z magic, kanarek za blokiem, łączenie wolnych bloków w obie strony; double free, nadpisany nagłówek i zapis za koniec bloku to panika); silnik fontów bierze bloki do 4 KB z osobnej puli 1 MB (`kernel/memory/pool.c`, `kernel/font/font_mem.c`), większe ze sterty,
     - pula ramek dostaje resztę użytecznego RAM-u poniżej 32 MB,
     - RAM powyżej 32 MB nie jest używany: jądro widzi pamięć fizyczną tylko przez identity map 0–32 MB, a od 32 MB zaczyna się userland,
-    - za mało RAM kończy start komunikatem; minimum przy 1920×1080 to ok. 17 MB (backbuffer 8,1 MB + 4 MB zapasu sterty + 2 MB ramek + jądro z BSS, w tym stosy jądra).
+    - start ze zbyt małą ilością RAM kończy się komunikatem. Na obraz w RAM składają się między innymi backbuffer (7,91 MiB przy 1920×1080), 4 MiB zapasu sterty, 2 MiB ramek oraz jądro z BSS i stosami. Pulpit z Explorerem i edytorem działa od 13 MiB przy 1280×800 i od 17 MiB przy 1920×1080 (12 i 16 MiB nie wystarczają).
   - Paging 4 KB: identity map 0–32 MB + 16 MB framebuffera, osobny katalog stron na proces.
   - Stosy jądra (`kernel/memory/kstack.c`) leżą w BSS, każdy z niezmapowaną stroną ochronną pod spodem: task 0 ma 64 KB (przełącza się na niego `entry.S`), idle i handler #DF po 8 KB, każdy proces 16 KB. #DF to bramka zadania z własnym TSS i stosem, więc przepełnienie stosu jądra kończy się paniką z rejestrami, a nie resetem.
 - **Procesy:**
-  - Round-robin, kwant 10 ms. Poza idle jest miejsce na pętlę GUI, zadanie odczytu katalogów Explorera i 15 pozostałych zadań. Każde zadanie ma własny stan FPU/SSE (`kernel/fpu.c`, FXSAVE/FXRSTOR przy każdym przełączeniu); z `float` w jądrze korzysta tylko silnik fontów. Wywłaszczany jest tylko kod w Ring 3 (reguła niżej). Zadanie 0 to pętla GUI w `kernel_main`: po każdej iteracji oddaje CPU i śpi (`TASK_BLOCKED`), dopóki nie ma zdarzeń. `hlt` wykonuje tylko idle.
+  - Round-robin, kwant 10 ms. Poza idle jest miejsce na pętlę GUI i 16 pozostałych zadań. Każde zadanie ma własny stan FPU (`kernel/fpu.c`). Przełączenie używa FXSAVE/FXRSTOR albo FNSAVE/FRSTOR, zależnie od CPU. Z `float` w jądrze korzysta tylko silnik fontów: w task 0 i w `SYS_text_width`, który na ten czas odkłada stan FPU procesu i liczy na czystym. Wywłaszczany jest kod w Ring 3. Zadanie 0 to pętla GUI w `kernel_main`. Po każdej iteracji oddaje CPU i śpi (`TASK_BLOCKED`), dopóki nie ma zdarzeń. `hlt` wykonuje idle.
   - Programy użytkownika to statyczne ELF32 `ET_EXEC` linkowane pod `0x02000000` (`userland/user_linker.ld`: segment kodu R+X i segment danych R+W od osobnej strony), ze stosem 8 KB pod `0x07FFF000`. Rozmiar programu ogranicza tylko GemFS (plik do ok. 4 MB) i wolna sterta: loader czyta plik z GemFS do bloku sterty o jego rozmiarze, a program z obrazu jądra ładuje prosto z obrazu.
-  - Program startuje z `argc`, wskaźnikami `argv` i NULL na stosie; `userland/crt0.S` woła `main(argc, argv)` (`include/gemos/user_api.h`). `argv[0]` to nazwa, z którą go uruchomiono, a `argv[1]` plik do otwarcia, jeśli jądro go podało (`process_spawn_user_with_arg()`, np. File Explorer przez launcher edytora).
+  - Program startuje z `argc`, wskaźnikami `argv` i NULL na stosie; `userland/crt0.S` woła `main(argc, argv)` (`include/gemos/user_api.h`). `argv[0]` to nazwa, z którą go uruchomiono, a `argv[1]` plik do otwarcia, jeśli jądro go podało (`process_spawn_user_with_arg()`, np. File Explorer przez launcher edytora). Proces może uruchomić program (`SYS_open_path`); loader wraca potem do katalogu stron wywołującego.
   - Strony kodu są tylko do odczytu także dla jądra (`CR0.WP=1`). Bez PAE nie ma bitu NX, więc dane pozostają wykonywalne.
   - Każdy wyjątek wywołany w Ring 3 (wektory 0–31 poza NMI, #DF i #MC) kończy tylko ten proces (`[USERFAULT]`, potem `Faulted PID=…`). Wyjątek w jądrze to panika z pełnym zrzutem rejestrów (także CR0–CR4) i zatrzymanie.
-- **Syscalle:** `int 0x80`, 13 wywołań (`include/gemos/syscall_abi.h`).
+- **Syscalle** korzystają z `int 0x80`. Rejestr 22 wywołań jest w `include/gemos/syscall_abi.h`.
   - Bramka wyłącza przerwania, a syscall włącza je zaraz po wejściu i wyłącza przed wyjściem, gdzie scheduler wybiera zadanie. IRQ wraca do przerwanego syscalla.
   - Wskaźniki użytkownika przechodzą przez `copy_from_user`/`copy_to_user` (sprawdzanie tablic stron).
   - `SYS_console_wait_event` blokuje proces do zdarzenia albo timeoutu: przy blokadzie EIP cofa się na `int $0x80` i syscall wykonuje się ponownie po obudzeniu.
@@ -37,10 +37,12 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
   - Proces zabity w środku syscalla (`process_kill_pid()`) kończy syscall najszybciej, jak może (zapis się wycofuje), i zamiast wrócić do Ring 3 staje się zombie.
 - **Userland:**
   - `UTERM.ELF`, `ABOUT.ELF` i `UTEXTEDIT.ELF` (plus `USRSMOKE.ELF` do debugowania) są wbudowane w obraz jądra. Przy starcie jądro zapisuje do GemFS, jako pliki systemowe, tylko te, których brakuje, które mają inną wersję (CRC-32 obrazu) albo nie zgadzają się z obrazem; kolejny start z tym samym jądrem nic nie zapisuje (`[PROC] Programs on GemFS: N seeded, M up to date`). Loader woli kopię z GemFS, a gdy jej nie przyjmie, bierze wbudowaną (także dla nazwy ze ścieżką, np. `/ABOUT.ELF` z File Explorera).
-  - Procesy nie zmieniają programów: `SYS_file_write` zwraca `GEMOS_ERR_DENIED` dla nazw `*.ELF` (dowolna wielkość liter) i plików z flagą systemową. Sprawdza to `gemfs_write_user()` na sparsowanej nazwie i na inode, który zapis by zastąpił. Jądro (seeding, File Explorer) pisze bez tych ograniczeń.
-  - Model „hosted app”: aplikacja wysyła siatkę komórek tekstowych (maks. 96×32), jądro rysuje okno. Działa najwyżej 8 takich okien naraz. Aplikacje śpią w `SYS_console_wait_event` (ABOUT z timeoutem do pełnej sekundy).
+  - `SYS_file_write` zwraca `GEMOS_ERR_DENIED` dla nazw `*.ELF` (dowolna wielkość liter) i plików z flagą systemową. `gemfs_write_user()` sprawdza nazwę i inode, który zapis by zastąpił. Seeding zapisuje programy jako pliki systemowe. `SYS_entry_rename` odmawia (`GEMOS_ERR_DENIED`) zmiany nazwy plików systemowych, `/Home` oraz każdej zmiany nazwy z `*.ELF` albo na `*.ELF`, więc proces nie zrobi programu z pliku.
+  - Okno hostowane przyjmuje siatkę tekstową (maks. 96×32) albo listę do 192 poleceń rysowania w obszarze klienta. Jądro obsługuje do ośmiu takich okien i rysuje ich treść. Aplikacje śpią w `SYS_console_wait_event` (ABOUT z timeoutem do pełnej sekundy). Okno graficzne dostaje `GEMOS_WINDOW_FS_CHANGED` po każdym wywołaniu GemFS, które zmieniło drzewo (hak `gemfs_set_change_hook()` w `fs_unlock`, kolejne takie zdarzenia w kolejce się łączą). SDK Rust pomija zdarzenia, których nie zna, więc nowy typ nie kończy starych aplikacji.
+  - File Explorer startuje z wbudowanego `EXPLORER.ELF`. Stan widoku i operacje na katalogach są w `userland/explorer/`. Pliki `.txt` i `.gemtext` otwierają się w UTEXTEDIT z pełną ścieżką. Programy `.ELF` uruchamiają się z GemFS. Rozszerzenia działają w dowolnej wielkości liter.
   - `UTEXTEDIT` otwiera i zapisuje pliki tekstowe do 8 KB przez `SYS_file_read`/`SYS_file_write` (Ctrl+O, Ctrl+S, Ctrl+Shift+S; nazwa bez rozszerzenia dostaje `.txt`) i otwiera plik z `argv[1]`. Zanim straci niezapisane zmiany (Esc, Ctrl+Q, przycisk X, Ctrl+N, Ctrl+O), pyta: Y zapisz, N porzuć, Esc anuluj. Pytania rysuje w ramce nad tekstem.
   - `FAULTS.ELF`, `FPUCHECK.ELF`, `FILETEST.ELF` i `LONGIO.ELF` (`userland/selftest/`) są tylko w obrazie autotestu (`make selftest`).
+  - `userland/rust/` zawiera SDK `no_std` z konsolą, poleceniami rysowania, zdarzeniami okien, menu i dostępem do GemFS. Używa `core` z celu `i586-unknown-linux-gnu` oraz startu i funkcji pamięci GemOS. Obsługa paniki loguje komunikat i kończy bieżący proces z kodem 101. `make run-rust` daje osobny dysk demo z `RUSTDEMO.ELF`.
 - **GUI (w jądrze):**
   - Menedżer okien, topbar, dock, menu, font TrueType (Inter) z antyaliasingiem.
   - Wspólna paleta w `kernel/ui/theme.h` definiuje grafitowy pulpit i paski, jasne okna oraz rdzawy akcent fokusu i zaznaczenia. Dock pokazuje ikonę i tytuł okna.
@@ -50,8 +52,8 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
     - przeciągane okno trzyma pasek tytułu pod topbarem i nad dockiem, a co najmniej 64 px okna zostaje na ekranie; puszczenie przycisku kończy przeciąganie także nad topbarem i dockiem (wcześniej one je połykały i okno dalej jechało za myszą),
     - maksymalizacja wypełnia obszar roboczy,
     - minimalizacja przekazuje fokus następnemu widocznemu oknu. Ukryte okno można przywrócić z docka, a kliknięcie pustego pulpitu usuwa fokus,
-    - aplikacja okna, które dostało wciśnięcie przycisku, dostaje też ruchy myszy i puszczenie przycisku (gdziekolwiek nastąpi). Bez wciśniętego przycisku ruchy dostaje okno z fokusem,
-    - log: `[WM] Work area`, `[WM] Placed`, `[WM] Dropped` i położenie okna w `[CONSOLE] Opened` (z nich korzysta smoke).
+    - aplikacja okna, które dostało wciśnięcie lewego przycisku, dostaje też ruchy myszy i puszczenie przycisku (gdziekolwiek nastąpi). Prawy przycisk trafia do klienta okna pod kursorem. Otwarte menu kontekstowe przechwytuje wejście i zamyka się wraz z oknem właściciela,
+    - testy korzystają z położenia i wymiarów podanych w `[WM] Work area`, `[WM] Placed`, `[WM] Dropped`, `[CONSOLE] Opened` i `[WINDOW] Opened`.
   - Tekst jest przycięty do `clip_rect`, jak inne prymitywy (`aa_blend_pixel`), więc nie wychodzi poza okno.
   - Okno aplikacji hostowanej rysuje każdy znak w jego komórce 8×15 (`font_draw_cell`: glif wyśrodkowany w pikselach fizycznych), więc kolumny się zgadzają mimo proporcjonalnego fontu. Znaków spoza 0x21–0x7E nie rysuje.
   - Skala UI (całkowita, `int ui_scale`) 2 przy 1920×1080 (współrzędne logiczne 960×540), 1 w mniejszych trybach.
@@ -64,11 +66,11 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
     - pełna klatka przerysowuje cały ekran do backbuffera i kopiuje go do VRAM; page flip przez BGA tylko po wykryciu adaptera (ID `0xB0C0`–`0xB0C5`) i przy VRAM na dwie strony, inaczej `memcpy` do framebuffera,
     - backbuffer nigdy nie trzyma kursora: pełna klatka bierze go tylko na czas kopii (`cursor_frame_begin`/`cursor_frame_end`),
     - ruch myszy, który nic innego nie zmienia, daje klatkę samego kursora (`cursor_move_on`): na widocznej stronie stary prostokąt kursora wraca z backbuffera, a kursor rysuje się w nowym miejscu,
-    - zmiana w jednym miejscu zgłasza prostokąt przez `kernel_damage()` (`kernel/include/gui_loop.h`): konsola obszar klienta przy `console_present`/`write`/`clear`, Explorer po odczycie katalogu oraz przy zaznaczeniu i przewijaniu, menu przy zmianie podświetlenia pod myszą, WM stary i nowy prostokąt przeciąganego okna, zegar topbar,
+    - zmiana w jednym miejscu zgłasza prostokąt przez `kernel_damage()` (`kernel/include/gui_loop.h`): konsola obszar klienta przy `console_present`/`write`/`clear`, Explorer po odczycie katalogu oraz przy zaznaczeniu i przewijaniu, menu przy pokazaniu, schowaniu i zmianie podświetlenia (menu z topbaru także pasek topbaru), WM ramkę okna przy dodaniu, usunięciu, podniesieniu, zmianie fokusu (stare i nowe okno), minimalizacji, przywróceniu i maksymalizacji (`wm_damage_frame`) oraz stary i nowy prostokąt przeciąganego okna, dock przy każdej zmianie okien, fokusu i ukrycia (`dock_damage`), topbar przy zmianie menu aktywnej aplikacji (`topbar_damage`) i zegarze,
     - częściowa klatka rysuje scenę tylko w tych prostokątach (`gfx_set_bound()`: nic nie wychodzi poza `bound_rect` kontekstu, okna poza nim są pomijane), kopiuje je na widoczną stronę i rysuje kursor na wierzchu; najwyżej 16 prostokątów, nachodzące na siebie się łączą, a gdy brakuje miejsca, rysowana jest pełna klatka,
-    - pełną klatkę dają kliknięcia i puszczenia przycisku, obsługa menu klawiaturą, otwarcie i zamknięcie okna (`kernel_request_redraw()`) i aplikacje z `changed()`; klawisze idą do aplikacji, która sama zgłasza, co zmieniła,
-    - co sekundę pętla pyta zegar w topbarze (`topbar_clock_changed()`, wtedy prostokąt topbaru) i aplikacje (opcjonalne `app_t.changed`, wtedy pełna klatka; Log Viewer odpowiada „tak”, gdy log urósł), czy coś zmieniło się bez zdarzenia,
-    - log `[GFX] Frames: full= partial= cursor=` najwyżej co 2 s, gdy przybyły klatki, ze średnim i najdłuższym czasem pełnej (pod TCG ok. 50 ms).
+    - kliknięcia, puszczenia przycisku, otwarcie i zamknięcie okna rysują więc tylko częściowe klatki; klawisze idą do aplikacji, która sama zgłasza, co zmieniła. Pełną klatkę dają tylko pierwsza klatka, obsługa menu klawiaturą (smoke bierze Esc w menu jako wzorzec pełnej klatki), `kernel_request_redraw()` i przepełnienie listy prostokątów,
+    - co sekundę pętla pyta zegar w topbarze (`topbar_clock_changed()`, wtedy prostokąt topbaru) i aplikacje (opcjonalne `app_t.changed`, wtedy obszar klienta ich widocznych okien, `app_manager_damage_changed()`; Log Viewer odpowiada „tak”, gdy log urósł), czy coś zmieniło się bez zdarzenia,
+    - log `[GFX] Frames: full= partial= cursor=` najwyżej co 2 s, gdy przybyły klatki, ze średnim i najdłuższym czasem pełnej (pod TCG 50–130 ms) i średnim czasem częściowej.
 - **ATA:** PIO LBA28 (`drivers/ata.c`). IDENTIFY na 4 pozycjach, każde oczekiwanie z limitem, kody błędów zamiast pętli bez końca. Limity są czasowe, mierzone stoperem na liczniku PIT (`pit_stopwatch_*`: liczy przeładowania licznika, więc działa też z IF=0, a z IF=1 bierze też ticki): 5 s na IDENTIFY, 30 s na odczyt, zapis i FLUSH CACHE. Po timeoutcie sterownik resetuje kanał (SRST), żeby następne polecenie nie przesłało złych bajtów. Każdy dysk jest tylko do odczytu, dopóki GemFS go nie zamontuje (`ata_allow_writes()`); zapis na inny dysk kończy się `ATA_ERR_READ_ONLY` i linią `[ATA] Refused …` w logu.
 - **GemFS v3** (`kernel/fs/`, format w `docs/GEMFS.md`):
   - cały dysk ATA w blokach 4 KB: superblok z magic `GEMOS-FS`, wersją, rozmiarem i CRC-32, bitmapa bloków, tablica inode'ów (128 B: 12 bloków bezpośrednich i 1 pośredni, plik do ok. 4 MB), katalogi (wpisy 64 B, nazwy do 55 bajtów, ścieżki do 127);
@@ -80,12 +82,12 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
     - dysk, na którym nie ma czego zwolnić, nie dostaje ani jednego zapisu (`[GemFS] Nothing to reclaim`);
   - jedno zadanie naraz: każde publiczne wywołanie trzyma blokadę od początku do końca. Długi odczyt albo zapis oddaje CPU między blokami (`scheduler_preempt_point()`), a inne zadanie, które wtedy wywoła GemFS, śpi do końca tej operacji (zabity proces przestaje czekać). `gemfs_read_file()` czyta cały plik pod jedną blokadą; tak czyta `SYS_file_read`;
   - zadanie GUI nie śpi na blokadzie: oddaje CPU jej właścicielowi (`scheduler_yield_to()`), który działa sam do końca operacji i od razu oddaje CPU z powrotem. Nic innego nie działa w tym czasie, więc nikt nie zmienia stanu GUI w środku iteracji.
-- **Aplikacje jądra (`apps/`):**
-  - File Explorer pokazuje nazwę, typ, ścieżkę oraz przyciski Up i New Folder. Listę przewija się paskiem albo klawiszami strzałek, Page Up, Page Down, Home i End. Pierwsze kliknięcie zaznacza wpis. Kolejne kliknięcie lub Enter otwiera go. New Folder i F2 otwierają wspólne pole nazwy, które zatwierdza Enter albo OK, a zamyka Escape albo Cancel.
-    - pliki `.txt` i `.gemtext` otwierają się w UTEXTEDIT z pełną ścieżką. Pliki `.ELF` uruchamiają się z GemFS,
-    - rozszerzenia działają w dowolnej wielkości liter. Komunikaty o błędach pojawiają się pod listą.
-    - osobne zadanie odczytuje katalog, tworzy folder i zmienia nazwę pod blokadą GemFS. Pętla GUI zleca operacje i aktualizuje widok po otrzymaniu wyniku. Odczyt liczy wszystkie wpisy i buforuje fragment potrzebny do rysowania i wybierania wpisów.
-  - Log Viewer oraz launchery trzech programów userlandu.
+- **File Explorer**
+  - File Explorer zaczyna w `~` (`/Home`), tworzonym raz na zamontowanym GemFS. Up prowadzi do katalogu głównego z dotychczasowymi plikami i programami. UTEXTEDIT rozwija `~/` i ścieżki względne w swoich polach plików do `/Home/`.
+  - File Explorer pokazuje nazwę, typ, ścieżkę oraz przycisk Up. Listę przewija się paskiem albo klawiszami strzałek, Page Up, Page Down, Home i End. Kliknięcie zaznacza wpis, a dwuklik lub Enter go otwiera. Prawy przycisk wywołuje systemowe menu (`kernel/ui/menu.c`) z Open i Rename na wpisie albo New Folder na pustej liście. Rename, F2 i New Folder używają tego samego pola nazwy.
+  - Proces Explorera odczytuje potrzebną stronę katalogu, tworzy foldery i zmienia nazwy przez syscalle GemFS. Jego wywołanie może czekać na blokadę, a pętla GUI dalej obsługuje okna. Explorer śpi bez timeoutu i czyta katalog ponownie po `GEMOS_WINDOW_FS_CHANGED`; ramka odrzucona przez jądro zostawia na ekranie poprzednią. Pasek pod listą pokazuje liczbę wpisów i wynik operacji.
+- **Aplikacje jądra (`apps/`)**
+  - Log Viewer oraz launchery programów userlandu.
   - Test App jest zarejestrowana, ale niedostępna z menu.
 
 ## Znane problemy
@@ -93,7 +95,7 @@ Opis stanu na podstawie kodu (wrzesień 2026). Szczegóły, dowody i plan prac: 
 Nie obchodzić ich po cichu; plan naprawy jest w §8.2 audytu.
 
 - **Zadanie GUI czeka na koniec operacji GemFS, w której trakcie potrzebuje dysku** (np. start programu w trakcie długiego zapisu). GUI stoi wtedy do jej końca.
-- **Render pełnej klatki (1080p, pod TCG ok. 50 ms) w task 0 nie jest przerywany:** procesy czekają na koniec iteracji. Pełne klatki wciąż wywołują m.in. kliknięcia oraz otwieranie i zamykanie okien.
+- **Render klatki w task 0 nie jest przerywany:** procesy czekają na koniec iteracji. Pełna klatka (1080p, pod TCG 50–130 ms) zdarza się już rzadko (start, menu z klawiatury), ale częściowa z dużym oknem też trwa pod TCG kilkadziesiąt ms.
 - **RAM powyżej 32 MB nie jest używany** (okno identity map, patrz wyżej).
 
 ## Mapa repo
@@ -110,7 +112,7 @@ drivers/    serial, VBE/BGA, PIC, PIT, klawiatura, mysz, ATA PIO, RTC, wyłącza
 lib/        string.c (implementacja include/string.h)
 include/    freestanding stdint/stddef/stdbool/string/io + gemos/ (ABI userlandu)
 apps/       aplikacje jądra i launchery programów userlandu
-userland/   programy ring 3 (uterm2/, about/, textedit/, common/, crt0.S,
+userland/   programy ring 3 (uterm2/, about/, textedit/, explorer/, rust/, common/, crt0.S,
             usrsmoke.S, user_linker.ld) + selftest/ (programy autotestu)
 assets/     font.ttf (Inter) + OFL.txt
 tools/      smoke.sh + smoke.py (test w QEMU), mkgemfs (dyski GemFS na hoście)
@@ -119,8 +121,8 @@ docs/       strona GitHub Pages, audyt kodu, GEMFS.md (format dysku)
 
 ## Budowanie i testy
 
-- `make all` tworzy `build/gemos.img` (dyskietka) i `build/gemos-hdd.img` (dysk twardy). Wymaga `nasm` oraz `i686-elf-gcc` albo `x86_64-elf-gcc`; bez nich Makefile używa hostowego `gcc -m32`, tak jak CI.
-- `tools/smoke.sh` buduje obraz, bootuje go w QEMU bez okna, uruchamia UTERM, ABOUT i UTEXTEDIT, sprawdza log i zrzuty ekranu oraz rozmieszczenie okien (obszar roboczy, kaskada drugiego okna, przeciąganie na dock i puszczenie nad topbarem; położenie okien bierze z logu) i siatkę konsoli (10 liter różnej szerokości zajmuje dokładnie 10 komórek), sprawdza, że ruch myszy po pustym pulpicie nie rysuje pełnych klatek (liczniki z `[GFX] Frames`) ani nie zostawia śladów kursora na tapecie, że pisanie w UTERM rysuje tylko częściowe klatki, a ekran po nich jest piksel w piksel taki jak po pełnej, i że zegar w topbarze sam pokazuje nową minutę (harness ustawia zegar QEMU na 14 s przed pełną minutą), a Log Viewer nowe linie logu, uruchamia ABOUT i USRSMOKE z File Explorera (kliknięcie nie zostawia prostokąta przeciągania), kończy się Shutdown z menu GemOS (QEMU musi zamknąć się samo z kodem 0, a log pokazać zatrzymanie GemFS przed wyłączeniem), a potem sprawdza dysk danych przez `tools/mkgemfs check`. Na dysku GemFS log musi mieć `[GemFS] Nothing to reclaim`. Shutdown kończy też test edytora i stress. Musi skończyć się `SMOKE: PASS` przed każdym commitem. Test nie wysyła żadnego wejścia, gdy czeka na klatkę: okno ma się pojawić samo.
+- `make all` tworzy `build/gemos.img` (dyskietka) i `build/gemos-hdd.img` (dysk twardy). Wymaga `nasm`, kompilatora Rust z celem `i586-unknown-linux-gnu` i `i686-elf-gcc` albo `x86_64-elf-gcc`. Makefile używa hostowego `gcc -m32`, gdy nie znajdzie kompilatora krzyżowego. CI instaluje Rust poleceniem `rustup toolchain install 1.100.1 --profile minimal --target i586-unknown-linux-gnu`.
+- `tools/smoke.sh` buduje obraz, bootuje go w QEMU bez okna, uruchamia UTERM, ABOUT i UTEXTEDIT, sprawdza log i zrzuty ekranu oraz rozmieszczenie okien (obszar roboczy, kaskada drugiego okna, przeciąganie na dock i puszczenie nad topbarem; położenie okien bierze z logu) i siatkę konsoli (10 liter różnej szerokości zajmuje dokładnie 10 komórek), sprawdza, że ruch myszy po pustym pulpicie nie rysuje pełnych klatek (liczniki z `[GFX] Frames`) ani nie zostawia śladów kursora na tapecie, że pisanie w UTERM rysuje tylko częściowe klatki, a ekran po nich jest piksel w piksel taki jak po pełnej, że otwieranie, fokus, minimalizacja, przywracanie z docka i zamykanie okien nie rysują pełnych klatek i zostawiają ekran taki jak pełna klatka, i że zegar w topbarze sam pokazuje nową minutę (harness ustawia zegar QEMU na 14 s przed pełną minutą), a Log Viewer nowe linie logu, uruchamia ABOUT i USRSMOKE z File Explorera (kliknięcie nie zostawia prostokąta przeciągania), kończy się Shutdown z menu GemOS (QEMU musi zamknąć się samo z kodem 0, a log pokazać zatrzymanie GemFS przed wyłączeniem), a potem sprawdza dysk danych przez `tools/mkgemfs check`. Na dysku GemFS log musi mieć `[GemFS] Nothing to reclaim`. Shutdown kończy też test edytora i stress. Musi skończyć się `SMOKE: PASS` przed każdym commitem. Test nie wysyła żadnego wejścia, gdy czeka na klatkę: okno ma się pojawić samo.
 - `tools/smoke.sh --stress [N]` (domyślnie 25 cykli) otwiera, obsługuje klawiaturą i myszą i zamyka wszystkie programy; każdy proces musi skończyć z `exit=0`, a log nie może mieć przeplecionych linii. Uruchom go po każdej zmianie schedulera, syscalli, konsoli albo pętli GUI.
 - `tools/smoke.sh --matrix` uruchamia smoke na 32/64/256 MB, bez dysku danych, z 4 MB VRAM (1280×800, `memcpy`), przy starcie z dysku twardego (dysk rozruchowy musi zostać bez zmian), z dyskiem danych bez GemFS i z uszkodzonym superblokiem (SHA-256 obrazu przed i po musi być ten sam), przy drugim starcie tego samego dysku (nic nie może się zapisać), z dyskiem, który zapisuje wolno (QEMU przepuszcza 12 zapisów na sekundę), na maszynie bez ACPI (`-machine pc,acpi=off`: Shutdown nie wyłącza QEMU, jądro staje, a ekran mówi, że można wyłączyć komputer) oraz na dysku po awarii (`after-crash`). W tym ostatnim harness po pierwszym starcie dokłada przez `tools/mkgemfs` pliki, które muszą przetrwać (jeden z blokiem pośrednim), i to, co zostawia awaria w trakcie zapisu albo usuwania: 21 bloków i 4 inode'y, do których nic nie prowadzi, także katalog z plikiem i plik z blokiem pośrednim. Start, przy którym blok pośredni jednego z zachowanych plików wskazuje poza obszar danych, nie może niczego zwolnić ani zapisać (SHA-256 obrazu); następny, już z poprawnym wskaźnikiem, musi zwolnić dokładnie te 21 bloków i 4 inode'y, a po teście `tools/mkgemfs check` nie może nic znaleźć, a zachowane pliki mają być takie jak przedtem. Uruchom go po każdej zmianie bootloadera, pamięci, VBE, ATA albo GemFS.
 - `tools/smoke.sh --selftest` buduje obraz autotestu (`make selftest`, `build/selftest/gemos.img`, jądro z `-DGEMOS_SELFTEST`) i sprawdza jego raport. `kernel/selftest.c` działa jako zadanie jądra obok GUI i sprawdza:
@@ -131,22 +133,24 @@ docs/       strona GitHub Pages, audyt kodu, GEMFS.md (format dysku)
   - stan x87/SSE dwóch kopii `FPUCHECK.ELF` i zadania jądra przez przełączenia;
   - GemFS przez API jądra: katalogi, plik 100 KB z blokiem pośrednim, zastępowanie, zapis przerwany w połowie, błędy, 70 wpisów w jednym katalogu z usuwaniem, rekurencyjne usuwanie bez wycieku bloków i inode'ów;
   - odmowę zapisu ATA na drugi dysk bez GemFS (harness sprawdza potem, że się nie zmienił);
-  - `FILETEST.ELF` (83 KB, uruchamiany z GemFS): plik 80 KB i plik w podkatalogu przez syscalle, odczyt `UTERM.ELF`, odmowa nadpisania programów;
+  - `FILETEST.ELF` (83 KB, uruchamiany z GemFS): plik 80 KB i plik w podkatalogu przez syscalle, odczyt `UTERM.ELF`, odmowa nadpisania programów i zmiany nazwy z `*.ELF` albo na `*.ELF`;
   - `/USRSMOKE.ELF` zepsuty na GemFS uruchamia się z obrazu jądra, a potem wraca na dysk bez zmian;
   - długie syscalle plikowe (`LONGIO.ELF`; autotest spowalnia wtedy każdy zapisany sektor o 2 ms, więc zapis 128 KB trwa ponad pół sekundy):
     - w trakcie zapisu zegar idzie dalej, a inne zadania i pętla GUI dostają CPU,
     - trzy procesy na dwóch plikach naraz nie widzą połowy zapisu,
     - proces zabity w środku zapisu kończy się na następnym bloku, a plik zostaje taki jak był,
     - zadanie GUI, które bezpośrednio potrzebuje GemFS w trakcie zapisu, czeka do jego końca, a działa wtedy tylko właściciel blokady,
-    - z otwartym Explorerem pętla GUI działa podczas oczekiwania zadania odczytu katalogów na blokadę GemFS, a Explorer po zapisie pokazuje aktualny katalog.
+    - pętla GUI działa, gdy proces Explorera czeka przy odczycie katalogu na blokadę GemFS. Explorer po zapisie pokazuje aktualny katalog,
+    - panika Rust kończy proces Explorera z kodem 101. Pulpit może potem otworzyć i zamknąć świeżą instancję.
 
   Harness uruchamia autotest dwa razy na tych samych dyskach: pliki z pierwszego startu sprawdzają `tools/mkgemfs` na hoście i drugi start, który przy montowaniu nie może mieć czego odzyskać (zapisy przerwane i zabite oddały swoje bloki).
 
   Na końcu celowo przepełnia swój stos jądra: log musi skończyć się paniką #DF z nazwą strony ochronnej. Wyjątek, którego CPU nie zgłasza (QEMU TCG: #XM), daje linię `SKIP`, a nie PASS. Uruchom go po każdej zmianie sterty, loadera ELF, obsługi wyjątków, FPU, stosów jądra, schedulera, GemFS albo syscalli plikowych.
 - `tools/smoke.sh --editor` testuje UTEXTEDIT z plikami na nowym dysku GemFS: Esc i przycisk X przy niezapisanym tekście pokazują pytanie (a proces dalej działa; ramka pytania leży na siatce konsoli), Esc je anuluje, Y i „Save as” zapisuje, File Explorer otwiera ten plik w edytorze, Ctrl+S zapisuje ponownie, N porzuca zmiany, zapis jako `UTERM.ELF` daje błąd w statusie. Na końcu harness czyta plik z dysku na hoście. Uruchom go po każdej zmianie UTEXTEDIT, konsoli, File Explorera albo syscalli plikowych.
 - Smoke sprawdza podświetlenie dwóch pozycji menu, przejście fokusu po minimalizacji, kliknięcie w miejscu ukrytego okna i przywrócenie z docka. Test edytora sprawdza też przycinanie długiej nazwy i otwarcie ostatniego pliku w katalogu ze 110 wpisami po przewinięciu.
-- `tools/smoke.sh --explorer` sprawdza tworzenie folderu, zmianę nazwy pliku i folderu, anulowanie oraz błędy nazwy. Po restarcie otwiera plik z nowej ścieżki i porównuje nazwy, zawartość i stan dysku z hosta. Autotest jądra sprawdza także zmianę nazwy przy blokach pośrednich, kolizję między blokami katalogu i limit ścieżek potomnych.
+- `tools/smoke.sh --explorer` sprawdza `~`, systemowe menu kontekstowe, tworzenie folderu, zmianę nazwy pliku i folderu, anulowanie oraz błędy nazwy. Po restarcie dwa oddzielne kliknięcia zaznaczają wpis, a dwuklik otwiera plik z nowej ścieżki. Test porównuje nazwy, zawartość i stan dysku z hosta. Autotest jądra sprawdza także zmianę nazwy przy blokach pośrednich, kolizję między blokami katalogu i limit ścieżek potomnych.
 - CI (`.github/workflows/ci.yml`) uruchamia smoke, test edytora, stress, macierz, autotest i test Explorera w dwóch trybach przy każdym pushu, PR i zdarzeniu kolejki scalania. Drugi tryb Explorera ma 32 MB RAM, 4 MB VRAM, procesor Pentium II bez FXSR i wolny dysk. Check `PR checks` wymaga powodzenia każdego zadania. Logi i zrzuty są w artefaktach GitHub Actions.
+- `make test-rust` uruchamia ten sam ELF na Pentium II bez FXSR, QEMU32, Nehalem i Opteronie. Sprawdza konsolę, klawiaturę, zamknięcie okna, zapis na GemFS i ponowne uruchomienie procesu po panice Rust. To część `PR checks`.
 - `tools/package_qemu.py` składa trzy ZIP-y z launcherami i ISO El Torito z obrazu użytego w smoke. `tools/test_qemu_package.py` sprawdza dwa uruchomienia launchera i zapis plików na macOS arm64, Windows x64 oraz Linuksie. Linux uruchamia też test Explorera z ISO. Po zielonym `PR checks` CI udostępnia sprawdzone paczki i publikuje prerelease po pushu taga `v…`.
 - `make run` otwiera QEMU z dyskiem danych `build/data.img` (robi go `tools/mkgemfs format`, jeśli go nie ma; stary `data.img` sprzed GemFS v3 jądro pomija, trzeba go usunąć), `make run-hdd` startuje z dysku twardego, `make debug` dodatkowo czeka na GDB na porcie `:1234` (działa też bez dysku danych).
 - `tools/mkgemfs` (Python, sama biblioteka standardowa) obsługuje obraz dysku GemFS na hoście: `format`, `info`, `ls`, `cat`, `put` (`--system`, `--version`), `mkdir`, `rm`, `check`.
@@ -173,9 +177,9 @@ docs/       strona GitHub Pages, audyt kodu, GEMFS.md (format dysku)
     - tablica zadań,
     - stan klawiatury i myszy,
     - pozycja kursora.
-  - **Odświeżanie ekranu:** wszystko, co zmienia zawartość ekranu, woła `kernel_damage()` (prostokąt, który się zmienił) albo `kernel_request_redraw()` (cały ekran: zmiana układu okien), co budzi task 0. Dotyczy to także zmian po ruchu myszy i klawiszu: sam ruch rysuje tylko kursor, a klawisz nic.
+  - **Odświeżanie ekranu:** wszystko, co zmienia zawartość ekranu, woła `kernel_damage()` (prostokąt, który się zmienił) albo, w ostateczności, `kernel_request_redraw()` (cały ekran), co budzi task 0. Zmiany stosu okien zgłasza sam WM (`wm_damage_frame`, `dock_damage`, `topbar_damage`); nowy kod, który zmienia okno poza tymi funkcjami, musi zgłosić jego ramkę sam. Dotyczy to także zmian po ruchu myszy i klawiszu: sam ruch rysuje tylko kursor, a klawisz nic.
 - **32-bit, własny bootloader**, bez GRUB-a, bez libc i bez libgcc.
-- **GUI zostaje w jądrze.** Userland rozmawia z systemem wyłącznie przez ABI z `include/gemos/` (`syscall_abi.h`, `console_abi.h`, `user_api.h`; programy autotestu także `selftest_abi.h`) i nie includuje nagłówków jądra.
+- **Jądro obsługuje okna i wspólne menu.** Aplikacje Ring 3 wysyłają dane przez ABI z `include/gemos/`, w tym `window_abi.h` i `fs_abi.h`. Nie dołączają nagłówków jądra.
 - **Kody klawiszy** pochodzą tylko z `GEMOS_KEY_*` w `include/gemos/console_abi.h`.
 - **Jeden `string.h`**: `include/string.h`, dołączany jako `<string.h>`.
-- **Kolejność prac jest w §8.2 audytu.** Etapy 0–5 są zrobione (etap 5 krok po kroku: `docs/ETAP5-PLAN.md`). Dalej idą znane problemy z listy wyżej; duże nowe rzeczy, przed którymi audyt ostrzega (GUI w userlandzie, sieć, USB, SMP), i przeniesienie Explorera do userlandu czekają na osobną decyzję.
+- **Kolejność prac jest w §8.2 audytu.** Etapy 0–5 są zrobione, a Explorer działa w Ring 3. Problemy do dalszej pracy są na liście wyżej. Przeniesienie powłoki do userlandu, sieć, USB i SMP czekają na osobną decyzję. [Plan etapu 5](docs/ETAP5-PLAN.md)

@@ -62,7 +62,7 @@ static inline int32_t gemos_syscall4(uint32_t number, uintptr_t arg0,
   return result;
 }
 
-static inline void gemos_exit(int32_t status) {
+static inline __attribute__((noreturn)) void gemos_exit(int32_t status) {
   (void)gemos_syscall1(SYS_exit, (uintptr_t)status);
   for (;;) {
     __asm__ volatile("hlt");
