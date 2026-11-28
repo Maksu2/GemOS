@@ -81,6 +81,7 @@
                                          not return GEMOS_ERR_NOENT */
 #define GEMOS_FILETEST_ARGS 11        /* argc or argv were not as started */
 #define GEMOS_FILETEST_RENAME_PROGRAM 12 /* a rename to or from *.ELF was allowed */
+#define GEMOS_FILETEST_COPY_DELETE 13 /* SYS_entry_copy or SYS_entry_delete failed */
 
 /* LONGIO.ELF: long file syscalls. The kernel slows down every sector it
  * writes while LONGIO.ELF runs, so a write of GEMOS_LONGIO_SIZE bytes

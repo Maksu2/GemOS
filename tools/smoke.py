@@ -313,6 +313,7 @@ EXPLORER_LAST_FILE = EXPLORER_DIR + "/NOTE-110.TXT"
 RENAME_FOLDER = "My Work"
 RENAME_DIR = EXPLORER_HOME + "/" + RENAME_FOLDER
 RENAME_FILE = RENAME_DIR + "/final notes.txt"
+NEW_TEXT_FILE = EXPLORER_HOME + "/New Text.txt"
 RENAME_FILES = {"draft.txt": b"The original draft.\n",
                 "taken.txt": b"Keep this other file.\n"}
 EDITOR_FILE = EXPLORER_HOME + "/notes.txt"
@@ -1995,7 +1996,7 @@ class Smoke:
         self.explorer_screen(shot, what, probe)
 
     def explorer_new_folder(self, window):
-        self.explorer_context_action(explorer_entry(window, 3), 1, 0, "context-new-folder")
+        self.explorer_context_action(explorer_entry(window, 3), 2, 0, "context-new-folder")
 
     def explorer_select_row(self, window, row):
         self.pointer.move_to(explorer_entry(window, row))
@@ -2043,7 +2044,7 @@ class Smoke:
         self.explorer_screen("home-toolbar", "the path has room across the toolbar",
                              lambda image: image.logical_rgb(path_end) == PAPER_RGB)
         blank = explorer_entry(window, 3)
-        menu = self.explorer_context(blank, 1, "context-empty")
+        menu = self.explorer_context(blank, 2, "context-empty")
         since = len(self.log_text())
         self.explorer_up(window)
         self.explorer_screen("context-dismissed", "an outside click only dismisses the menu",
@@ -2087,7 +2088,7 @@ class Smoke:
         self.explorer_screen("created-row", "the new folder appears without input",
                              lambda image: bytes(INK_RGB) in image.logical_area(icon))
 
-        self.explorer_context_action(explorer_entry(window, 0), 2, 1, "context-folder")
+        self.explorer_context_action(explorer_entry(window, 0), 4, 1, "context-folder")
         self.explorer_name_screen(window, "rename-folder", "right-click Rename prefills the folder name",
                                   prefilled=True)
         self.type_text(RENAME_FOLDER)
@@ -2099,7 +2100,7 @@ class Smoke:
         self.explorer_screen("renamed-row", "the renamed folder appears without input",
                              lambda image: bytes(INK_RGB) in image.logical_area(first_icon))
         self.explorer_enter_work(window)
-        self.explorer_context_action(explorer_entry(window, 0), 2, 1, "context-file")
+        self.explorer_context_action(explorer_entry(window, 0), 4, 1, "context-file")
         self.explorer_name_screen(window, "rename-file", "right-click Rename prefills the file name",
                                   prefilled=True)
         self.type_text("taken.txt\n")
@@ -2112,6 +2113,74 @@ class Smoke:
         self.type_text("f\n")
         self.explorer_name_screen(window, "renamed-file", "the corrected file name is saved",
                                   editing=False)
+        self.explorer_file_operations(window)
+
+    def explorer_logged(self, what, path, timeout=None):
+        line = re.compile(r"\[EXPLORER\] %s %s\r?\n" % (what, re.escape(path)))
+        return self.wait_for(lambda text: line.search(text),
+                             self.args.app_timeout if timeout is None else timeout)
+
+    def explorer_confirm_screen(self, window, shot, what):
+        toolbar = (window.x + 2, window.y + 30, window.x + window.w - 2, window.y + 50)
+        self.explorer_screen(shot, what, lambda image:
+                             reddish_pixels(image.logical_area(toolbar)) > 20)
+
+    def explorer_file_operations(self, window):
+        """Copy and Paste with the keyboard and the menu, Delete with its
+        question (Esc cancels, Enter and the Delete button confirm), and a
+        new text file that opens in the editor."""
+        # in My Work: final notes.txt (row 0), taken.txt (row 1)
+        self.explorer_select_row(window, 0)
+        self.monitor.cmd("sendkey ctrl-c")
+        self.monitor.cmd("sendkey ctrl-v")
+        copy = RENAME_DIR + "/final notes copy.txt"
+        self.check(bool(self.explorer_logged("Pasted", copy)),
+                   "explorer: Ctrl+C, Ctrl+V pastes a copy beside the file")
+
+        self.explorer_select_row(window, 2)
+        self.monitor.cmd("sendkey delete")
+        self.explorer_confirm_screen(window, "delete-question", "Delete asks first")
+        self.monitor.cmd("sendkey esc")
+        self.check(not self.explorer_logged("Deleted", copy, timeout=0.75),
+                   "explorer: Escape keeps the file")
+        self.monitor.cmd("sendkey delete")
+        self.explorer_confirm_screen(window, "delete-again", "Delete asks again")
+        self.monitor.cmd("sendkey ret")
+        self.check(bool(self.explorer_logged("Deleted", copy)),
+                   "explorer: Enter deletes the file")
+
+        # Home: My Work (row 0), New Notes (row 1)
+        self.explorer_up(window)
+        self.wait_explorer_path(EXPLORER_HOME)
+        self.explorer_context_action(explorer_entry(window, 0), 4, 2, "context-copy")
+        self.explorer_context_action(explorer_entry(window, 3), 3, 2, "context-paste")
+        folder_copy = EXPLORER_HOME + "/My Work copy"
+        self.check(bool(self.explorer_logged("Pasted", folder_copy)),
+                   "explorer: the menu pastes a copy of the folder")
+        self.explorer_context_action(explorer_entry(window, 2), 4, 3, "context-delete")
+        self.explorer_confirm_screen(window, "delete-folder", "deleting a folder asks first")
+        self.pointer.move_to((window.x + window.w - 130, window.y + 42))
+        self.pointer.click()  # the Delete button
+        self.check(bool(self.explorer_logged("Deleted", folder_copy)),
+                   "explorer: the Delete button deletes the folder and its files")
+
+        start_re = re.compile(r"\[UTEXTEDIT\] Spawned PID=(\d+) for " +
+                              re.escape(NEW_TEXT_FILE))
+        since = len(self.log_text())
+        self.explorer_context_action(explorer_entry(window, 3), 3, 1, "context-new-text")
+        self.explorer_name_screen(window, "new-text", "New Text File suggests a name",
+                                  prefilled=True)
+        self.monitor.cmd("sendkey ret")
+        started = self.wait_for(lambda text: start_re.search(text, since),
+                                self.args.app_timeout)
+        if not self.check(bool(started) and bool(self.explorer_logged("Created", NEW_TEXT_FILE)),
+                          "explorer: the new text file opens in the editor"):
+            raise SmokeError("the new text file did not open")
+        pid = started.group(1)
+        self.monitor.cmd("sendkey esc")  # nothing typed: the editor just closes
+        if not self.wait_for(lambda text: "[PROC] Reaped PID=%s exit=0" % pid in text,
+                             self.args.app_timeout):
+            raise SmokeError("the editor of the new file did not close")
 
     def explorer_names_reboot(self):
         self.check("[PROC] Programs on GemFS: 0 seeded, 4 up to date" in self.log_text(),
@@ -2141,7 +2210,7 @@ class Smoke:
     def check_explorer_names(self):
         disk = self.disks["data"]
         for path, entries in [("/", {"Home/", "ABOUT.ELF", "UTERM.ELF", "USRSMOKE.ELF", "UTEXTEDIT.ELF"}),
-                              (EXPLORER_HOME, {"My Work/", "New Notes/"}),
+                              (EXPLORER_HOME, {"My Work/", "New Notes/", "New Text.txt"}),
                               (RENAME_DIR, {"final notes.txt", "taken.txt"}),
                               (EXPLORER_HOME + "/New Notes", set())]:
             result = mkgemfs("ls", disk, path)
@@ -2150,7 +2219,8 @@ class Smoke:
             self.check(result.returncode == 0 and names == entries,
                        "disk: expected names in " + path, ", ".join(sorted(names)))
         for path, saved in [(RENAME_FILE, RENAME_FILES["draft.txt"]),
-                            (RENAME_DIR + "/taken.txt", RENAME_FILES["taken.txt"])]:
+                            (RENAME_DIR + "/taken.txt", RENAME_FILES["taken.txt"]),
+                            (NEW_TEXT_FILE, b"")]:
             result = mkgemfs("cat", disk, path)
             self.check(result.returncode == 0 and result.stdout == saved,
                        "disk: content preserved in " + path)

@@ -2,7 +2,7 @@ use gemos::fs::{DirectoryEntry, DirectoryPage};
 use gemos::window::{Frame, Icon, Rect, Window, text_width};
 use gemos::Result;
 
-use super::{Explorer, Kind, NameAction, NamePrompt, PATH_BYTES};
+use super::{Confirm, Explorer, Kind, NameAction, NamePrompt, PATH_BYTES};
 
 const TOOLBAR: i32 = 32;
 const HEADER: i32 = 25;
@@ -33,6 +33,7 @@ pub(super) struct Layout {
     pub field: Rect,
     pub accept: Rect,
     pub cancel: Rect,
+    pub delete: Rect,
     footer: Rect,
 }
 
@@ -54,6 +55,7 @@ impl Layout {
             field: Rect::new(96, 4, width - 218, 24),
             accept: Rect::new(right - 106, 4, 38, 24),
             cancel: Rect::new(right - 60, 4, 60, 24),
+            delete: Rect::new(right - 128, 4, 60, 24),
             footer: Rect::new(0, height - FOOTER, width, FOOTER),
         }
     }
@@ -88,6 +90,7 @@ fn name_toolbar(frame: &mut Frame, layout: &Layout, prompt: &NamePrompt) {
     let field = layout.field;
     let label: &[u8] = match prompt.action {
         NameAction::Create => b"New Folder",
+        NameAction::CreateText => b"New File",
         NameAction::Rename(_) => b"Rename",
     };
     frame.text(8, field.y + 4, field.x - 15, FONT, INK, label);
@@ -107,6 +110,21 @@ fn name_toolbar(frame: &mut Frame, layout: &Layout, prompt: &NamePrompt) {
         let caret = text_x + text_width(&prompt.name[start..prompt.caret], FONT);
         frame.fill(Rect::new(caret, field.y + 4, 1, field.h - 8), ACCENT);
     }
+}
+
+fn confirm_toolbar(frame: &mut Frame, layout: &Layout, confirm: &Confirm) {
+    let question: &[u8] = if confirm.directory {
+        b"Delete this folder and everything in it?"
+    } else {
+        b"Delete this file?"
+    };
+    let name = confirm.path.name();
+    let question_width = text_width(question, FONT);
+    let room = layout.delete.x - 16;
+    frame.text(8, 8, room, FONT, ERROR, question);
+    frame.text(8 + question_width + 6, 8, room - question_width - 6, FONT, INK, name);
+    button(frame, layout.delete, b"Delete", ERROR);
+    button(frame, layout.cancel, b"Cancel", MUTED);
 }
 
 fn draw_entry(frame: &mut Frame, row: Rect, type_x: i32, entry: &DirectoryEntry, selected: bool) {
@@ -146,12 +164,14 @@ fn count_text(mut total: u32, out: &mut [u8; 20]) -> &[u8] {
 pub(super) fn render(explorer: &mut Explorer, window: &Window) -> Result<()> {
     let layout = explorer.layout();
     let total = explorer.total();
-    let Explorer { frame, path, prompt, loaded, page, base, first, selected, status,
+    let Explorer { frame, path, prompt, confirm, loaded, page, base, first, selected, status,
                    status_len, error, .. } = explorer;
     frame.clear();
     frame.fill(Rect::new(0, TOOLBAR - 1, layout.width, 1), RULE);
 
-    if let Some(prompt) = prompt {
+    if let Some(confirm) = confirm {
+        confirm_toolbar(frame, &layout, confirm);
+    } else if let Some(prompt) = prompt {
         name_toolbar(frame, &layout, prompt);
     } else {
         button(frame, layout.up, b"Up", if path.len > 1 { INK } else { MUTED });

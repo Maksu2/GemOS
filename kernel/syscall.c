@@ -520,6 +520,35 @@ static int syscall_directory_create(uintptr_t path_ptr) {
   return result == GEMFS_OK ? GEMOS_OK : directory_error(result);
 }
 
+/* The Home directory keeps its name and stays */
+static bool path_is_home(const char *path) {
+  if (strcmp(path[0] == '/' ? path + 1 : path, GEMOS_HOME_PATH + 1) != 0) {
+    return false;
+  }
+  gemfs_stat_t stat;
+  return gemfs_stat(path, &stat) == GEMFS_OK && stat.type == GEMFS_TYPE_DIR;
+}
+
+static int syscall_entry_delete(uintptr_t path_ptr) {
+  char path[GEMFS_PATH_MAX];
+  int result = (int)copy_user_path(path, path_ptr);
+  if (result != GEMOS_OK) return result;
+  if (path_is_home(path)) return GEMOS_ERR_DENIED;
+  result = gemfs_delete_user(path);
+  return result == GEMFS_OK ? GEMOS_OK : directory_error(result);
+}
+
+static int syscall_entry_copy(uintptr_t source_ptr, uintptr_t target_ptr) {
+  char source[GEMFS_PATH_MAX];
+  char target[GEMFS_PATH_MAX];
+  int result = (int)copy_user_path(source, source_ptr);
+  if (result != GEMOS_OK) return result;
+  result = (int)copy_user_path(target, target_ptr);
+  if (result != GEMOS_OK) return result;
+  result = gemfs_copy_user(source, target);
+  return result == GEMFS_OK ? GEMOS_OK : directory_error(result);
+}
+
 static int syscall_entry_rename(uintptr_t path_ptr, uintptr_t name_ptr) {
   char path[GEMFS_PATH_MAX];
   char name[GEMFS_PATH_MAX];
@@ -531,11 +560,8 @@ static int syscall_entry_rename(uintptr_t path_ptr, uintptr_t name_ptr) {
   if (path_ends_in(path, ".elf") || path_ends_in(name, ".elf")) {
     return GEMOS_ERR_DENIED;
   }
-  if (strcmp(path[0] == '/' ? path + 1 : path, GEMOS_HOME_PATH + 1) == 0) {
-    gemfs_stat_t stat;
-    if (gemfs_stat(path, &stat) == GEMFS_OK && stat.type == GEMFS_TYPE_DIR) {
-      return GEMOS_ERR_DENIED;
-    }
+  if (path_is_home(path)) {
+    return GEMOS_ERR_DENIED;
   }
   result = gemfs_rename(path, name);
   return result == GEMFS_OK ? GEMOS_OK : directory_error(result);
@@ -638,6 +664,12 @@ void syscall_interrupt_handler(registers_t *regs) {
     break;
   case SYS_fs_generation:
     regs->eax = gemfs_generation();
+    break;
+  case SYS_entry_delete:
+    regs->eax = syscall_entry_delete(regs->ebx);
+    break;
+  case SYS_entry_copy:
+    regs->eax = syscall_entry_copy(regs->ebx, regs->ecx);
     break;
   default:
     regs->eax = (uint32_t)GEMOS_ERR_NOSYS;
