@@ -8,6 +8,7 @@
 
 /* Fill memory with a constant byte - optimized with rep stosd */
 void *memset(void *dest, int c, size_t n) {
+  void *ret = dest;
   /* Fast path: use rep stosd for 4-byte aligned fills */
   uint8_t byte_val = (uint8_t)c;
   uint32_t dword_val = (uint32_t)byte_val | ((uint32_t)byte_val << 8) |
@@ -29,7 +30,7 @@ void *memset(void *dest, int c, size_t n) {
     *d++ = byte_val;
   }
 
-  return dest;
+  return ret;
 }
 
 /* Copy memory area - optimized with rep movsd */

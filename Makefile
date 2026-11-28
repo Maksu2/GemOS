@@ -11,6 +11,8 @@
 #   make all    - build build/gemos.img (boot floppy)
 #   make run    - boot the floppy image in QEMU with the GemFS data disk
 #   make run-hdd - boot the hard disk image instead (data disk second)
+#   make rust    - build the Rust demo and its GemFS disk
+#   make run-rust / test-rust - run the Rust demo / test it across QEMU CPUs
 #   make debug  - same as run, paused, with a GDB stub on :1234
 #   make selftest - build build/selftest/gemos.img, the kernel self-test
 #                 (kernel/selftest.c; run it with tools/smoke.sh --selftest)
@@ -42,6 +44,7 @@ endif
 
 AS := nasm
 QEMU := $(shell which qemu-system-i386 2>/dev/null || echo /opt/homebrew/bin/qemu-system-i386)
+RUSTC ?= rustc
 
 # Directories
 BUILD_DIR := build
@@ -64,6 +67,13 @@ DEPFLAGS := -MMD -MP
 # Linker flags
 LDFLAGS := -m elf_i386 -T linker.ld -nostdlib
 USER_LDSCRIPT := $(USERLAND_DIR)/user_linker.ld
+RUST_DIR := $(USERLAND_DIR)/rust
+RUST_BUILD_DIR := $(BUILD_DIR)/rust
+# This target supplies core for baseline x86 without SSE2. GemOS links the
+# resulting code with its own startup, system calls and memory routines.
+GEMOS_RUSTFLAGS := --target i586-unknown-linux-gnu --edition 2024 \
+                   -C panic=abort -C relocation-model=static \
+                   -C opt-level=s -C codegen-units=1
 
 # Output files
 BOOT_STAGE1 := $(BUILD_DIR)/boot.bin
@@ -73,6 +83,10 @@ KERNEL_BIN := $(BUILD_DIR)/kernel.bin
 OS_IMAGE := $(BUILD_DIR)/gemos.img
 HDD_IMAGE := $(BUILD_DIR)/gemos-hdd.img
 DATA_IMAGE := $(BUILD_DIR)/data.img
+RUST_SDK := $(RUST_BUILD_DIR)/libgemos.rlib
+RUST_DEMO_LIB := $(RUST_BUILD_DIR)/librustdemo.a
+RUST_DEMO := $(RUST_BUILD_DIR)/rustdemo.elf
+RUST_DATA_IMAGE := $(RUST_BUILD_DIR)/data.img
 
 # =============================================================================
 # Sources
@@ -149,6 +163,7 @@ KERNEL_OBJS := $(call obj,$(KERNEL_ASM_SOURCES) $(KERNEL_C_SOURCES) \
                           $(DRIVER_SOURCES) $(LIB_SOURCES))
 
 USER_CRT0_OBJ := $(call obj,$(USER_CRT0_SOURCE))
+RUST_ABI_OBJ := $(call obj,$(RUST_DIR)/abi.c)
 USRSMOKE_OBJ := $(call obj,$(USRSMOKE_SOURCE))
 UTERM_OBJS := $(call obj,$(UTERM_SOURCES))
 ABOUT_OBJS := $(call obj,$(ABOUT_SOURCES))
@@ -179,7 +194,7 @@ ifeq ($(SELFTEST),1)
 endif
 BLOB_OBJS := $(FONT_BLOB) $(USER_BLOBS)
 
-DEPS := $(KERNEL_OBJS:.o=.d) $(USER_OBJS:.o=.d)
+DEPS := $(KERNEL_OBJS:.o=.d) $(USER_OBJS:.o=.d) $(RUST_ABI_OBJ:.o=.d)
 
 $(call obj,$(IRQ_PATH_SOURCES)): CFLAGS += -mgeneral-regs-only
 
@@ -187,7 +202,7 @@ $(call obj,$(IRQ_PATH_SOURCES)): CFLAGS += -mgeneral-regs-only
 # Targets
 # =============================================================================
 
-.PHONY: all clean run run-hdd debug info selftest
+.PHONY: all clean run run-hdd debug info selftest rust run-rust test-rust
 
 # Keep intermediate files (e.g. build/uterm_image.bin) instead of deleting them
 .SECONDARY:
@@ -243,6 +258,34 @@ $(BUILD_DIR)/about.elf: $(USER_CRT0_OBJ) $(ABOUT_OBJS) $(USER_LDSCRIPT)
 
 $(BUILD_DIR)/utextedit.elf: $(USER_CRT0_OBJ) $(UTEXTEDIT_OBJS) $(USER_LDSCRIPT)
 	$(link-user)
+
+$(RUST_SDK): $(RUST_DIR)/gemos.rs Makefile
+	@mkdir -p $(@D)
+	$(RUSTC) $(GEMOS_RUSTFLAGS) --crate-name gemos --crate-type rlib $< -o $@
+
+$(RUST_DEMO_LIB): $(RUST_DIR)/demo.rs $(RUST_SDK) Makefile
+	$(RUSTC) $(GEMOS_RUSTFLAGS) --crate-type staticlib --extern gemos=$(RUST_SDK) $< -o $@
+
+$(RUST_DEMO): $(USER_CRT0_OBJ) $(RUST_ABI_OBJ) $(call obj,lib/string.c) $(RUST_DEMO_LIB) $(USER_LDSCRIPT)
+	$(LD) -m elf_i386 -n -T $(USER_LDSCRIPT) -nostdlib --gc-sections --strip-all \
+	  $(filter %.o %.a,$^) -o $@
+
+$(RUST_DATA_IMAGE): $(RUST_DEMO) $(RUST_DIR)/example.txt tools/mkgemfs Makefile
+	@set -eu; disk=$$(mktemp "$@.XXXXXXXX"); trap 'rm -f "$$disk"' EXIT; \
+	  tools/mkgemfs format "$$disk" --size 10M --force; \
+	  tools/mkgemfs put "$$disk" $(RUST_DEMO) /RUSTDEMO.ELF; \
+	  tools/mkgemfs put "$$disk" $(RUST_DIR)/example.txt '/Rust example.txt'; \
+	  mv "$$disk" "$@"
+
+rust: $(RUST_DATA_IMAGE)
+
+run-rust: $(OS_IMAGE) $(RUST_DATA_IMAGE)
+	$(QEMU) -drive file=$(OS_IMAGE),if=floppy,format=raw,readonly=on -boot a \
+	  -drive file=$(RUST_DATA_IMAGE),if=ide,format=raw,snapshot=on -serial stdio -m 128M
+
+test-rust: $(OS_IMAGE) $(RUST_DATA_IMAGE)
+	QEMU="$(QEMU)" python3 tools/test_rust_userland.py --image $(OS_IMAGE) \
+	  --data $(RUST_DATA_IMAGE) --out $(RUST_BUILD_DIR)/smoke
 
 $(BUILD_DIR)/%_image.bin: $(BUILD_DIR)/%.elf
 	cp $< $@

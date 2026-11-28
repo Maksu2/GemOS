@@ -342,10 +342,40 @@ jobs:
             build/selftest-run/*.txt
           if-no-files-found: ignore
 
+  rust-userland:
+    name: Rust userland on x86 CPUs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nasm and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
+
+      - name: Install the Rust compiler and x86 target
+        run: rustup toolchain install 1.100.1 --profile minimal --target i586-unknown-linux-gnu
+
+      - name: Build and run the Rust demo on all CPU profiles
+        run: make -j"$(nproc)" RUSTC='rustc +1.100.1' test-rust
+
+      - name: Upload the Rust program and QEMU diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-userland
+          path: |
+            build/rust/rustdemo.elf
+            build/rust/smoke/**/*.png
+            build/rust/smoke/**/*.log
+            build/rust/smoke/**/*.txt
+          if-no-files-found: ignore
+
   pr-checks:
     name: PR checks
     if: always()
-    needs: [build-and-smoke, stress, explorer, matrix, selftest, package-smoke]
+    needs: [build-and-smoke, stress, explorer, matrix, selftest, package-smoke, rust-userland]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
@@ -355,6 +385,7 @@ jobs:
       MATRIX_RESULT: ${{ needs.matrix.result }}
       SELFTEST_RESULT: ${{ needs.selftest.result }}
       PACKAGE_RESULT: ${{ needs.package-smoke.result }}
+      RUST_RESULT: ${{ needs.rust-userland.result }}
     steps:
       - name: Report and require all QEMU suites
         shell: bash
@@ -367,14 +398,16 @@ jobs:
               'Explorer (both modes)' "$EXPLORER_RESULT" \
               'Boot matrix' "$MATRIX_RESULT" \
               'Kernel self-test' "$SELFTEST_RESULT" \
-              'Launchers and bootable ISO' "$PACKAGE_RESULT"
+              'Launchers and bootable ISO' "$PACKAGE_RESULT" \
+              'Rust userland on x86 CPUs' "$RUST_RESULT"
           } >> "$GITHUB_STEP_SUMMARY"
           test "$SMOKE_EDITOR_RESULT" = success &&
             test "$STRESS_RESULT" = success &&
             test "$EXPLORER_RESULT" = success &&
             test "$MATRIX_RESULT" = success &&
             test "$SELFTEST_RESULT" = success &&
-            test "$PACKAGE_RESULT" = success
+            test "$PACKAGE_RESULT" = success &&
+            test "$RUST_RESULT" = success
 
   publish-packages:
     name: Publish tested run artifacts

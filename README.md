@@ -119,6 +119,21 @@ userland apps: UTERM.ELF, ABOUT.ELF, UTEXTEDIT.ELF
 | `ABOUT.ELF` | Stable | Small polished userland app with timed updates and clean close flow |
 | `UTEXTEDIT.ELF` | Usable | Hosted editor that opens and saves text files (up to 8 KB) on GemFS, asks before unsaved changes are lost, and opens the file the File Explorer hands it |
 
+### Rust applications
+
+The [Rust SDK](userland/rust/gemos.rs) gives `no_std` programs a typed interface to the hosted console, keyboard and close events, and GemFS file I/O. Rust compiles the application to a static x86 ELF32 using `core`. GemOS supplies the startup code, syscall bindings, and panic handler. A panic is reported over serial and ends the application's process.
+
+With the build tools below and a Rustup-managed compiler, run the demo in QEMU.
+
+```bash
+rustup toolchain install 1.100.1 --profile minimal --target i586-unknown-linux-gnu
+make run-rust RUSTC='rustc +1.100.1'
+```
+
+Open **Apps → File Explorer → RUSTDEMO.ELF**. The demo reads a GemFS text file, displays it, and saves a copy on the demo disk. Press **Esc** or click **X** to close it. Press **P** to try a panic, then reopen the app. QEMU writes to a temporary overlay for this session.
+
+`make test-rust RUSTC='rustc +1.100.1'` runs the same ELF on Pentium II, QEMU32, Intel Nehalem and AMD Opteron profiles. It checks console input, recovery after a panic and the saved file. GitHub Actions includes these results in **PR checks**.
+
 ## Build, run and debug
 
 ### Tooling
