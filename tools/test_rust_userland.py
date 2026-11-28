@@ -28,9 +28,7 @@ def open_demo(run, point, shot):
     since = len(run.log_text())
     run.pointer.move_to(point)
     run.pointer.click()
-    # The first click selects the row. Clicking a selected row opens it.
-    if not DEMO_SPAWN.search(run.log_text(), since):
-        run.monitor.cmd("sendkey ret")
+    run.monitor.cmd("sendkey ret")
     spawned = run.wait_for(lambda log: DEMO_SPAWN.search(log, since),
                            run.args.app_timeout)
     if not spawned:

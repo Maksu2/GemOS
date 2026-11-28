@@ -14,7 +14,8 @@
 static menu_t *active_menu = NULL;
 static menu_t context_menu;
 static struct window *context_owner;
-static void (*context_actions[MAX_MENU_ITEMS])(struct window *owner);
+static uint32_t context_items[MAX_MENU_ITEMS];
+static menu_context_action_t context_action;
 
 /* Pool of menus */
 static menu_t menu_pool[16];
@@ -112,8 +113,9 @@ void menu_close_for_window(const struct window *owner) {
 }
 
 void menu_show_context(struct window *owner, int x, int y,
-                       const menu_context_item_t *items, int count) {
-  if (!owner || !items || count <= 0 || count > MAX_MENU_ITEMS) {
+                       const menu_context_item_t *items, int count,
+                       menu_context_action_t action) {
+  if (!owner || !items || !action || count <= 0 || count > MAX_MENU_ITEMS) {
     return;
   }
   menu_hide();
@@ -121,7 +123,7 @@ void menu_show_context(struct window *owner, int x, int y,
   context_menu.width = MENU_WIDTH;
   for (int i = 0; i < count; ++i) {
     menu_add_item(&context_menu, items[i].label, NULL);
-    context_actions[i] = items[i].action;
+    context_items[i] = items[i].action;
   }
 
   rect_t area = wm_work_area();
@@ -131,6 +133,7 @@ void menu_show_context(struct window *owner, int x, int y,
   y = y > bottom ? bottom : y;
   menu_show(&context_menu, x < area.x ? area.x : x, y < area.y ? area.y : y);
   context_owner = owner;
+  context_action = action;
 
   serial_print("[MENU] Context x=");
   serial_print_dec((uint32_t)context_menu.x);
@@ -182,11 +185,10 @@ static void menu_activate(int index) {
     return;
   }
   struct window *owner = context_owner;
-  void (*context_action)(struct window *) = owner ? context_actions[index] : NULL;
   menu_item_t *item = &active_menu->items[index];
   menu_hide();
-  if (context_action) {
-    context_action(owner);
+  if (owner) {
+    context_action(owner, context_items[index]);
   } else if (item->action) {
     item->action();
   } else {

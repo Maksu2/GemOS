@@ -6,6 +6,7 @@
 #   - an i686-elf or x86_64-elf cross toolchain, or a host gcc/binutils that
 #     accept -m32 / -m elf_i386 (fallback, used by CI)
 #   - qemu-system-i386 (run, debug, tools/smoke.sh)
+#   - rustc with the i586-unknown-linux-gnu target (the hosted File Explorer)
 #
 # Targets:
 #   make all    - build build/gemos.img (boot floppy)
@@ -85,6 +86,7 @@ HDD_IMAGE := $(BUILD_DIR)/gemos-hdd.img
 DATA_IMAGE := $(BUILD_DIR)/data.img
 RUST_SDK := $(RUST_BUILD_DIR)/libgemos.rlib
 RUST_DEMO_LIB := $(RUST_BUILD_DIR)/librustdemo.a
+RUST_EXPLORER_LIB := $(RUST_BUILD_DIR)/libexplorer.a
 RUST_DEMO := $(RUST_BUILD_DIR)/rustdemo.elf
 RUST_DATA_IMAGE := $(RUST_BUILD_DIR)/data.img
 
@@ -105,7 +107,7 @@ KERNEL_C_SOURCES := kernel/kernel.c kernel/console.c kernel/gdt.c kernel/idt.c \
                     kernel/gfx/rect.c kernel/gfx/context.c kernel/gfx/primitives.c \
                     kernel/gfx/icons.c \
                     kernel/gfx/font/font.c \
-                    kernel/gui/desktop.c kernel/gui/window/window.c \
+                    kernel/gui/desktop.c kernel/gui/user_draw.c kernel/gui/window/window.c \
                     kernel/gui/wm/wm.c kernel/gui/topbar/topbar.c \
                     kernel/ui/ui_scale.c kernel/ui/menu.c kernel/ui/dock/dock.c \
                     kernel/ui/cursor.c kernel/ui/focus.c \
@@ -123,6 +125,7 @@ KERNEL_C_SOURCES := kernel/kernel.c kernel/console.c kernel/gdt.c kernel/idt.c \
 SELFTEST ?= 0
 ifeq ($(SELFTEST),1)
     CFLAGS += -DGEMOS_SELFTEST
+    RUST_EXPLORER_FLAGS := --cfg gemos_selftest
     KERNEL_C_SOURCES += kernel/selftest.c
 endif
 
@@ -187,6 +190,7 @@ FONT_BLOB := $(OBJ_DIR)/blobs/font.ttf.o
 USER_BLOBS := $(OBJ_DIR)/blobs/usrsmoke.elf.o \
               $(OBJ_DIR)/blobs/uterm_image.bin.o \
               $(OBJ_DIR)/blobs/about_image.bin.o \
+              $(OBJ_DIR)/blobs/explorer_image.bin.o \
               $(OBJ_DIR)/blobs/utextedit_image.bin.o
 ifeq ($(SELFTEST),1)
     USER_BLOBS += $(OBJ_DIR)/blobs/faults.elf.o $(OBJ_DIR)/blobs/fpucheck.elf.o \
@@ -259,16 +263,29 @@ $(BUILD_DIR)/about.elf: $(USER_CRT0_OBJ) $(ABOUT_OBJS) $(USER_LDSCRIPT)
 $(BUILD_DIR)/utextedit.elf: $(USER_CRT0_OBJ) $(UTEXTEDIT_OBJS) $(USER_LDSCRIPT)
 	$(link-user)
 
-$(RUST_SDK): $(RUST_DIR)/gemos.rs Makefile
+$(RUST_SDK): $(RUST_DIR)/gemos.rs $(RUST_DIR)/window.rs $(RUST_DIR)/fs.rs Makefile
 	@mkdir -p $(@D)
 	$(RUSTC) $(GEMOS_RUSTFLAGS) --crate-name gemos --crate-type rlib $< -o $@
 
 $(RUST_DEMO_LIB): $(RUST_DIR)/demo.rs $(RUST_SDK) Makefile
 	$(RUSTC) $(GEMOS_RUSTFLAGS) --crate-type staticlib --extern gemos=$(RUST_SDK) $< -o $@
 
-$(RUST_DEMO): $(USER_CRT0_OBJ) $(RUST_ABI_OBJ) $(call obj,lib/string.c) $(RUST_DEMO_LIB) $(USER_LDSCRIPT)
+$(RUST_EXPLORER_LIB): $(USERLAND_DIR)/explorer/main.rs $(USERLAND_DIR)/explorer/view.rs $(RUST_SDK) Makefile
+	$(RUSTC) $(GEMOS_RUSTFLAGS) $(RUST_EXPLORER_FLAGS) --crate-name explorer \
+	  --crate-type staticlib --extern gemos=$(RUST_SDK) $< -o $@
+
+define link-rust
 	$(LD) -m elf_i386 -n -T $(USER_LDSCRIPT) -nostdlib --gc-sections --strip-all \
 	  $(filter %.o %.a,$^) -o $@
+endef
+
+RUST_RUNTIME := $(USER_CRT0_OBJ) $(RUST_ABI_OBJ) $(call obj,lib/string.c)
+
+$(RUST_DEMO): $(RUST_RUNTIME) $(RUST_DEMO_LIB) $(USER_LDSCRIPT)
+	$(link-rust)
+
+$(BUILD_DIR)/explorer.elf: $(RUST_RUNTIME) $(RUST_EXPLORER_LIB) $(USER_LDSCRIPT)
+	$(link-rust)
 
 $(RUST_DATA_IMAGE): $(RUST_DEMO) $(RUST_DIR)/example.txt tools/mkgemfs Makefile
 	@set -eu; disk=$$(mktemp "$@.XXXXXXXX"); trap 'rm -f "$$disk"' EXIT; \

@@ -1998,6 +1998,11 @@ class Smoke:
 
     def explorer_names(self):
         window = self.open_explorer()
+        log = self.log_text()
+        explorer_pid = re.search(r"\[PROC\] Spawned PID=(\d+) EXPLORER\.ELF\b", log)
+        self.check(explorer_pid is not None
+                   and "[WINDOW] Opened PID=%s " % explorer_pid.group(1) in log,
+                   "explorer: EXPLORER.ELF owns its window in Ring 3")
         path_end = (window.x + window.w - 53, window.y + 31)
         self.explorer_screen("home-toolbar", "the path has room across the toolbar",
                              lambda image: image.logical_rgb(path_end) == PAPER_RGB)
@@ -2151,9 +2156,11 @@ class Smoke:
         explorer_checks = {
             "explorer: GUI runs while a folder read waits for a write",
             "explorer: shows the current folder after the write",
+            "explorer: a Rust panic ends only its process",
+            "explorer: the desktop reopens and closes Explorer after a panic",
         }
         self.check(explorer_checks.issubset(passed),
-                   label + ": Explorer regression checks both ran and passed")
+                   label + ": Explorer concurrency and panic recovery checks passed")
         if boot == 1:
             self.check(any(line.startswith("fs: wrote " + PERSIST_NOTE)
                            for line in passed),

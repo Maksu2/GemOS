@@ -1,6 +1,6 @@
 <div align="center">
   <h1>GemOS</h1>
-  <p><strong>A 32-bit x86 desktop operating system written in C and assembly</strong></p>
+  <p><strong>A 32-bit x86 desktop operating system with a C and assembly kernel and Rust apps</strong></p>
   <p>
     <a href="https://github.com/Maksu2/GemOS/releases"><img alt="Download GemOS" src="https://img.shields.io/badge/Download-GemOS-B45436?style=for-the-badge&logo=github"></a>
     <a href="https://github.com/Maksu2/GemOS/actions/workflows/ci.yml"><img alt="CI runs" src="https://img.shields.io/badge/CI-QEMU-202123?style=for-the-badge&logo=githubactions"></a>
@@ -10,7 +10,7 @@
   <p><a href="#download-and-run">Download and run</a> · <a href="#current-userland">Apps</a> · <a href="#build-run-and-debug">Build from source</a> · <a href="https://github.com/Maksu2/GemOS/wiki">Wiki</a></p>
 </div>
 
-GemOS has its own bootloader, kernel, GemFS storage and desktop shell. The Terminal, About and text editor run in isolated user processes. The graphite desktop uses flat windows and a rust accent to mark focus and selection.
+GemOS has its own bootloader, kernel, GemFS storage and desktop shell. File Explorer, Terminal, About and the text editor run in isolated user processes. The graphite desktop uses flat windows and a rust accent to mark focus and selection.
 
 ## Download and run
 
@@ -35,6 +35,10 @@ Open **Apps → File Explorer** to start in `~`, your documents folder. Right-cl
 ### Bootable ISO
 
 `GemOS-*.iso` boots as a CD-ROM in an x86 VM with a legacy BIOS. Allocate 128 MB of RAM and select CD boot. A separate IDE disk formatted as GemFS gives the desktop writable storage. `SHA256SUMS.txt` covers the three ZIPs and the ISO.
+
+### QEMU resource use
+
+The desktop opened a text file from Explorer and shut down at 13 MiB of guest RAM in 1280×800 and 17 MiB in 1920×1080. The full Explorer suite also passes with 32 MiB of guest RAM, 4 MiB of video RAM and a Pentium II profile in QEMU. The screen backbuffer takes about 3.9 MiB of guest RAM at 1280×800 and 7.9 MiB at 1920×1080. The bundled GemFS data disk is 10 MiB.
 
 ## What works now
 
@@ -83,7 +87,7 @@ Open **Apps → File Explorer** to start in `~`, your documents folder. Right-cl
 - ELF32 static `ET_EXEC` loader
 - `int 0x80` syscall layer
 - safe copy helpers for user pointers
-- hosted app model: kernel hosts the window/surface and draws every character in its own cell of the grid, userland owns app state and render logic
+- hosted apps own their state and submit a text grid or a list of drawing commands. The kernel draws and clips the window contents
 - hosted close requests and keyboard modifiers
 - file read/write syscalls (`UTEXTEDIT.ELF` opens and saves files with them)
 
@@ -93,7 +97,7 @@ GemOS is intentionally in a transition architecture:
 
 - the desktop shell, WM, topbar, dock and window decorations remain in kernel space
 - userland applications run as isolated processes with their own address spaces
-- userland apps talk to the system through a small syscall surface and a hosted text-surface window model
+- userland apps use syscalls for input, GemFS, a hosted window and its context menu
 
 That is deliberate. GemOS is not trying to jump straight from “all apps in kernel space” to “full userspace GUI toolkit” in one rewrite.
 
@@ -108,20 +112,21 @@ desktop shell: WM, topbar, dock, menus, kernel-hosted windows
         ↓
 hosted app services: console/window surface, input delivery, file I/O
         ↓
-userland apps: UTERM.ELF, ABOUT.ELF, UTEXTEDIT.ELF
+userland apps: EXPLORER.ELF, UTERM.ELF, ABOUT.ELF, UTEXTEDIT.ELF
 ```
 
 ## Current userland
 
 | App | State | What it proves |
 | --- | --- | --- |
+| `EXPLORER.ELF` | Usable | Rust file manager with its own graphical view, GemFS directory pages and system context menus |
 | `UTERM.ELF` | Usable | Real Ring 3 terminal with input, output and hosted-window lifecycle |
 | `ABOUT.ELF` | Stable | Small polished userland app with timed updates and clean close flow |
 | `UTEXTEDIT.ELF` | Usable | Hosted editor that opens and saves text files (up to 8 KB) on GemFS, starts its file prompts at `~/`, and asks before unsaved changes are lost |
 
 ### Rust applications
 
-The [Rust SDK](userland/rust/gemos.rs) gives `no_std` programs a typed interface to the hosted console, keyboard and close events, and GemFS file I/O. Rust compiles the application to a static x86 ELF32 using `core`. GemOS supplies the startup code, syscall bindings, and panic handler. A panic is reported over serial and ends the application's process.
+The Rust SDK gives `no_std` programs typed access to console and graphical windows, input, system context menus and GemFS. Rust compiles each program to a static x86 ELF32 using `core`. GemOS supplies the startup code, syscall bindings and panic handler. A panic appears in the serial log and ends the application process. [Rust SDK](userland/rust/gemos.rs)
 
 With the build tools below and a Rustup-managed compiler, run the demo in QEMU.
 
@@ -140,7 +145,8 @@ Open **Apps → File Explorer**, go **Up**, and double-click `RUSTDEMO.ELF`. The
 
 - `nasm`
 - `qemu-system-i386`
-- an `i686-elf-*` or `x86_64-elf-*` cross toolchain, or a host `gcc`/`binutils` that accepts `-m32` (the Makefile falls back to it automatically; CI uses this path)
+- an `i686-elf-*` or `x86_64-elf-*` cross toolchain, or a host `gcc`/`binutils` that accepts `-m32` (the Makefile and CI can use the host compiler)
+- Rust with the `i586-unknown-linux-gnu` target for `EXPLORER.ELF`
 - Python 3 for the smoke test
 
 On macOS:
@@ -155,7 +161,14 @@ On Debian/Ubuntu (host `gcc -m32` fallback):
 sudo apt-get install nasm qemu-system-x86 gcc
 ```
 
-Build, test and run:
+Select the Rust toolchain used in CI. Prebuilt releases run through QEMU with their Explorer already compiled.
+
+```bash
+rustup toolchain install 1.100.1 --profile minimal --target i586-unknown-linux-gnu
+export RUSTUP_TOOLCHAIN=1.100.1
+```
+
+Build, test and run GemOS.
 
 ```bash
 make all          # build/gemos.img (floppy) and build/gemos-hdd.img

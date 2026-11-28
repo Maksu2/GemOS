@@ -272,6 +272,7 @@ int elf_load_into_process(process_t *process, const uint8_t *image,
   }
 
   interrupt_state = irq_save();
+  page_directory_t *caller_directory = paging_current_directory();
   paging_switch_directory(process->as.page_directory);
   for (uint16_t i = 0; i < header->e_phnum; ++i) {
     const elf32_phdr_t *segment = &segments[i];
@@ -284,7 +285,7 @@ int elf_load_into_process(process_t *process, const uint8_t *image,
     memcpy((void *)(uintptr_t)segment->p_vaddr, image + segment->p_offset,
            segment->p_filesz);
   }
-  paging_switch_directory(paging_get_directory());
+  paging_switch_directory(caller_directory);
   irq_restore(interrupt_state);
 
   for (uint16_t i = 0; i < header->e_phnum; ++i) {

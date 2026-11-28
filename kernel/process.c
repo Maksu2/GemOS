@@ -309,9 +309,10 @@ static int process_push_arguments(process_t *process, const char *name,
   block[1U + argc] = 0;
 
   interrupt_state = irq_save();
+  page_directory_t *caller_directory = paging_current_directory();
   paging_switch_directory(process->as.page_directory);
   memcpy((void *)base, block, size);
-  paging_switch_directory(paging_get_directory());
+  paging_switch_directory(caller_directory);
   irq_restore(interrupt_state);
   process->entry_esp = base;
   return 1;
@@ -432,7 +433,6 @@ int process_spawn_user_with_arg(const char *name, const char *arg) {
                               PROCESS_IMAGE_SOURCE_EMBEDDED);
 }
 
-#ifdef GEMOS_SELFTEST
 int process_spawn_user_image(const char *name, const uint8_t *image,
                              size_t size) {
   if (name == NULL || image == NULL) {
@@ -442,6 +442,7 @@ int process_spawn_user_image(const char *name, const uint8_t *image,
                               PROCESS_IMAGE_SOURCE_EMBEDDED);
 }
 
+#ifdef GEMOS_SELFTEST
 int process_task_id(uint32_t pid) {
   process_t *process = process_find_by_pid(pid);
 

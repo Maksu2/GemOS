@@ -415,6 +415,10 @@ static void wm_toggle_maximize(window_t *win) {
   win->height = frame.h;
   win->maximized = !win->maximized;
   window_update_rects(win);
+  if (win->app && win->app->handle_event) {
+    event_t event = {.type = EVENT_WINDOW_RESIZE};
+    win->app->handle_event(win, &event);
+  }
   serial_print("[WM] Toggle Maximize\n");
 }
 

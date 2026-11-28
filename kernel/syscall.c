@@ -7,11 +7,16 @@
 #include "memory/paging.h"
 #include "process.h"
 #include "scheduler.h"
+#include "../apps/textedit/utextedit_launcher.h"
 
 #include "../drivers/pit.h"
 #include "../drivers/serial.h"
 #include "fs/gemfs.h"
+#include "gfx/font/font.h"
 #include "../include/gemos/console_abi.h"
+#include <gemos/fs_abi.h>
+#include <gemos/paths.h>
+#include <gemos/window_abi.h>
 #include <string.h>
 
 #define SYSCALL_DEBUG_WRITE_MAX 256U
@@ -20,6 +25,8 @@
 #define SYSCALL_FILE_WRITE_MAX (1024U * 1024U)
 
 static gemos_console_cell_t console_present_cells[GEMOS_CONSOLE_MAX_CELLS];
+/* These syscalls never give up the CPU between the copy and the commit. */
+static gemos_draw_command_t window_commands[GEMOS_DRAW_LIMIT];
 
 extern void isr128(void);
 
@@ -404,6 +411,135 @@ static uint32_t syscall_file_write(uintptr_t user_path,
   return (uint32_t)result;
 }
 
+static int syscall_window_open(const char *title_ptr, uint32_t width,
+                               uint32_t height, uint32_t icon) {
+  char title[GEMOS_CONSOLE_MAX_TITLE + 1];
+  if (!copy_user_string(title, title_ptr, sizeof(title))) {
+    return GEMOS_ERR_FAULT;
+  }
+  return console_open_window(scheduler_get_current_pid(), title, width, height, icon);
+}
+
+static int syscall_window_present(int handle, const void *commands, uint32_t count) {
+  if (count > GEMOS_DRAW_LIMIT) {
+    return GEMOS_ERR_TOO_BIG;
+  }
+  if (!copy_from_user(window_commands, commands, count * sizeof(window_commands[0]))) {
+    return GEMOS_ERR_FAULT;
+  }
+  return console_present_window(scheduler_get_current_pid(), handle, window_commands, count);
+}
+
+static int syscall_window_menu(int handle, const void *request) {
+  gemos_window_menu_t menu;
+  if (!copy_from_user(&menu, request, sizeof(menu))) {
+    return GEMOS_ERR_FAULT;
+  }
+  return console_window_menu(scheduler_get_current_pid(), handle, &menu);
+}
+
+static int syscall_text_width(const char *text_ptr, uint32_t size) {
+  char text[GEMOS_DRAW_TEXT_BYTES];
+  if (size < 10 || size > 24) {
+    return GEMOS_ERR_INVAL;
+  }
+  if (!copy_user_string(text, text_ptr, sizeof(text))) {
+    return GEMOS_ERR_FAULT;
+  }
+  return font_text_width(text, (int)size);
+}
+
+static int directory_error(int error) {
+  if (error == GEMFS_ERR_EXIST) return GEMOS_ERR_EXIST;
+  if (error == GEMFS_ERR_NOFS) return GEMOS_ERR_NOFS;
+  return (int)syscall_file_error(error);
+}
+
+typedef struct {
+  uint32_t skip;
+  gemos_directory_page_t *page;
+} directory_read_t;
+
+static void directory_entry(void *ctx, const gemfs_entry_t *entry) {
+  directory_read_t *read = ctx;
+  if (read->skip) {
+    --read->skip;
+    return;
+  }
+  gemos_directory_page_t *page = read->page;
+  if (page->count < GEMOS_DIRECTORY_PAGE) {
+    gemos_directory_entry_t *out = &page->entries[page->count++];
+    out->inode = entry->inode;
+    out->type = entry->type;
+    strcpy(out->name, entry->name);
+  }
+}
+
+static int syscall_directory_read(uintptr_t path_ptr, uint32_t first, void *out) {
+  char path[GEMFS_PATH_MAX];
+  int result = (int)copy_user_path(path, path_ptr);
+  if (result != GEMOS_OK) return result;
+
+  /* Per-call storage: the process may sleep while GemFS is busy. */
+  gemos_directory_page_t page = {0};
+  directory_read_t read = {first, &page};
+  result = gemfs_list(path, directory_entry, &read, &page.generation);
+  if (result < 0) return directory_error(result);
+  page.total = (uint32_t)result;
+  return copy_to_user(out, &page, sizeof(page)) ? GEMOS_OK : GEMOS_ERR_FAULT;
+}
+
+static int syscall_directory_create(uintptr_t path_ptr) {
+  char path[GEMFS_PATH_MAX];
+  int result = (int)copy_user_path(path, path_ptr);
+  if (result != GEMOS_OK) return result;
+  result = gemfs_mkdir(path);
+  return result == GEMFS_OK ? GEMOS_OK : directory_error(result);
+}
+
+static int syscall_entry_rename(uintptr_t path_ptr, uintptr_t name_ptr) {
+  char path[GEMFS_PATH_MAX];
+  char name[GEMFS_PATH_MAX];
+  int result = (int)copy_user_path(path, path_ptr);
+  if (result != GEMOS_OK) return result;
+  result = (int)copy_user_path(name, name_ptr);
+  if (result != GEMOS_OK) return result;
+  if (strcmp(path[0] == '/' ? path + 1 : path, GEMOS_HOME_PATH + 1) == 0) {
+    gemfs_stat_t stat;
+    if (gemfs_stat(path, &stat) == GEMFS_OK && stat.type == GEMFS_TYPE_DIR) {
+      return GEMOS_ERR_DENIED;
+    }
+  }
+  result = gemfs_rename(path, name);
+  return result == GEMFS_OK ? GEMOS_OK : directory_error(result);
+}
+
+static bool path_ends_in(const char *path, const char *extension) {
+  size_t length = strlen(path);
+  size_t tail = strlen(extension);
+  if (length < tail) return false;
+  path += length - tail;
+  while (*extension) {
+    char ch = *path++;
+    if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a');
+    if (ch != *extension++) return false;
+  }
+  return true;
+}
+
+static int syscall_open_path(uintptr_t path_ptr) {
+  char path[GEMFS_PATH_MAX];
+  int result = (int)copy_user_path(path, path_ptr);
+  if (result != GEMOS_OK) return result;
+  if (path_ends_in(path, ".txt") || path_ends_in(path, ".gemtext")) {
+    return utextedit_launcher_spawn(path) >= 0 ? GEMOS_OK : GEMOS_ERR_BUSY;
+  }
+  if (path_ends_in(path, ".elf")) {
+    return process_spawn_user_from_file(path) >= 0 ? GEMOS_OK : GEMOS_ERR_INVAL;
+  }
+  return GEMOS_ERR_INVAL;
+}
+
 /*
  * The gate turns interrupts off; a syscall runs with them on, so the clock
  * and the input devices keep working during a long one. An IRQ returns to
@@ -460,6 +596,33 @@ void syscall_interrupt_handler(registers_t *regs) {
   case SYS_file_write:
     regs->eax = syscall_file_write((uintptr_t)regs->ebx,
                                    (uintptr_t)regs->ecx, (size_t)regs->edx);
+    break;
+  case SYS_window_open:
+    regs->eax = syscall_window_open((const char *)regs->ebx, regs->ecx, regs->edx, regs->esi);
+    break;
+  case SYS_window_present:
+    regs->eax = syscall_window_present((int)regs->ebx, (const void *)regs->ecx, regs->edx);
+    break;
+  case SYS_window_menu:
+    regs->eax = syscall_window_menu((int)regs->ebx, (const void *)regs->ecx);
+    break;
+  case SYS_text_width:
+    regs->eax = syscall_text_width((const char *)regs->ebx, regs->ecx);
+    break;
+  case SYS_directory_read:
+    regs->eax = syscall_directory_read(regs->ebx, regs->ecx, (void *)regs->edx);
+    break;
+  case SYS_directory_create:
+    regs->eax = syscall_directory_create(regs->ebx);
+    break;
+  case SYS_entry_rename:
+    regs->eax = syscall_entry_rename(regs->ebx, regs->ecx);
+    break;
+  case SYS_open_path:
+    regs->eax = syscall_open_path(regs->ebx);
+    break;
+  case SYS_fs_generation:
+    regs->eax = gemfs_generation();
     break;
   default:
     regs->eax = (uint32_t)GEMOS_ERR_NOSYS;

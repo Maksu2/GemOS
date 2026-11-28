@@ -16,8 +16,9 @@ struct window;
 
 typedef struct {
   const char *label;
-  void (*action)(struct window *owner);
+  uint32_t action;
 } menu_context_item_t;
+typedef void (*menu_context_action_t)(struct window *owner, uint32_t action);
 
 typedef struct {
   char label[32];
@@ -45,7 +46,8 @@ bool menu_is_active(void);
 
 /* A system menu owned by a window. Item labels and actions are copied. */
 void menu_show_context(struct window *owner, int x, int y,
-                       const menu_context_item_t *items, int count);
+                       const menu_context_item_t *items, int count,
+                       menu_context_action_t action);
 bool menu_is_context_active(void);
 void menu_close_for_window(const struct window *owner);
 

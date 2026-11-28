@@ -503,8 +503,6 @@ void kernel_main(const boot_info_t *loader_info) {
       kernel_shutdown(backbuffer, vbe_buffer, buffer_size, use_page_flip);
     }
 
-    explorer_update();
-
     /* The clock in the topbar and what some apps show (the Log Viewer's
      * log) change without an event: they are read only while a frame
      * draws them */

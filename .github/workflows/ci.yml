@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  RUSTUP_TOOLCHAIN: "1.100.1"
+
 jobs:
   build-and-smoke:
     name: make all + QEMU smoke test
@@ -16,10 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install nasm and QEMU
+      - name: Install nasm, QEMU and Rust
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target i586-unknown-linux-gnu
 
       # No i686-elf cross compiler on the runner: the Makefile falls back
       # to the host gcc with -m32.
@@ -174,10 +178,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install nasm and QEMU
+      - name: Install nasm, QEMU and Rust
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target i586-unknown-linux-gnu
 
       - name: Build
         shell: bash
@@ -227,10 +232,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install nasm and QEMU
+      - name: Install nasm, QEMU and Rust
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target i586-unknown-linux-gnu
 
       - name: Build
         shell: bash
@@ -272,10 +278,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install nasm and QEMU
+      - name: Install nasm, QEMU and Rust
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target i586-unknown-linux-gnu
 
       - name: Build
         shell: bash
@@ -310,10 +317,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install nasm and QEMU
+      - name: Install nasm, QEMU and Rust
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target i586-unknown-linux-gnu
 
       - name: Build the self-test image
         shell: bash
@@ -349,16 +357,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install nasm and QEMU
+      - name: Install nasm, QEMU and Rust
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends nasm qemu-system-x86
-
-      - name: Install the Rust compiler and x86 target
-        run: rustup toolchain install 1.100.1 --profile minimal --target i586-unknown-linux-gnu
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target i586-unknown-linux-gnu
 
       - name: Build and run the Rust demo on all CPU profiles
-        run: make -j"$(nproc)" RUSTC='rustc +1.100.1' test-rust
+        run: make -j"$(nproc)" test-rust
 
       - name: Upload the Rust program and QEMU diagnostics
         if: always()

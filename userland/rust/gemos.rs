@@ -3,6 +3,9 @@
 use core::ffi::{CStr, c_char};
 use core::panic::PanicInfo;
 
+pub mod fs;
+pub mod window;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Error(pub i32);
 

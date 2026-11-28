@@ -52,10 +52,10 @@ int process_spawn_user_from_file(const char *name);
 /* The same, with arg (a path of at most GEMFS_PATH_MAX - 1 bytes) as
  * argv[1]: the file the program should open. NULL for none. */
 int process_spawn_user_with_arg(const char *name, const char *arg);
-#ifdef GEMOS_SELFTEST
 /* Start a program from an ELF image in memory. */
 int process_spawn_user_image(const char *name, const uint8_t *image,
                              size_t size);
+#ifdef GEMOS_SELFTEST
 /* The scheduler task of a process that has not been reaped, -1 if none. */
 int process_task_id(uint32_t pid);
 #endif

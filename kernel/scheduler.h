@@ -5,7 +5,7 @@
 
 struct process;
 
-#define MAX_TASKS       17           /* GUI, Explorer disk reader, 15 other tasks */
+#define MAX_TASKS       17           /* GUI and 16 other tasks */
 #define TASK_STACK_SIZE (16 * 1024)  /* 16 KB per task */
 #define TASK_QUANTUM    10           /* ticks per task, 10ms @ 1000 Hz */
 #define TASK_GUI        0            /* task 0: the GUI loop in kernel_main */

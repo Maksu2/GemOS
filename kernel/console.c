@@ -6,10 +6,12 @@
 #include "gfx/icons.h"
 #include "gfx/primitives.h"
 #include "gui/window/window.h"
+#include "gui/user_draw.h"
 #include "gui/wm/wm.h"
 #include "include/gui_loop.h"
 #include "include/heap.h"
 #include "process.h"
+#include "ui/menu.h"
 #include "ui/theme.h"
 #include "../include/gemos/syscall_abi.h"
 
@@ -55,6 +57,8 @@ typedef struct {
   console_render_mode_t render_mode;
   console_close_reason_t close_reason;
   uint32_t dirty;
+  gemos_draw_command_t *commands; /* non-NULL for a graphical window */
+  uint32_t command_count;
   window_t *window;
   char title[GEMOS_CONSOLE_MAX_TITLE + 1];
   char lines[CONSOLE_SCROLLBACK_LINES][CONSOLE_MAX_COLS + 1];
@@ -234,6 +238,15 @@ static int console_push_event(console_session_t *session,
     return 0;
   }
 
+  if (event.type == GEMOS_WINDOW_POINTER_MOVE &&
+      session->input_head != session->input_tail) {
+    uint32_t last = (session->input_head + CONSOLE_INPUT_QUEUE_SIZE - 1U) %
+                    CONSOLE_INPUT_QUEUE_SIZE;
+    if (session->input_queue[last].type == GEMOS_WINDOW_POINTER_MOVE) {
+      session->input_queue[last] = event;
+      return 1;
+    }
+  }
   next_head = (session->input_head + 1U) % CONSOLE_INPUT_QUEUE_SIZE;
   if (next_head == session->input_tail) {
     return 0;
@@ -264,6 +277,9 @@ static void console_release_session(console_session_t *session) {
     return;
   }
 
+  if (session->commands) {
+    kfree(session->commands);
+  }
   memset(session, 0, sizeof(*session));
 }
 
@@ -393,29 +409,53 @@ static void console_render(window_t *win) {
     return;
   }
 
-  if (session->render_mode == CONSOLE_RENDER_SURFACE) {
+  if (session->commands) {
+    user_draw_render(win, session->commands, session->command_count);
+  } else if (session->render_mode == CONSOLE_RENDER_SURFACE) {
     console_render_surface(win, session);
   } else {
     console_render_legacy(win, session);
   }
 }
 
+static void console_window_resized(console_session_t *session) {
+  rect_t client = session->window->client_rect;
+  console_push_event(session, (gemos_console_event_t){
+      GEMOS_WINDOW_RESIZE, (uint32_t)client.w, (uint32_t)client.h, 0});
+}
+
 static void console_handle_event(window_t *win, event_t *event) {
   console_session_t *session = (console_session_t *)win->user_data;
-  gemos_console_event_t console_event;
-
   if (session == NULL || event == NULL) {
     return;
   }
-  if (event->type != EVENT_KEY_PRESS) {
+  if (event->type == EVENT_KEY_PRESS) {
+    console_push_event(session, (gemos_console_event_t){
+        GEMOS_CONSOLE_EVENT_KEY, event->data.key.key_code,
+        (uint32_t)(uint8_t)event->data.key.character, event->data.key.modifiers});
+    return;
+  }
+  if (!session->commands) {
+    return;
+  }
+  if (event->type == EVENT_WINDOW_RESIZE) {
+    console_window_resized(session);
     return;
   }
 
-  console_event.type = GEMOS_CONSOLE_EVENT_KEY;
-  console_event.key_code = event->data.key.key_code;
-  console_event.character = (uint32_t)(uint8_t)event->data.key.character;
-  console_event.modifiers = event->data.key.modifiers;
-  console_push_event(session, console_event);
+  uint32_t type;
+  switch (event->type) {
+  case EVENT_MOUSE_CLICK:
+    type = event->data.mouse.button == MOUSE_BUTTON_RIGHT
+               ? GEMOS_WINDOW_RIGHT_PRESS : GEMOS_WINDOW_LEFT_PRESS;
+    break;
+  case EVENT_MOUSE_MOVE: type = GEMOS_WINDOW_POINTER_MOVE; break;
+  case EVENT_MOUSE_RELEASE: type = GEMOS_WINDOW_LEFT_RELEASE; break;
+  default: return;
+  }
+  console_push_event(session, (gemos_console_event_t){
+      type, (uint32_t)(event->data.mouse.x - win->client_rect.x),
+      (uint32_t)(event->data.mouse.y - win->client_rect.y), event->data.mouse.time_ms});
 }
 
 static int console_request_close(window_t *win) {
@@ -470,8 +510,9 @@ void console_init(void) {
   console_window_app.close = console_window_close;
 }
 
-int console_open(uint32_t owner_pid, const char *title, uint32_t cols,
-                 uint32_t rows, uint32_t flags) {
+static int console_create_window(uint32_t owner_pid, const char *title,
+                                 uint32_t cols, uint32_t rows, uint32_t flags,
+                                 bool graphics) {
   console_session_t *session;
   window_t *win;
   int width;
@@ -495,6 +536,13 @@ int console_open(uint32_t owner_pid, const char *title, uint32_t cols,
   }
 
   memset(session, 0, sizeof(*session));
+  if (graphics) {
+    session->commands = kalloc(GEMOS_DRAW_LIMIT * sizeof(*session->commands));
+    if (!session->commands) {
+      kfree(win);
+      return GEMOS_ERR_BUSY;
+    }
+  }
   session->in_use = 1;
   session->handle = next_console_handle++;
   session->owner_pid = owner_pid;
@@ -513,7 +561,7 @@ int console_open(uint32_t owner_pid, const char *title, uint32_t cols,
     strncpy(session->title, title, GEMOS_CONSOLE_MAX_TITLE);
     session->title[GEMOS_CONSOLE_MAX_TITLE] = '\0';
   } else {
-    strcpy(session->title, "User Terminal");
+    strcpy(session->title, graphics ? "Application" : "User Terminal");
   }
 
   /* the padding goes all round the cells, inside the window's chrome */
@@ -522,11 +570,20 @@ int console_open(uint32_t owner_pid, const char *title, uint32_t cols,
   height = (int)(session->rows * CONSOLE_LINE_HEIGHT + (CONSOLE_PADDING * 2) +
                  WINDOW_TITLE_BAR_H + 2 * WINDOW_BORDER_W);
 
-  window_init(win, 120, 100, width, height);
+  if (graphics) {
+    rect_t work = wm_work_area();
+    width = (int)cols + 2 * WINDOW_BORDER_W;
+    height = (int)rows + WINDOW_TITLE_BAR_H + 2 * WINDOW_BORDER_W;
+    width = width < work.w ? width : work.w;
+    height = height < work.h ? height : work.h;
+  }
+  window_init(win, graphics ? 100 : 120, 100, width, height);
   window_set_title(win, session->title);
-  win->flags = WINDOW_FLAG_NO_RESIZE;
+  win->flags = graphics ? WINDOW_FLAG_NONE : WINDOW_FLAG_NO_RESIZE;
   win->app = &console_window_app;
-  if (strcmp(session->title, "About GemOS") == 0) {
+  if (graphics) {
+    win->icon = user_draw_icon(flags);
+  } else if (strcmp(session->title, "About GemOS") == 0) {
     win->icon = &icon_about;
   } else if (strcmp(session->title, "Text Editor") == 0) {
     win->icon = &icon_textedit;
@@ -534,8 +591,11 @@ int console_open(uint32_t owner_pid, const char *title, uint32_t cols,
   win->user_data = session;
 
   wm_add_window(win);
+  if (graphics) {
+    console_window_resized(session);
+  }
   console_mark_dirty();
-  serial_print("[CONSOLE] Opened PID=");
+  serial_print(graphics ? "[WINDOW] Opened PID=" : "[CONSOLE] Opened PID=");
   serial_print_dec(owner_pid);
   serial_print(" handle=");
   serial_print_dec(session->handle);
@@ -551,11 +611,90 @@ int console_open(uint32_t owner_pid, const char *title, uint32_t cols,
   return (int)session->handle;
 }
 
+int console_open(uint32_t owner_pid, const char *title, uint32_t cols,
+                 uint32_t rows, uint32_t flags) {
+  return console_create_window(owner_pid, title, cols, rows, flags, false);
+}
+
+int console_open_window(uint32_t owner_pid, const char *title,
+                        uint32_t width, uint32_t height, uint32_t icon) {
+  if (!width || !height || width > GEMOS_WINDOW_LIMIT || height > GEMOS_WINDOW_LIMIT) {
+    return GEMOS_ERR_INVAL;
+  }
+  return console_create_window(owner_pid, title, width, height, icon, true);
+}
+
+int console_present_window(uint32_t owner_pid, int handle,
+                           const gemos_draw_command_t *commands, uint32_t count) {
+  console_session_t *session = console_find_owned(owner_pid, handle);
+  if (!session || !session->commands || count > GEMOS_DRAW_LIMIT ||
+      !user_draw_valid(commands, count)) {
+    return GEMOS_ERR_INVAL;
+  }
+  memcpy(session->commands, commands, count * sizeof(*commands));
+  session->command_count = count;
+  console_damage(session);
+  return GEMOS_OK;
+}
+
+static void console_menu_action(window_t *owner, uint32_t action) {
+  console_push_event(owner->user_data,
+                     (gemos_console_event_t){GEMOS_WINDOW_MENU_ACTION, action, 0, 0});
+}
+
+int console_window_menu(uint32_t owner_pid, int handle, const gemos_window_menu_t *menu) {
+  console_session_t *session = console_find_owned(owner_pid, handle);
+  if (!session || !session->commands || menu->count > GEMOS_MENU_LIMIT) {
+    return GEMOS_ERR_INVAL;
+  }
+  if (menu->count == 0) {
+    menu_close_for_window(session->window);
+    return GEMOS_OK;
+  }
+  if (wm_get_focused_window() != session->window) {
+    return GEMOS_ERR_BUSY;
+  }
+  rect_t client = session->window->client_rect;
+  if (menu->x < 0 || menu->y < 0 || menu->x >= client.w || menu->y >= client.h) {
+    return GEMOS_ERR_INVAL;
+  }
+  menu_context_item_t items[GEMOS_MENU_LIMIT];
+  for (uint32_t i = 0; i < menu->count; ++i) {
+    if (menu->items[i].label[GEMOS_MENU_LABEL_BYTES - 1] != '\0') {
+      return GEMOS_ERR_INVAL;
+    }
+    items[i] = (menu_context_item_t){menu->items[i].label, menu->items[i].action};
+  }
+  menu_show_context(session->window, client.x + menu->x, client.y + menu->y,
+                    items, (int)menu->count, console_menu_action);
+  return GEMOS_OK;
+}
+
+#ifdef GEMOS_SELFTEST
+bool console_test_contains(uint32_t owner_pid, const char *text) {
+  console_session_t *session = console_find_by_pid(owner_pid);
+  if (!session || !session->commands) {
+    return false;
+  }
+  for (uint32_t i = 0; i < session->command_count; ++i) {
+    const gemos_draw_command_t *command = &session->commands[i];
+    if (command->kind == GEMOS_DRAW_TEXT && strcmp(command->text, text) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+int console_test_event(uint32_t owner_pid, gemos_console_event_t event) {
+  return console_push_event(console_find_by_pid(owner_pid), event);
+}
+#endif
+
 int console_write(uint32_t owner_pid, int handle, const char *buffer,
                   size_t length) {
   console_session_t *session = console_find_owned(owner_pid, handle);
 
-  if (session == NULL || buffer == NULL) {
+  if (session == NULL || session->commands || buffer == NULL) {
     return GEMOS_ERR_INVAL;
   }
   if (length == 0) {
@@ -592,7 +731,7 @@ int console_poll_event(uint32_t owner_pid, int handle,
 int console_clear(uint32_t owner_pid, int handle) {
   console_session_t *session = console_find_owned(owner_pid, handle);
 
-  if (session == NULL) {
+  if (session == NULL || session->commands) {
     return GEMOS_ERR_INVAL;
   }
 
@@ -609,7 +748,7 @@ int console_present(uint32_t owner_pid, int handle,
   console_session_t *session = console_find_owned(owner_pid, handle);
   size_t cell_count;
 
-  if (session == NULL || frame == NULL || cells == NULL) {
+  if (session == NULL || session->commands || frame == NULL || cells == NULL) {
     return GEMOS_ERR_INVAL;
   }
   if (frame->cols == 0 || frame->rows == 0 ||
