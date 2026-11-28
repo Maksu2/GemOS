@@ -1,4 +1,4 @@
-GemOS is a 32-bit x86 desktop OS. This test release includes the graphite desktop, a labelled dock and a File Explorer that can create and rename entries on GemFS.
+GemOS is a 32-bit x86 desktop OS. This test release includes the graphite desktop, a labelled dock, a text editor and a File Explorer written in Rust that runs as a user program: it creates folders and text files, renames, copies, pastes and deletes entries on GemFS. Clicks, opening and closing windows redraw only what changed, which keeps the desktop responsive under QEMU's software emulation.
 
 ### Run in QEMU
 
